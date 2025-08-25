@@ -3,7 +3,7 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      - "v*.*.*"   # Only run on version tags
+      - "v*.*.*"
 
 jobs:
   build:
@@ -41,9 +41,8 @@ jobs:
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: [build]
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/mattstash
+    permissions:
+      contents: read
     steps:
       - name: Debug event
         run: |
@@ -54,9 +53,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: dist
-          path: dist
+        # (keeps default path: ./dist)
 
-      - name: Publish to PyPI
+      - name: Publish to PyPI with API token
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
