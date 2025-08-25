@@ -1,0 +1,76 @@
+name: Publish to PyPI
+
+on:
+  # Publish to TestPyPI for every push to main (optional but handy)
+  push:
+    branches: [ main ]
+  # Publish to PyPI when you create a Git tag like v0.1.0
+  tags:
+    - "v*.*.*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish-testpypi:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/mattstash
+    permissions:
+      id-token: write  # IMPORTANT for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish to TestPyPI (trusted publisher)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          print-hash: true
+
+  publish-pypi:
+    # Trigger on semver tag like v0.1.0
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mattstash
+    permissions:
+      id-token: write  # IMPORTANT for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish to PyPI (trusted publisher)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          print-hash: true
