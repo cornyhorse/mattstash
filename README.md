@@ -32,6 +32,12 @@ pip install "mattstash[s3]"        # core + boto3 for S3 helpers
   - Generates a strong password, writes the sidecar with `0600` permissions
   - Creates an empty KeePass database at the default path
 
+You can also run `mattstash setup` explicitly to force bootstrapping and configuration. This command creates the database and sidecar password file at the default location unless overridden with `--db`.
+
+```bash
+mattstash setup
+```
+
 You can override the DB path globally with `--db PATH` or via the Python API `MattStash(path=...)`.
 
 ### Commands
@@ -42,15 +48,75 @@ mattstash list
 mattstash list --json
 mattstash list --show-password
 
-# Get one entry by title
+# Get one entry by title (supports two modes)
+# 1) Simple key/value secret style (CredStash-like), where only the password field is used
+mattstash get "MySecret"
+mattstash get "MySecret" --json
+mattstash get "MySecret" --show-password
+
+# 2) Full credential dict style with username, password, url, notes
 mattstash get "My Service"
 mattstash get "My Service" --json
 mattstash get "My Service" --show-password
+
+# Add or update an entry (supports two modes)
+# 1) Simple key/value secret style (CredStash-like), only password provided with --value
+mattstash put "MySecret" --value SECRET_PASSWORD
+
+# 2) Full credential dict style with username, password, url, notes
+mattstash put "My Service" --username USERNAME --password PASSWORD --url URL --notes NOTES
+
+# Delete an entry
+mattstash delete "My Service"
+
+# List all keys (entry titles)
+mattstash keys
+
+# Show versions/history of an entry
+mattstash versions "My Service"
+mattstash versions "My Service" --json
 
 # Build an S3 client from a KeePass entry and test connectivity
 mattstash s3-test "Hetzner S3" --bucket my-bucket
 mattstash s3-test "Hetzner S3" --addressing virtual --region us-east-1
 mattstash s3-test "Hetzner S3" --quiet   # no output, exit code only
+```
+
+### Adding S3 credentials
+
+To add a credential specifically for S3 connectivity, use the `put` command with the following fields:
+
+- `--username` for the AWS access key ID
+- `--password` for the AWS secret access key
+- `--url` for the S3 endpoint URL
+- `--notes` for any additional information
+
+Example:
+
+```bash
+mattstash put "Hetzner S3" --username KEY --password SECRET --url https://endpoint --notes "Hetzner S3 storage"
+```
+
+The `s3-test` command expects the AWS-style key, secret, and endpoint to be stored in these fields in the KeePass entry.
+
+You can also use the Python API to fetch S3 credentials and create a boto3 client, for example:
+
+```python
+import boto3
+from mattstash.core import MattStash
+
+stash = MattStash()
+entry = stash.get("Hetzner S3")
+
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=entry['username'],
+    aws_secret_access_key=entry['password'],
+    endpoint_url=entry['url']
+)
+
+# Upload a file
+s3_client.upload_file('localfile.txt', 'my-bucket', 'remote/path/localfile.txt')
 ```
 
 Global options:
@@ -63,6 +129,10 @@ Subcommand options:
 
 - `list`: `--json`, `--show-password`
 - `get`: `--json`, `--show-password`
+- `keys`: (no options)
+- `put`: `--value`, `--username`, `--password`, `--url`, `--notes`
+- `delete`: (no options)
+- `versions`: `--json`
 - `s3-test`: `--region`, `--addressing {path,virtual}`, `--signature-version`, `--retries-max-attempts`, `--bucket`, `--quiet`
 
 ### Exit codes
@@ -81,40 +151,75 @@ mattstash list
 # Get a credential as JSON (good for scripting)
 mattstash get "CI Token" --json
 
+# List all keys (entry titles)
+mattstash keys
+
+# Add or update an S3 credential
+mattstash put "Hetzner S3" --username KEY --password SECRET --url https://endpoint
+
+# Delete an old key
+mattstash delete "old-key"
+
+# Show versions/history for an entry
+mattstash versions "Hetzner S3"
+
 # S3 test against a Hetzner/MinIO-style endpoint stored in KeePass entry "objectstore"
 mattstash s3-test "objectstore" --bucket cornyhorse-data
 ```
 
-## Smoke tests (pytest examples)
+## Python API usage
 
-Create `tests/test_smoke.py` with:
-
-```python
-import subprocess
-import sys
-
-def run_cli(*args):
-  cmd = [sys.executable, "-m", "mattstash.core", *args]
-  return subprocess.run(cmd, capture_output=True, text=True)
-
-def test_list_exits_zero():
-  # On a fresh machine this will bootstrap DB+sidecar on first run
-  proc = run_cli("list")
-  assert proc.returncode == 0
-
-def test_get_not_found_exits_2():
-  proc = run_cli("get", "definitely-not-present")
-  assert proc.returncode == 2
-```
-
-Or, if you've exposed the console script via `pyproject.toml`:
+You can also use `mattstash` programmatically with the Python API. Here are examples that mirror the CLI commands:
 
 ```python
-import subprocess
+from mattstash.core import MattStash
 
-def run_cli(*args):
-  return subprocess.run(["mattstash", *args], capture_output=True, text=True)
+stash = MattStash()
 
-def test_list_exits_zero():
-  assert run_cli("list").returncode == 0
+# List all entries
+for entry in stash.list():
+    print(entry['title'])
+
+# List all entries as JSON (dictionary)
+entries = list(stash.list())
+print(entries)
+
+# Get one entry by title (returns dict with fields)
+entry = stash.get("My Service")
+print(entry)
+
+# Get a simple secret (password only)
+secret = stash.get("MySecret")  # returns dict with 'password' field
+
+# Add or update an entry (full credential dict style)
+stash.put("My Service", username="user", password="pass", url="https://example.com", notes="notes")
+
+# Add or update a simple secret (password only)
+stash.put("MySecret", value="mysecretpassword")
+
+# Delete an entry
+stash.delete("My Service")
+
+# List all keys (entry titles)
+keys = stash.keys()
+print(keys)
+
+# Show versions/history of an entry
+versions = stash.versions("My Service")
+for version in versions:
+    print(version)
+
+# Create an S3 client from a KeePass entry
+import boto3
+
+entry = stash.get("Hetzner S3")
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=entry['username'],
+    aws_secret_access_key=entry['password'],
+    endpoint_url=entry['url']
+)
+
+# Example: upload a file
+s3_client.upload_file('localfile.txt', 'my-bucket', 'remote/path/localfile.txt')
 ```
