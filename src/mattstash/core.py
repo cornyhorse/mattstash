@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 from pykeepass import PyKeePass
+from urllib.parse import urlparse
 
 try:
     # module-level helper for creating new databases
@@ -31,11 +32,12 @@ __all__ = [
     "Credential",
     "MattStash",
     "get",
-    "list_creds",  # renamed to avoid masking builtin
+    "list_creds",
     "get_s3_client",
     "put",
     "delete",
     "list_versions",
+    "get_db_url",
 ]
 
 DEFAULT_KDBX_PATH = os.path.expanduser("~/.config/mattstash/mattstash.kdbx")
@@ -80,6 +82,125 @@ class Credential:
 
 
 class MattStash:
+    # -------------------- SQLAlchemy / psycopg helpers --------------------
+
+    def _parse_host_port(self, endpoint: Optional[str]) -> tuple[str, int]:
+        """Parse host and port from an endpoint string.
+        Accepts either a raw `host:port` or a URL like `scheme://host:port/...`.
+        Raises ValueError if the port is missing or invalid.
+        """
+        if not endpoint:
+            raise ValueError("[mattstash] Empty database endpoint URL")
+        ep = endpoint.strip()
+        host = None
+        port = None
+        if "://" in ep:
+            parsed = urlparse(ep)
+            netloc = parsed.netloc or parsed.path  # some urlparse variants put everything in path for odd inputs
+            if ":" not in netloc:
+                raise ValueError("[mattstash] Database endpoint must include a port (e.g., host:5432)")
+            host, port_str = netloc.split("@", 1)[-1].rsplit(":", 1) if "@" in netloc else netloc.rsplit(":", 1)
+            if not port_str.isdigit():
+                raise ValueError("[mattstash] Invalid database port in endpoint")
+            port = int(port_str)
+        else:
+            if ":" not in ep:
+                raise ValueError("[mattstash] Database endpoint must include a port (e.g., host:5432)")
+            host, port_str = ep.rsplit(":", 1)
+            if not port_str.isdigit():
+                raise ValueError("[mattstash] Invalid database port in endpoint")
+            port = int(port_str)
+        host = host.strip("/")
+        return host, port
+
+    def get_db_url(
+            self,
+            title: str,
+            *,
+            driver: Optional[str] = None,
+            mask_password: bool = True,
+            mask_style: str = "stars",  # "stars" -> user:*****, "omit" -> user (no password section)
+            database: Optional[str] = None,
+            sslmode_override: Optional[str] = None,
+    ) -> str:
+        """Construct a SQLAlchemy URL from a KeePass entry.
+
+        Mapping:
+          - entry.username -> user
+          - entry.password -> password
+          - entry.url      -> host:port (required; raises if no port)
+          - custom property `database` or `dbname` -> database name (required, unless `database` arg is provided)
+          - optional custom property `sslmode` -> added as query param (can be overridden with sslmode_override)
+        Additional:
+          - database: can be provided explicitly and will override custom props.
+          - sslmode_override: can override the custom property.
+          - driver: optional driver suffix (e.g. "psycopg"); if provided the URL is `postgresql+{driver}://...`,
+            otherwise `postgresql://...`.
+          - mask_password:
+              True  -> do not reveal the real password (use mask_style behavior)
+              False -> include the real password when present
+          - mask_style:
+              "stars" -> include `:*****` after the username (API default)
+              "omit"  -> omit the password entirely and render only `user@` (CLI default)
+
+        Examples:
+          - API default (masked stars, no driver):    `postgresql://user:*****@host:5432/db`
+          - CLI masked default (omit, with driver):   `postgresql+psycopg://user@host:5432/db`
+          - Unmasked with driver:                     `postgresql+psycopg://user:pw@host:5432/db`
+        """
+        cred = self.get(title, show_password=True)
+        if cred is None:
+            raise ValueError(f"[mattstash] Credential not found: {title}")
+        # If `cred` is a dict (simple secret), this is not a full DB cred
+        if isinstance(cred, dict):
+            raise ValueError("[mattstash] Entry is a simple secret and cannot be used for a DB connection")
+
+        host, port = self._parse_host_port(cred.url)
+
+        kp = self._ensure_open()
+        if not kp:
+            raise ValueError("[mattstash] Unable to open KeePass database")
+        entry = kp.find_entries(title=title, first=True)
+        if not entry:
+            # If versioning was used and latest resolved above, we still need the entry object to read custom props
+            # Attempt to resolve latest versioned entry
+            prefix = f"{title}@"
+            candidates = [e for e in kp.entries if e.title and e.title.startswith(prefix)]
+            if candidates:
+                entry = max(candidates, key=lambda e: int(e.title[len(prefix):]))
+            else:
+                raise ValueError(f"[mattstash] Credential entry not found: {title}")
+
+        dbname = database or entry.get_custom_property("database") or entry.get_custom_property("dbname")
+        if not dbname:
+            raise ValueError("[mattstash] Missing database name. Provide --database/`database=` or set custom property 'database'/'dbname' on the credential.")
+
+        sslmode = sslmode_override if sslmode_override is not None else entry.get_custom_property("sslmode")
+
+        dialect = "postgresql" + (f"+{driver}" if driver else "")
+        user = cred.username or ""
+        pwd = cred.password or ""
+
+        if mask_password:
+            if mask_style == "omit":
+                userinfo = user
+            else:  # "stars" (default)
+                if pwd:
+                    userinfo = f"{user}:*****"
+                else:
+                    userinfo = user
+        else:
+            # include the real password if available
+            if pwd:
+                userinfo = f"{user}:{pwd}"
+            else:
+                userinfo = user
+
+        base = f"{dialect}://{userinfo}@{host}:{port}/{dbname}"
+        if sslmode:
+            base = f"{base}?sslmode={sslmode}"
+        return base
+
     """
     Simple KeePass accessor with:
       - default path of ~/.credentials/mattstash.kdbx (override via ctor)
@@ -189,6 +310,7 @@ class MattStash:
         Consider it simple if username and url are empty/None and password is non-empty.
         Notes/comments are allowed and do not change this classification. Tags are ignored.
         """
+
         def _empty(v):
             return v is None or (isinstance(v, str) and v.strip() == "")
 
@@ -363,7 +485,7 @@ class MattStash:
 
         # Decide mode
         simple_mode = value is not None and username is None and password is None and url is None and (
-                    tags is None or len(tags) == 0)
+                tags is None or len(tags) == 0)
 
         if simple_mode:
             e.username = ""
@@ -552,6 +674,30 @@ class MattStash:
 _default_instance: Optional[MattStash] = None
 
 
+def get_db_url(
+        title: str,
+        *,
+        path: Optional[str] = None,
+        password: Optional[str] = None,
+        driver: Optional[str] = None,
+        mask_password: bool = True,
+        mask_style: str = "stars",
+        database: Optional[str] = None,
+        sslmode_override: Optional[str] = None,
+) -> str:
+    global _default_instance
+    if path or password or _default_instance is None:
+        _default_instance = MattStash(path=path, password=password)
+    return _default_instance.get_db_url(
+        title,
+        driver=driver,
+        mask_password=mask_password,
+        mask_style=mask_style,
+        database=database,
+        sslmode_override=sslmode_override,
+    )
+
+
 def get(
         title: str,
         path: Optional[str] = None,
@@ -736,6 +882,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_versions.add_argument("title", help="Base key title")
     p_versions.add_argument("--json", action="store_true", help="Output JSON")
 
+    # db-url
+    p_dburl = subparsers.add_parser("db-url", help="Print SQLAlchemy-style URL from a DB credential")
+    p_dburl.add_argument("title", help="KeePass entry title holding DB connection fields")
+    p_dburl.add_argument("--driver", default="psycopg", help="Driver name suffix in URL (default: psycopg)")
+    p_dburl.add_argument("--database", help="Database name; if omitted, use credential custom property 'database'/'dbname'")
+    p_dburl.add_argument("--mask-password", default=True, nargs="?", const=True,
+                         type=lambda s: (str(s).lower() not in ("false", "0", "no", "off")),
+                         help="Mask password in printed URL (default True). Pass 'False' to disable.")
+
     # s3-test
     p_s3 = subparsers.add_parser("s3-test", help="Create an S3 client from a credential and optionally check a bucket")
     p_s3.add_argument("title", help="KeePass entry title holding S3 endpoint/key/secret")
@@ -801,7 +956,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if c.notes and c.notes.strip():
                     snippet = c.notes.strip().splitlines()[0]
                     notes_snippet = f" notes={snippet!r}"
-                print(f"- {c.credential_name} user={c.username!r} url={c.url!r} pwd={pwd_disp!r} tags={c.tags}{notes_snippet}")
+                print(
+                    f"- {c.credential_name} user={c.username!r} url={c.url!r} pwd={pwd_disp!r} tags={c.tags}{notes_snippet}")
         return 0
 
     if args.cmd == "keys":
@@ -858,6 +1014,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             for v in vers:
                 print(v)
         return 0
+
+    if args.cmd == "db-url":
+        try:
+            url = get_db_url(
+                args.title,
+                path=args.path,
+                password=args.password,
+                driver=args.driver,
+                mask_password=args.mask_password,
+                mask_style="omit",  # CLI masks by omission (no placeholder)
+                database=args.database,
+            )
+            print(url)
+            return 0
+        except Exception as e:
+            print(f"[mattstash] failed to build DB URL: {e}", file=sys.stderr)
+            return 5
 
     if args.cmd == "s3-test":
         try:

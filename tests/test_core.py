@@ -352,6 +352,81 @@ def test_cli_put_with_comment(temp_db: Path, as_module: bool):
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
-    assert payload["name"] == "with-comment"
-    assert payload["value"] == "*****"
-    assert payload.get("notes") == "this is a note"
+    # Depending on how many fields the entry has, the CLI returns either a simple-secret
+    # shape (name/value[/notes]) or a full credential shape (credential_name/username/password/url/notes,...).
+    if "name" in payload:  # simple secret shape
+        assert payload["name"] == "with-comment"
+        assert payload["value"] == "*****"
+        assert payload.get("notes") == "this is a note"
+    elif "credential_name" in payload:  # full credential shape (notes makes it non-simple)
+        assert payload["credential_name"] == "with-comment"
+        # password should be masked by default
+        assert payload.get("password") == "*****"
+        assert payload.get("notes") == "this is a note"
+    else:
+        raise AssertionError(f"Unexpected JSON shape: {payload}")
+
+
+def test_get_db_url_requires_port(temp_db: Path):
+    ms = MattStash(path=str(temp_db))
+    # Store creds without a port in the URL -> should raise
+    ms.put("pg-creds", username="user", password="pw", url="localhost")
+    with pytest.raises(ValueError):
+        # database provided, but URL has no port -> error
+        ms.get_db_url("pg-creds", database="testdb")
+
+
+def test_get_db_url_builds_correct_url_and_masking(temp_db: Path):
+    ms = MattStash(path=str(temp_db))
+    ms.put("pg-creds", username="user", password="pw", url="localhost:5432")
+
+    # Masked by default
+    masked = ms.get_db_url("pg-creds", database="testdb")
+    assert masked == "postgresql://user:*****@localhost:5432/testdb"
+
+    # Unmasked when requested
+    unmasked = ms.get_db_url("pg-creds", database="testdb", mask_password=False)
+    assert unmasked == "postgresql://user:pw@localhost:5432/testdb"
+
+
+@pytest.mark.parametrize("as_module", [True, False])
+def test_cli_db_url_masks_password_and_requires_port(temp_db: Path, as_module: bool):
+    ms = MattStash(path=str(temp_db))
+    # Good creds with port
+    ms.put("pg-creds", username="user", password="pw", url="localhost:5432")
+
+    # Bad creds without port to check error path
+    ms.put("pg-creds-np", username="user", password="pw", url="localhost")
+
+    if as_module:
+        good_cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb"]
+        bad_cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "db-url", "pg-creds-np", "--database", "testdb"]
+    else:
+        good_cmd = ["mattstash", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb"]
+        bad_cmd = ["mattstash", "--db", str(temp_db), "db-url", "pg-creds-np", "--database", "testdb"]
+
+    # Good path: masked output, no raw password
+    proc = subprocess.run(good_cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "postgresql+psycopg://user@localhost:5432/testdb" in proc.stdout
+    assert "postgresql://user:pw@" not in proc.stdout
+
+    # Bad path: should fail and mention port
+    proc = subprocess.run(bad_cmd, capture_output=True, text=True)
+    assert proc.returncode != 0
+    assert "port" in (proc.stderr or proc.stdout).lower()
+
+
+@pytest.mark.parametrize("as_module", [True, False])
+def test_cli_db_url_unmasked_flag(temp_db: Path, as_module: bool):
+    ms = MattStash(path=str(temp_db))
+    ms.put("pg-creds", username="user", password="pw", url="localhost:5432")
+
+    if as_module:
+        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb", "--mask-password", "False"]
+    else:
+        cmd = ["mattstash", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb", "--mask-password", "False"]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "postgresql+psycopg://user:pw@localhost:5432/testdb" in proc.stdout
