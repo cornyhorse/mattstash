@@ -127,12 +127,12 @@ class MattStash:
                 if _kp_create_database is None:
                     raise RuntimeError("pykeepass.create_database not available in this version")
                 _kp_create_database(self.path, password=pw)
-                print(f"[MattStash] Created new KeePass DB at {self.path} and sidecar {sidecar}")
+                print(f"[MattStash] Created new KeePass DB at {self.path} and sidecar {sidecar}", file=sys.stderr)
             except Exception as e:
-                print(f"[MattStash] Failed to create KeePass DB at {self.path}: {e}")
+                print(f"[MattStash] Failed to create KeePass DB at {self.path}: {e}", file=sys.stderr)
         except Exception as e:
             # Non-fatal: we fall back to the normal resolve/open path
-            print(f"[MattStash] Bootstrap skipped due to error: {e}")
+            print(f"[MattStash] Bootstrap skipped due to error: {e}", file=sys.stderr)
 
     def _resolve_password(self) -> Optional[str]:
         # 1) Sidecar plaintext file next to the DB (e.g., ~/.credentials/.mattstash.txt)
