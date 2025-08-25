@@ -34,6 +34,5 @@ s3 = ["boto3>=1.28,<2.0", "botocore>=1.31,<2.0"]
 Homepage = "https://github.com/your-org-or-user/mattstash"
 Issues = "https://github.com/your-org-or-user/mattstash/issues"
 
-# Optional: console script (only if you want a CLI; otherwise delete this)
 [project.scripts]
-mattstash = "mattstash.__main__:main"
+mattstash = "mattstash.core:main"

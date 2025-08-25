@@ -1,0 +1,4 @@
+pykeepass
+boto3
+botocore
+pytest

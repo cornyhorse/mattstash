@@ -6,17 +6,26 @@ KeePass-backed secrets accessor + optional boto3 S3 client helper.
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 import os
+import sys
+import argparse
+import json
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 from pykeepass import PyKeePass
+
+try:
+    # module-level helper for creating new databases
+    from pykeepass import create_database as _kp_create_database  # type: ignore
+except Exception:  # pragma: no cover
+    _kp_create_database = None
+
 
 def _ensure_scheme(u: Optional[str]) -> Optional[str]:
     if not u:
         return u
     return u if u.startswith("http://") or u.startswith("https://") else f"https://{u}"
+
 
 __all__ = [
     "Credential",
@@ -26,7 +35,10 @@ __all__ = [
     "get_s3_client",
 ]
 
-DEFAULT_KDBX_PATH = os.path.expanduser("~/.credentials/k8s-db.kdbx")
+DEFAULT_KDBX_PATH = os.path.expanduser("~/.config/mattstash/mattstash.kdbx")
+
+# Sidecar plaintext file name stored next to the KDBX DB
+DEFAULT_KDBX_SIDECAR_BASENAME = ".mattstash.txt"
 
 
 @dataclass
@@ -63,20 +75,68 @@ class Credential:
 class MattStash:
     """
     Simple KeePass accessor with:
-      - default path of ~/.credentials/k8s-db.kdbx (override via ctor)
-      - password sources: explicit arg, then sidecar file next to the DB named '.k8s-db.txt', then KDBX_PASSWORD environment variable
+      - default path of ~/.credentials/mattstash.kdbx (override via ctor)
+      - password sources: explicit arg, then sidecar file next to the DB named '.mattstash.txt', then KDBX_PASSWORD environment variable
       - generic get(title) -> Credential
       - optional env hydration (mapping of keepass 'title:FIELD' -> ENVVAR)
     """
 
     def __init__(self, path: Optional[str] = None, password: Optional[str] = None):
         self.path = os.path.expanduser(path or DEFAULT_KDBX_PATH)
+        # Create DB + sidecar if both are missing (credstash-like bootstrap)
+        self._bootstrap_if_missing()
         self.password = password or self._resolve_password()
         self._kp: Optional[PyKeePass] = None
 
+    def _bootstrap_if_missing(self) -> None:
+        """
+        If BOTH the KeePass DB and the sidecar password file are missing, create them.
+        This mirrors a credstash-like 'setup' step: we generate a strong password,
+        write it to the sidecar, and initialize an empty KeePass database at self.path.
+        """
+        try:
+            db_dir = os.path.dirname(self.path) or "."
+            sidecar = os.path.join(db_dir, DEFAULT_KDBX_SIDECAR_BASENAME)
+            db_exists = os.path.exists(self.path)
+            sidecar_exists = os.path.exists(sidecar)
+
+            if db_exists or sidecar_exists:
+                return  # Only bootstrap when BOTH are absent
+
+            # Ensure directory exists with restrictive perms
+            os.makedirs(db_dir, exist_ok=True)
+            try:
+                os.chmod(db_dir, 0o700)
+            except Exception:
+                # Best-effort on non-POSIX or restricted environments
+                pass
+
+            # Generate a strong password for the DB and write the sidecar (0600)
+            import secrets
+            pw = secrets.token_urlsafe(32)
+
+            with open(sidecar, "wb") as f:
+                f.write(pw.encode())
+            try:
+                os.chmod(sidecar, 0o600)
+            except Exception:
+                pass
+
+            # Create an empty KeePass database
+            try:
+                if _kp_create_database is None:
+                    raise RuntimeError("pykeepass.create_database not available in this version")
+                _kp_create_database(self.path, password=pw)
+                print(f"[MattStash] Created new KeePass DB at {self.path} and sidecar {sidecar}")
+            except Exception as e:
+                print(f"[MattStash] Failed to create KeePass DB at {self.path}: {e}")
+        except Exception as e:
+            # Non-fatal: we fall back to the normal resolve/open path
+            print(f"[MattStash] Bootstrap skipped due to error: {e}")
+
     def _resolve_password(self) -> Optional[str]:
-        # 1) Sidecar plaintext file next to the DB (e.g., ~/.credentials/.k8s-db.txt)
-        sidecar = os.path.join(os.path.dirname(self.path), ".k8s-db.txt")
+        # 1) Sidecar plaintext file next to the DB (e.g., ~/.credentials/.mattstash.txt)
+        sidecar = os.path.join(os.path.dirname(self.path), DEFAULT_KDBX_SIDECAR_BASENAME)
         try:
             if os.path.exists(sidecar):
                 try:
@@ -189,14 +249,14 @@ class MattStash:
                 os.environ[envname] = value
 
     def get_s3_client(
-        self,
-        title: str,
-        *,
-        region: str = "us-east-1",
-        addressing: str = "path",            # "virtual" or "path"
-        signature_version: str = "s3v4",
-        retries_max_attempts: int = 10,
-        verbose: bool = True,
+            self,
+            title: str,
+            *,
+            region: str = "us-east-1",
+            addressing: str = "path",  # "virtual" or "path"
+            signature_version: str = "s3v4",
+            retries_max_attempts: int = 10,
+            verbose: bool = True,
     ):
         """
         Read a KeePass entry and return a configured boto3 S3 client.
@@ -244,9 +304,6 @@ class MattStash:
             aws_secret_access_key=cred.password,
             config=cfg,
         )
-
-
-
 
 
 # Module-level convenience: mattstash.get("CREDENTIAL NAME")
@@ -298,3 +355,126 @@ def get_s3_client(
         retries_max_attempts=retries_max_attempts,
         verbose=verbose,
     )
+
+
+# ----------------------------- CLI ------------------------------------
+
+
+def _serialize_credential(cred: Credential, show_password: bool = False) -> dict:
+    """
+    Return a JSON-serializable dict for a Credential, honoring show_password.
+    """
+    if show_password:
+        cred.show_password = True
+    return cred.as_dict()
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """
+    Simple CLI:
+      - list: show all entries
+      - get:  fetch a single entry by title
+      - s3-test: construct a client and optionally head a bucket
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    parser = argparse.ArgumentParser(prog="mattstash", description="KeePass-backed secrets accessor")
+    parser.add_argument("--db", dest="path", help="Path to KeePass .kdbx (default: ~/.config/mattstash/mattstash.kdbx)")
+    parser.add_argument("--password", dest="password", help="Password for the KeePass DB (overrides sidecar/env)")
+    parser.add_argument("--verbose", action="store_true", help="Verbose output")
+
+    subparsers = parser.add_subparsers(dest="cmd", required=True)
+
+    # list
+    p_list = subparsers.add_parser("list", help="List entries")
+    p_list.add_argument("--show-password", action="store_true", help="Show passwords in output")
+    p_list.add_argument("--json", action="store_true", help="Output JSON")
+
+    # get
+    p_get = subparsers.add_parser("get", help="Get a single entry by title")
+    p_get.add_argument("title", help="KeePass entry title")
+    p_get.add_argument("--show-password", action="store_true", help="Show password in output")
+    p_get.add_argument("--json", action="store_true", help="Output JSON")
+
+    # s3-test
+    p_s3 = subparsers.add_parser("s3-test", help="Create an S3 client from a credential and optionally check a bucket")
+    p_s3.add_argument("title", help="KeePass entry title holding S3 endpoint/key/secret")
+    p_s3.add_argument("--region", default="us-east-1", help="AWS region (default: us-east-1)")
+    p_s3.add_argument("--addressing", choices=["path", "virtual"], default="path", help="S3 addressing style")
+    p_s3.add_argument("--signature-version", default="s3v4", help="Signature version (default: s3v4)")
+    p_s3.add_argument("--retries-max-attempts", type=int, default=10, help="Max retries (default: 10)")
+    p_s3.add_argument("--bucket", help="If provided, issue a HeadBucket to test connectivity")
+    p_s3.add_argument("--quiet", action="store_true", help="Only exit code, no prints")
+
+    args = parser.parse_args(argv)
+
+    # Prepare instance (module-level helpers handle caching)
+    if args.cmd == "list":
+        creds = list_creds(path=args.path, password=args.password, show_password=args.show_password)
+        if args.json:
+            payload = [_serialize_credential(c, show_password=args.show_password) for c in creds]
+            print(json.dumps(payload, indent=2))
+        else:
+            for c in creds:
+                pwd_disp = c.password if args.show_password else ("*****" if c.password else None)
+                print(f"- {c.credential_name} user={c.username!r} url={c.url!r} pwd={pwd_disp!r} tags={c.tags}")
+        return 0
+
+    if args.cmd == "get":
+        c = get(args.title, path=args.path, password=args.password, show_password=args.show_password)
+        if not c:
+            print(f"[mattstash] not found: {args.title}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(_serialize_credential(c, show_password=args.show_password), indent=2))
+        else:
+            pwd_disp = c.password if args.show_password else ("*****" if c.password else None)
+            print(f"{c.credential_name}")
+            print(f"  username: {c.username}")
+            print(f"  password: {pwd_disp}")
+            print(f"  url:      {c.url}")
+            print(f"  tags:     {', '.join(c.tags) if c.tags else ''}")
+            if c.notes:
+                print("  notes:")
+                for line in (c.notes or "").splitlines():
+                    print(f"    {line}")
+        return 0
+
+    if args.cmd == "s3-test":
+        try:
+            client = get_s3_client(
+                args.title,
+                path=args.path,
+                password=args.password,
+                region=args.region,
+                addressing=args.addressing,
+                signature_version=args.signature_version,
+                retries_max_attempts=args.retries_max_attempts,
+                verbose=not args.quiet,
+            )
+        except Exception as e:
+            if not args.quiet:
+                print(f"[mattstash] failed to create S3 client: {e}", file=sys.stderr)
+            return 3
+
+        if args.bucket:
+            try:
+                client.head_bucket(Bucket=args.bucket)
+                if not args.quiet:
+                    print(f"[mattstash] HeadBucket OK for {args.bucket}")
+                return 0
+            except Exception as e:
+                if not args.quiet:
+                    print(f"[mattstash] HeadBucket FAILED for {args.bucket}: {e}", file=sys.stderr)
+                return 4
+        else:
+            if not args.quiet:
+                print("[mattstash] S3 client created successfully")
+            return 0
+
+    # Should not reach here
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
