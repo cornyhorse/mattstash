@@ -68,6 +68,24 @@ def test_get_and_list_roundtrip(temp_db: Path):
     assert a.url == "https://a.example"
 
 
+def test_simple_secret_put_get_api(temp_db: Path):
+    ms = MattStash(path=str(temp_db))
+    # store a simple secret (credstash-like)
+    result = ms.put("api-token", value="sekrit")
+    assert isinstance(result, dict)
+    assert result["name"] == "api-token"
+    assert result["value"] == "*****"  # masked by default
+
+    masked = ms.get("api-token")
+    assert isinstance(masked, dict)
+    assert masked["name"] == "api-token"
+    assert masked["value"] == "*****"
+
+    revealed = ms.get("api-token", show_password=True)
+    assert isinstance(revealed, dict)
+    assert revealed["value"] == "sekrit"
+
+
 def test_hydrate_env_sets_vars(temp_db: Path, monkeypatch: pytest.MonkeyPatch):
     ms = MattStash(path=str(temp_db))
 
@@ -124,6 +142,36 @@ def test_cli_list_and_get(temp_db: Path, as_module: bool):
     payload = json.loads(proc.stdout)
     assert payload["credential_name"] == "CLI-Test"
     assert payload["username"] == "u"
+
+
+@pytest.mark.parametrize("as_module", [True, False])
+def test_cli_get_simple_secret_json(temp_db: Path, as_module: bool):
+    ms = MattStash(path=str(temp_db))
+    # create simple secret via API
+    ms.put("k", value="v")
+
+    if as_module:
+        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "get", "k", "--json"]
+    else:
+        cmd = ["mattstash", "--db", str(temp_db), "get", "k", "--json"]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["name"] == "k"
+    assert payload["value"] == "*****"
+
+    # show-password path
+    if as_module:
+        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "get", "k", "--json", "--show-password"]
+    else:
+        cmd = ["mattstash", "--db", str(temp_db), "get", "k", "--json", "--show-password"]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["name"] == "k"
+    assert payload["value"] == "v"
 
 
 @pytest.mark.skipif("boto3" not in sys.modules and __import__("importlib").util.find_spec("boto3") is None,

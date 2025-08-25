@@ -33,6 +33,7 @@ __all__ = [
     "get",
     "list_creds",  # renamed to avoid masking builtin
     "get_s3_client",
+    "put",
 ]
 
 DEFAULT_KDBX_PATH = os.path.expanduser("~/.config/mattstash/mattstash.kdbx")
@@ -175,6 +176,19 @@ class MattStash:
             print(f"[MattStash] Found DB at {self.path} and a password, but failed to open (likely wrong key)", file=sys.stderr)
             return None
 
+    def _is_simple_secret(self, e) -> bool:
+        """
+        A 'simple secret' mimics credstash semantics: only the password field is used.
+        Consider it simple if username, url, notes are empty/None and password is non-empty.
+        Tags are ignored for this determination.
+        """
+        def _empty(v):
+            return v is None or (isinstance(v, str) and v.strip() == "")
+        try:
+            return (not _empty(e.password)) and _empty(e.username) and _empty(e.url) and _empty(e.notes)
+        except Exception:
+            return False
+
     # ---- Public API -----------------------------------------------------
 
     def get(self, title: str, show_password: bool = False) -> Optional[Credential]:
@@ -190,6 +204,11 @@ class MattStash:
         if not e:
             print(f"[MattStash] Entry not found: {title}", file=sys.stderr)
             return None
+        # Simple-secret mode (credstash-like): only password is populated
+        if self._is_simple_secret(e):
+            value = e.password if show_password else ("*****" if e.password else None)
+            return {"name": title, "value": value}
+
         return Credential(
             credential_name=title,
             username=e.username,
@@ -220,6 +239,100 @@ class MattStash:
                 show_password=show_password,
             ))
         return creds
+
+    def put(
+        self,
+        title: str,
+        *,
+        value: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        url: Optional[str] = None,
+        notes: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+    ):
+        """
+        Create or update an entry.
+
+        Modes:
+          - Simple (credstash-like): only 'value' is provided -> stored in password field.
+            Returns {"name": <title>, "value": <masked or plain per show_password=False default>}.
+          - Full credential: any of username/password/url/notes/tags provided -> stored accordingly.
+            Returns a Credential object.
+
+        Note: By default returned secrets are masked. Use show_password=True on get() to reveal.
+        """
+        kp = self._ensure_open()
+        if not kp:
+            print(f"[MattStash] Unable to open KeePass database at {self.path}", file=sys.stderr)
+            return None
+
+        # Find or create entry
+        e = kp.find_entries(title=title, first=True)
+        if e is None:
+            grp = kp.root_group
+            # minimal fields to create; pykeepass expects strings, not None
+            e = kp.add_entry(grp, title=title, username="", password="", url="", notes="")
+
+        # Decide mode
+        simple_mode = value is not None and username is None and password is None and url is None and notes is None and (tags is None or len(tags) == 0)
+
+        if simple_mode:
+            e.username = ""
+            e.url = ""
+            e.notes = ""
+            e.password = value
+            # do not alter tags for simple writes unless provided
+            if tags is not None:
+                try:
+                    e.tags = set(tags)
+                except Exception:
+                    for t in (tags or []):
+                        try:
+                            e.add_tag(t)
+                        except Exception:
+                            pass
+            kp.save()
+            # Return credstash-like structure (masked by default)
+            return {"name": title, "value": "*****" if (value is not None) else None}
+
+        # Full credential mode
+        if username is not None:
+            e.username = username
+        if password is not None:
+            e.password = password
+        if url is not None:
+            e.url = url
+        if notes is not None:
+            e.notes = notes
+        if tags is not None:
+            try:
+                e.tags = set(tags)
+            except Exception:
+                # Fallback to add_tag loop if assignment unsupported
+                # (pykeepass supports .tags as a set in recent versions)
+                # Clear existing tags: best-effort (no direct clear API sometimes)
+                for t in list(e.tags or []):
+                    try:
+                        e.remove_tag(t)
+                    except Exception:
+                        pass
+                for t in tags:
+                    try:
+                        e.add_tag(t)
+                    except Exception:
+                        pass
+
+        kp.save()
+        return Credential(
+            credential_name=title,
+            username=e.username,
+            password=e.password,
+            url=e.url,
+            notes=e.notes,
+            tags=list(e.tags or []),
+            show_password=False,
+        )
 
     def hydrate_env(self, mapping: Dict[str, str]) -> None:
         """
@@ -333,6 +446,36 @@ def list_creds(
     return _default_instance.list(show_password=show_password)
 
 
+def put(
+        title: str,
+        *,
+        path: Optional[str] = None,
+        db_password: Optional[str] = None,
+        value: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        url: Optional[str] = None,
+        notes: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+):
+    """
+    Create or update an entry. If only 'value' is provided, store it in the password field (credstash-like).
+    Otherwise, update fields provided and return a Credential.
+    """
+    global _default_instance
+    if path or db_password or _default_instance is None:
+        _default_instance = MattStash(path=path, password=db_password)
+    return _default_instance.put(
+        title,
+        value=value,
+        username=username,
+        password=password,
+        url=url,
+        notes=notes,
+        tags=tags,
+    )
+
+
 def get_s3_client(
         title: str,
         *,
@@ -374,6 +517,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     Simple CLI:
       - list: show all entries
       - get:  fetch a single entry by title
+      - put:  create or update an entry (simple or full)
       - s3-test: construct a client and optionally head a bucket
     """
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -396,6 +540,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_get.add_argument("--show-password", action="store_true", help="Show password in output")
     p_get.add_argument("--json", action="store_true", help="Output JSON")
 
+    # put
+    p_put = subparsers.add_parser("put", help="Create/update an entry")
+    p_put.add_argument("title", help="KeePass entry title")
+    group = p_put.add_mutually_exclusive_group(required=True)
+    group.add_argument("--value", help="Simple secret value (credstash-like; stored in password field)")
+    group.add_argument("--fields", action="store_true", help="Provide explicit fields instead of --value")
+    p_put.add_argument("--username")
+    p_put.add_argument("--password")
+    p_put.add_argument("--url")
+    p_put.add_argument("--notes")
+    p_put.add_argument("--tag", action="append", dest="tags", help="Repeatable; adds a tag")
+    p_put.add_argument("--json", action="store_true", help="Output JSON")
+
     # s3-test
     p_s3 = subparsers.add_parser("s3-test", help="Create an S3 client from a credential and optionally check a bucket")
     p_s3.add_argument("title", help="KeePass entry title holding S3 endpoint/key/secret")
@@ -409,6 +566,43 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     # Prepare instance (module-level helpers handle caching)
+    if args.cmd == "put":
+        if args.value is not None and not args.fields:
+            result = put(
+                args.title,
+                path=args.path,
+                db_password=args.password,
+                value=args.value,
+                tags=args.tags,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                if isinstance(result, dict):
+                    print(f"{result['name']}: {result['value']}")
+                else:
+                    print(f"{args.title}: OK")
+            return 0
+        # fields mode
+        result = put(
+            args.title,
+            path=args.path,
+            db_password=args.password,
+            username=args.username,
+            password=args.password,
+            url=args.url,
+            notes=args.notes,
+            tags=args.tags,
+        )
+        if args.json:
+            if isinstance(result, dict):
+                print(json.dumps(result, indent=2))
+            else:
+                print(json.dumps(_serialize_credential(result, show_password=False), indent=2))
+        else:
+            print(f"{args.title}: OK")
+        return 0
+
     if args.cmd == "list":
         creds = list_creds(path=args.path, password=args.password, show_password=args.show_password)
         if args.json:
@@ -426,18 +620,26 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"[mattstash] not found: {args.title}", file=sys.stderr)
             return 2
         if args.json:
-            print(json.dumps(_serialize_credential(c, show_password=args.show_password), indent=2))
+            if isinstance(c, dict):
+                # simple-secret mode already respects --show-password via get(show_password=...)
+                print(json.dumps(c, indent=2))
+            else:
+                print(json.dumps(_serialize_credential(c, show_password=args.show_password), indent=2))
         else:
-            pwd_disp = c.password if args.show_password else ("*****" if c.password else None)
-            print(f"{c.credential_name}")
-            print(f"  username: {c.username}")
-            print(f"  password: {pwd_disp}")
-            print(f"  url:      {c.url}")
-            print(f"  tags:     {', '.join(c.tags) if c.tags else ''}")
-            if c.notes:
-                print("  notes:")
-                for line in (c.notes or "").splitlines():
-                    print(f"    {line}")
+            if isinstance(c, dict):
+                print(f"{c['name']}")
+                print(f"  value: {c['value']}")
+            else:
+                pwd_disp = c.password if args.show_password else ("*****" if c.password else None)
+                print(f"{c.credential_name}")
+                print(f"  username: {c.username}")
+                print(f"  password: {pwd_disp}")
+                print(f"  url:      {c.url}")
+                print(f"  tags:     {', '.join(c.tags) if c.tags else ''}")
+                if c.notes:
+                    print("  notes:")
+                    for line in (c.notes or '').splitlines():
+                        print(f"    {line}")
         return 0
 
     if args.cmd == "s3-test":
