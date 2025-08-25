@@ -35,12 +35,16 @@ __all__ = [
     "get_s3_client",
     "put",
     "delete",
+    "list_versions",
 ]
 
 DEFAULT_KDBX_PATH = os.path.expanduser("~/.config/mattstash/mattstash.kdbx")
 
 # Sidecar plaintext file name stored next to the KDBX DB
 DEFAULT_KDBX_SIDECAR_BASENAME = ".mattstash.txt"
+
+# Zero-padding width for version strings
+PAD_WIDTH = 10
 
 
 @dataclass
@@ -174,7 +178,8 @@ class MattStash:
             self._kp = PyKeePass(self.path, password=self.password)
             return self._kp
         except Exception:
-            print(f"[MattStash] Found DB at {self.path} and a password, but failed to open (likely wrong key)", file=sys.stderr)
+            print(f"[MattStash] Found DB at {self.path} and a password, but failed to open (likely wrong key)",
+                  file=sys.stderr)
             return None
 
     def _is_simple_secret(self, e) -> bool:
@@ -183,8 +188,10 @@ class MattStash:
         Consider it simple if username, url, notes are empty/None and password is non-empty.
         Tags are ignored for this determination.
         """
+
         def _empty(v):
             return v is None or (isinstance(v, str) and v.strip() == "")
+
         try:
             return (not _empty(e.password)) and _empty(e.username) and _empty(e.url) and _empty(e.notes)
         except Exception:
@@ -192,24 +199,76 @@ class MattStash:
 
     # ---- Public API -----------------------------------------------------
 
-    def get(self, title: str, show_password: bool = False) -> Optional[Credential]:
+    def get(self, title: str, show_password: bool = False, version: Optional[int] = None) -> Optional[Credential]:
         """
-        Fetch a KeePass entry by its Title and return a Credential payload.
+        Fetch a KeePass entry by its Title (optionally versioned) and return a Credential payload.
         Returns None if the DB/entry cannot be found.
+        If versioned, looks for entries named <title>@<version>.
+        If version is None, finds the highest version (if any), else falls back to unversioned.
         """
         kp = self._ensure_open()
         if not kp:
             print(f"[MattStash] Unable to open KeePass database at {self.path}", file=sys.stderr)
             return None
+        entry_title = title
+        if version is not None:
+            vstr = str(int(version)).zfill(PAD_WIDTH)
+            entry_title = f"{title}@{vstr}"
+            e = kp.find_entries(title=entry_title, first=True)
+            if not e:
+                print(f"[MattStash] Entry not found: {entry_title}", file=sys.stderr)
+                return None
+            # Simple-secret mode (credstash-like): only password is populated
+            if self._is_simple_secret(e):
+                value = e.password if show_password else ("*****" if e.password else None)
+                return {"name": title, "version": vstr, "value": value}
+            return Credential(
+                credential_name=title,
+                username=e.username,
+                password=e.password,
+                url=e.url,
+                notes=e.notes,
+                tags=list(e.tags or []),
+                show_password=show_password,
+            )
+        # No version specified: scan for versioned entries
+        prefix = f"{title}@"
+        candidates = [e for e in kp.entries if e.title and e.title.startswith(prefix)]
+        if candidates:
+            # Find max version
+            def extract_ver(e):
+                try:
+                    return int(e.title[len(prefix):])
+                except Exception:
+                    return -1
+
+            candidates = [(extract_ver(e), e) for e in candidates if extract_ver(e) >= 0]
+            if not candidates:
+                print(f"[MattStash] No valid versioned entries found for {title}", file=sys.stderr)
+                return None
+            max_ver, e = max(candidates, key=lambda t: t[0])
+            vstr = str(max_ver).zfill(PAD_WIDTH)
+            # Simple-secret mode (credstash-like): only password is populated
+            if self._is_simple_secret(e):
+                value = e.password if show_password else ("*****" if e.password else None)
+                return {"name": title, "version": vstr, "value": value}
+            return Credential(
+                credential_name=title,
+                username=e.username,
+                password=e.password,
+                url=e.url,
+                notes=e.notes,
+                tags=list(e.tags or []),
+                show_password=show_password,
+            )
+        # Fallback to unversioned
         e = kp.find_entries(title=title, first=True)
         if not e:
             print(f"[MattStash] Entry not found: {title}", file=sys.stderr)
             return None
-        # Simple-secret mode (credstash-like): only password is populated
         if self._is_simple_secret(e):
             value = e.password if show_password else ("*****" if e.password else None)
-            return {"name": title, "value": value}
-
+            return {"name": title, "version": None, "value": value}
         return Credential(
             credential_name=title,
             username=e.username,
@@ -242,48 +301,74 @@ class MattStash:
         return creds
 
     def put(
-        self,
-        title: str,
-        *,
-        value: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        url: Optional[str] = None,
-        notes: Optional[str] = None,
-        tags: Optional[list[str]] = None,
+            self,
+            title: str,
+            *,
+            value: Optional[str] = None,
+            username: Optional[str] = None,
+            password: Optional[str] = None,
+            url: Optional[str] = None,
+            notes: Optional[str] = None,
+            tags: Optional[list[str]] = None,
+            version: Optional[int] = None,
+            autoincrement: bool = True,
     ):
         """
         Create or update an entry.
 
         Modes:
           - Simple (credstash-like): only 'value' is provided -> stored in password field.
-            Returns {"name": <title>, "value": <masked or plain per show_password=False default>}.
+            Returns {"name": <title>, "version": <version>, "value": <masked or plain per show_password=False default>}.
           - Full credential: any of username/password/url/notes/tags provided -> stored accordingly.
             Returns a Credential object.
 
-        Note: By default returned secrets are masked. Use show_password=True on get() to reveal.
+        If versioning is used, the entry is stored as <title>@<version> (zero-padded to 12 digits).
         """
         kp = self._ensure_open()
         if not kp:
             print(f"[MattStash] Unable to open KeePass database at {self.path}", file=sys.stderr)
             return None
 
+        # Versioning logic
+        entry_title = title
+        vstr = None
+        if version is not None or autoincrement:
+            # Find max version if needed
+            prefix = f"{title}@"
+            if version is None and autoincrement:
+                # Scan for all <title>@NNNNNNNNNNNN entries, get max
+                candidates = [e for e in kp.entries if e.title and e.title.startswith(prefix)]
+                max_ver = 0
+                for e in candidates:
+                    try:
+                        v = int(e.title[len(prefix):])
+                        if v > max_ver:
+                            max_ver = v
+                    except Exception:
+                        continue
+                new_ver = max_ver + 1
+                vstr = str(new_ver).zfill(PAD_WIDTH)
+            elif version is not None:
+                vstr = str(int(version)).zfill(PAD_WIDTH)
+            else:
+                # Should not happen, fallback
+                vstr = str(1).zfill(PAD_WIDTH)
+            entry_title = f"{title}@{vstr}"
         # Find or create entry
-        e = kp.find_entries(title=title, first=True)
+        e = kp.find_entries(title=entry_title, first=True)
         if e is None:
             grp = kp.root_group
-            # minimal fields to create; pykeepass expects strings, not None
-            e = kp.add_entry(grp, title=title, username="", password="", url="", notes="")
+            e = kp.add_entry(grp, title=entry_title, username="", password="", url="", notes="")
 
         # Decide mode
-        simple_mode = value is not None and username is None and password is None and url is None and notes is None and (tags is None or len(tags) == 0)
+        simple_mode = value is not None and username is None and password is None and url is None and notes is None and (
+                    tags is None or len(tags) == 0)
 
         if simple_mode:
             e.username = ""
             e.url = ""
             e.notes = ""
             e.password = value
-            # do not alter tags for simple writes unless provided
             if tags is not None:
                 try:
                     e.tags = set(tags)
@@ -295,7 +380,7 @@ class MattStash:
                             pass
             kp.save()
             # Return credstash-like structure (masked by default)
-            return {"name": title, "value": "*****" if (value is not None) else None}
+            return {"name": title, "version": vstr, "value": "*****" if (value is not None) else None}
 
         # Full credential mode
         if username is not None:
@@ -310,9 +395,6 @@ class MattStash:
             try:
                 e.tags = set(tags)
             except Exception:
-                # Fallback to add_tag loop if assignment unsupported
-                # (pykeepass supports .tags as a set in recent versions)
-                # Clear existing tags: best-effort (no direct clear API sometimes)
                 for t in list(e.tags or []):
                     try:
                         e.remove_tag(t)
@@ -334,6 +416,24 @@ class MattStash:
             tags=list(e.tags or []),
             show_password=False,
         )
+
+    def list_versions(self, title: str) -> list[str]:
+        """
+        List all versions (zero-padded strings) for a given title, sorted ascending.
+        """
+        kp = self._ensure_open()
+        if not kp:
+            print(f"[MattStash] Unable to open KeePass database at {self.path}", file=sys.stderr)
+            return []
+        prefix = f"{title}@"
+        versions = []
+        for e in kp.entries:
+            if e.title and e.title.startswith(prefix):
+                vstr = e.title[len(prefix):]
+                if vstr.isdigit() and len(vstr) == PAD_WIDTH:
+                    versions.append(vstr)
+        versions.sort()
+        return versions
 
     def delete(self, title: str) -> bool:
         """
@@ -449,11 +549,12 @@ def get(
         path: Optional[str] = None,
         password: Optional[str] = None,
         show_password: bool = False,
+        version: Optional[int] = None,
 ) -> Optional[Credential]:
     global _default_instance
     if path or password or _default_instance is None:
         _default_instance = MattStash(path=path, password=password)
-    return _default_instance.get(title, show_password=show_password)
+    return _default_instance.get(title, show_password=show_password, version=version)
 
 
 def list_creds(
@@ -478,10 +579,13 @@ def put(
         url: Optional[str] = None,
         notes: Optional[str] = None,
         tags: Optional[list[str]] = None,
+        version: Optional[int] = None,
+        autoincrement: bool = True,
 ):
     """
     Create or update an entry. If only 'value' is provided, store it in the password field (credstash-like).
     Otherwise, update fields provided and return a Credential.
+    Supports versioning.
     """
     global _default_instance
     if path or db_password or _default_instance is None:
@@ -494,13 +598,29 @@ def put(
         url=url,
         notes=notes,
         tags=tags,
+        version=version,
+        autoincrement=autoincrement,
     )
 
 
+def list_versions(
+        title: str,
+        path: Optional[str] = None,
+        password: Optional[str] = None,
+) -> list[str]:
+    """
+    List all versions (zero-padded strings) for a given title, sorted ascending.
+    """
+    global _default_instance
+    if path or password or _default_instance is None:
+        _default_instance = MattStash(path=path, password=password)
+    return _default_instance.list_versions(title)
+
+
 def delete(
-    title: str,
-    path: Optional[str] = None,
-    password: Optional[str] = None,
+        title: str,
+        path: Optional[str] = None,
+        password: Optional[str] = None,
 ) -> bool:
     """
     Delete an entry by title. Returns True if deleted, False otherwise.
@@ -571,7 +691,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # keys
     p_keys = subparsers.add_parser("keys", help="List entry titles only")
-    p_keys.add_argument("--show-password", action="store_true", help="Show passwords in output")  # For symmetry, but not used
+    p_keys.add_argument("--show-password", action="store_true",
+                        help="Show passwords in output")  # For symmetry, but not used
     p_keys.add_argument("--json", action="store_true", help="Output JSON")
 
     # get
@@ -596,6 +717,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     # delete
     p_del = subparsers.add_parser("delete", help="Delete an entry by title")
     p_del.add_argument("title", help="KeePass entry title to delete")
+
+    # versions
+    p_versions = subparsers.add_parser("versions", help="List versions for a key")
+    p_versions.add_argument("title", help="Base key title")
+    p_versions.add_argument("--json", action="store_true", help="Output JSON")
 
     # s3-test
     p_s3 = subparsers.add_parser("s3-test", help="Create an S3 client from a credential and optionally check a bucket")
@@ -704,6 +830,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             return 2
 
+    if args.cmd == "versions":
+        vers = list_versions(args.title, path=args.path, password=args.password)
+        if args.json:
+            print(json.dumps(vers, indent=2))
+        else:
+            for v in vers:
+                print(v)
+        return 0
+
     if args.cmd == "s3-test":
         try:
             client = get_s3_client(
@@ -742,4 +877,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

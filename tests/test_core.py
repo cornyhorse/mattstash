@@ -247,6 +247,63 @@ def test_delete_api_removes_entry(temp_db: Path):
     assert len(found_after) == 0
 
 
+def test_put_get_versions(temp_db: Path):
+    ms = MattStash(path=str(temp_db))
+    # Put two versions of the same key
+    ms.put("vkey", value="secret1")
+    ms.put("vkey", value="secret2")
+
+    versions = ms.list_versions("vkey")
+    # Should return both versions in order
+    assert len(versions) >= 2
+    # The version numbers are padded strings, check that both versions are in the list
+    padded_versions = [v['version'] if isinstance(v, dict) and 'version' in v else str(v) for v in versions]
+    assert any(v.endswith("1") for v in padded_versions)
+    assert any(v.endswith("2") for v in padded_versions)
+
+    # Latest version is the default get
+    latest = ms.get("vkey", show_password=True)
+    assert latest["value"] == "secret2"
+
+    # Get version 1 explicitly
+    v1 = ms.get("vkey", version=1, show_password=True)
+    assert v1["value"] == "secret1"
+
+
+@pytest.mark.parametrize("as_module", [True, False])
+def test_cli_versions_lists_versions(temp_db: Path, as_module: bool):
+    ms = MattStash(path=str(temp_db))
+    # Create multiple versions via API
+    ms.put("vkey", value="secret1")
+    ms.put("vkey", value="secret2")
+
+    # Run CLI versions command normal mode
+    if as_module:
+        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "versions", "vkey"]
+    else:
+        cmd = ["mattstash", "--db", str(temp_db), "versions", "vkey"]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    # Check that both padded version strings appear in stdout
+    # Versions are padded numbers, e.g. "0000000001", "0000000002"
+    assert "0000000001" in proc.stdout
+    assert "0000000002" in proc.stdout
+
+    # Run CLI versions command with JSON output
+    if as_module:
+        cmd_json = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "versions", "vkey", "--json"]
+    else:
+        cmd_json = ["mattstash", "--db", str(temp_db), "versions", "vkey", "--json"]
+
+    proc = subprocess.run(cmd_json, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    versions_list = json.loads(proc.stdout)
+    # Check both padded version strings in JSON list
+    assert "0000000001" in versions_list
+    assert "0000000002" in versions_list
+
+
 @pytest.mark.parametrize("as_module", [True, False])
 def test_cli_delete_removes_entry(temp_db: Path, as_module: bool):
     ms = MattStash(path=str(temp_db))
