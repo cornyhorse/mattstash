@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mattstash"
+version = "0.1.0"
+description = "Tiny KeePass-powered secrets accessor with optional boto3 S3 client helper."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "Matthew Kingsbury" }]
+keywords = ["keepass", "secrets", "credentials", "boto3", "s3"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
+    "Intended Audience :: Developers",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+# Hard, minimal runtime deps for the core
+dependencies = [
+    "pykeepass>=4.1,<5.0",
+]
+
+# Optional/extras: let users opt into boto3 only if they need S3
+[project.optional-dependencies]
+s3 = ["boto3>=1.28,<2.0", "botocore>=1.31,<2.0"]
+
+[project.urls]
+Homepage = "https://github.com/your-org-or-user/mattstash"
+Issues = "https://github.com/your-org-or-user/mattstash/issues"
+
+# Optional: console script (only if you want a CLI; otherwise delete this)
+[project.scripts]
+mattstash = "mattstash.__main__:main"
