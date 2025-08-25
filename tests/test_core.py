@@ -195,3 +195,33 @@ def test_get_s3_client_builds_without_network(temp_db: Path):
     client = ms.get_s3_client("objectstore", region="us-east-1", addressing="path", verbose=False)
     # botocore client should have a meta attribute
     assert hasattr(client, "meta")
+
+
+@pytest.mark.parametrize("as_module", [True, False])
+def test_cli_keys_lists_titles(temp_db: Path, as_module: bool):
+    ms = MattStash(path=str(temp_db))
+    kp = PyKeePass(str(temp_db), password=ms.password)
+    grp = kp.root_group
+    titles = ["KeyOne", "KeyTwo", "KeyThree"]
+    for title in titles:
+        kp.add_entry(grp, title=title, username="user", password="pass")
+    kp.save()
+
+    if as_module:
+        base_cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "keys"]
+    else:
+        base_cmd = ["mattstash", "--db", str(temp_db), "keys"]
+
+    # Run keys command and check output
+    proc = subprocess.run(base_cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    for title in titles:
+        assert title in proc.stdout
+
+    # Run keys command with JSON output and check keys list
+    json_cmd = base_cmd + ["--json"]
+    proc = subprocess.run(json_cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    keys_list = json.loads(proc.stdout)
+    for title in titles:
+        assert title in keys_list

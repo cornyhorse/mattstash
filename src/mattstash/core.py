@@ -534,6 +534,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_list.add_argument("--show-password", action="store_true", help="Show passwords in output")
     p_list.add_argument("--json", action="store_true", help="Output JSON")
 
+    # keys
+    p_keys = subparsers.add_parser("keys", help="List entry titles only")
+    p_keys.add_argument("--show-password", action="store_true", help="Show passwords in output")  # For symmetry, but not used
+    p_keys.add_argument("--json", action="store_true", help="Output JSON")
+
     # get
     p_get = subparsers.add_parser("get", help="Get a single entry by title")
     p_get.add_argument("title", help="KeePass entry title")
@@ -612,6 +617,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             for c in creds:
                 pwd_disp = c.password if args.show_password else ("*****" if c.password else None)
                 print(f"- {c.credential_name} user={c.username!r} url={c.url!r} pwd={pwd_disp!r} tags={c.tags}")
+        return 0
+
+    if args.cmd == "keys":
+        creds = list_creds(path=args.path, password=args.password, show_password=args.show_password)
+        titles = [c.credential_name for c in creds]
+        if args.json:
+            print(json.dumps(titles, indent=2))
+        else:
+            for t in titles:
+                print(t)
         return 0
 
     if args.cmd == "get":
