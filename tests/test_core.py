@@ -225,3 +225,48 @@ def test_cli_keys_lists_titles(temp_db: Path, as_module: bool):
     keys_list = json.loads(proc.stdout)
     for title in titles:
         assert title in keys_list
+
+
+def test_delete_api_removes_entry(temp_db: Path):
+    ms = MattStash(path=str(temp_db))
+    kp = PyKeePass(str(temp_db), password=ms.password)
+    grp = kp.root_group
+    entry = kp.add_entry(grp, title="DeleteMe", username="user", password="pass")
+    kp.save()
+
+    # Confirm entry exists
+    found = ms.get("DeleteMe")
+    assert found is not None
+
+    # Delete entry
+    ms.delete("DeleteMe")
+
+    # Reload DB to confirm deletion
+    kp = PyKeePass(str(temp_db), password=ms.password)
+    found_after = [e for e in kp.entries if e.title == "DeleteMe"]
+    assert len(found_after) == 0
+
+
+@pytest.mark.parametrize("as_module", [True, False])
+def test_cli_delete_removes_entry(temp_db: Path, as_module: bool):
+    ms = MattStash(path=str(temp_db))
+    kp = PyKeePass(str(temp_db), password=ms.password)
+    grp = kp.root_group
+    kp.add_entry(grp, title="ToDelete", username="user", password="pass")
+    kp.save()
+
+    if as_module:
+        delete_cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "delete", "ToDelete"]
+        list_cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "list"]
+    else:
+        delete_cmd = ["mattstash", "--db", str(temp_db), "delete", "ToDelete"]
+        list_cmd = ["mattstash", "--db", str(temp_db), "list"]
+
+    # Run delete command
+    proc = subprocess.run(delete_cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+    # Run list command to confirm deletion
+    proc = subprocess.run(list_cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "ToDelete" not in proc.stdout

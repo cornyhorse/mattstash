@@ -34,6 +34,7 @@ __all__ = [
     "list_creds",  # renamed to avoid masking builtin
     "get_s3_client",
     "put",
+    "delete",
 ]
 
 DEFAULT_KDBX_PATH = os.path.expanduser("~/.config/mattstash/mattstash.kdbx")
@@ -334,6 +335,26 @@ class MattStash:
             show_password=False,
         )
 
+    def delete(self, title: str) -> bool:
+        """
+        Delete an entry by title. Returns True if deleted, False otherwise.
+        """
+        kp = self._ensure_open()
+        if not kp:
+            print(f"[MattStash] Unable to open KeePass database at {self.path}", file=sys.stderr)
+            return False
+        e = kp.find_entries(title=title, first=True)
+        if not e:
+            print(f"[MattStash] Entry not found: {title}", file=sys.stderr)
+            return False
+        try:
+            kp.delete_entry(e)
+            kp.save()
+            return True
+        except Exception as ex:
+            print(f"[MattStash] Failed to delete entry '{title}': {ex}", file=sys.stderr)
+            return False
+
     def hydrate_env(self, mapping: Dict[str, str]) -> None:
         """
         For each mapping 'Title:FIELD' -> ENVVAR, if ENVVAR is unset, read from KeePass.
@@ -476,6 +497,20 @@ def put(
     )
 
 
+def delete(
+    title: str,
+    path: Optional[str] = None,
+    password: Optional[str] = None,
+) -> bool:
+    """
+    Delete an entry by title. Returns True if deleted, False otherwise.
+    """
+    global _default_instance
+    if path or password or _default_instance is None:
+        _default_instance = MattStash(path=path, password=password)
+    return _default_instance.delete(title)
+
+
 def get_s3_client(
         title: str,
         *,
@@ -557,6 +592,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_put.add_argument("--notes")
     p_put.add_argument("--tag", action="append", dest="tags", help="Repeatable; adds a tag")
     p_put.add_argument("--json", action="store_true", help="Output JSON")
+
+    # delete
+    p_del = subparsers.add_parser("delete", help="Delete an entry by title")
+    p_del.add_argument("title", help="KeePass entry title to delete")
 
     # s3-test
     p_s3 = subparsers.add_parser("s3-test", help="Create an S3 client from a credential and optionally check a bucket")
@@ -657,6 +696,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                         print(f"    {line}")
         return 0
 
+    if args.cmd == "delete":
+        ok = delete(args.title, path=args.path, password=args.password)
+        if ok:
+            print(f"{args.title}: deleted")
+            return 0
+        else:
+            return 2
+
     if args.cmd == "s3-test":
         try:
             client = get_s3_client(
@@ -695,3 +742,4 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
