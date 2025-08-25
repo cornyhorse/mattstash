@@ -142,37 +142,37 @@ class MattStash:
                 try:
                     with open(sidecar, "rb") as f:
                         pw = f.read().decode().strip()
-                        print(f"[MattStash] Loaded password from sidecar file {sidecar}")
+                        print(f"[MattStash] Loaded password from sidecar file {sidecar}", file=sys.stderr)
                         return pw
                 except Exception:
-                    print(f"[MattStash] Failed to read sidecar password file {sidecar}")
+                    print(f"[MattStash] Failed to read sidecar password file {sidecar}", file=sys.stderr)
             else:
-                print(f"[MattStash] Sidecar password file not found at {sidecar}")
+                print(f"[MattStash] Sidecar password file not found at {sidecar}", file=sys.stderr)
         except Exception:
             # Shouldn't really happen, but just in case
             pass
         # 2) Environment variable
         env_pw = os.getenv("KDBX_PASSWORD")
         if env_pw is not None:
-            print("[MattStash] Loaded password from environment variable KDBX_PASSWORD")
+            print("[MattStash] Loaded password from environment variable KDBX_PASSWORD", file=sys.stderr)
         else:
-            print("[MattStash] Environment variable KDBX_PASSWORD not set")
+            print("[MattStash] Environment variable KDBX_PASSWORD not set", file=sys.stderr)
         return env_pw
 
     def _ensure_open(self) -> Optional[PyKeePass]:
         if self._kp is not None:
             return self._kp
         if not self.path or not os.path.exists(self.path):
-            print(f"[MattStash] KeePass DB file not found at {self.path}")
+            print(f"[MattStash] KeePass DB file not found at {self.path}", file=sys.stderr)
             return None
         if not self.password:
-            print("[MattStash] No password provided (sidecar file or KDBX_PASSWORD missing)")
+            print("[MattStash] No password provided (sidecar file or KDBX_PASSWORD missing)", file=sys.stderr)
             return None
         try:
             self._kp = PyKeePass(self.path, password=self.password)
             return self._kp
         except Exception:
-            print(f"[MattStash] Found DB at {self.path} and a password, but failed to open (likely wrong key)")
+            print(f"[MattStash] Found DB at {self.path} and a password, but failed to open (likely wrong key)", file=sys.stderr)
             return None
 
     # ---- Public API -----------------------------------------------------
@@ -184,11 +184,11 @@ class MattStash:
         """
         kp = self._ensure_open()
         if not kp:
-            print(f"[MattStash] Unable to open KeePass database at {self.path}")
+            print(f"[MattStash] Unable to open KeePass database at {self.path}", file=sys.stderr)
             return None
         e = kp.find_entries(title=title, first=True)
         if not e:
-            print(f"[MattStash] Entry not found: {title}")
+            print(f"[MattStash] Entry not found: {title}", file=sys.stderr)
             return None
         return Credential(
             credential_name=title,
@@ -206,7 +206,7 @@ class MattStash:
         """
         kp = self._ensure_open()
         if not kp:
-            print(f"[MattStash] Unable to open KeePass database at {self.path}")
+            print(f"[MattStash] Unable to open KeePass database at {self.path}", file=sys.stderr)
             return []
         creds = []
         for e in kp.entries:
