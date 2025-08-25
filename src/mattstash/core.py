@@ -51,12 +51,13 @@ PAD_WIDTH = 10
 class Credential:
     """
     Container for a KeePass entry's commonly used fields.
+    The 'notes' field is used for comments/notes associated with the credential.
     """
     credential_name: str
     username: Optional[str]
     password: Optional[str]
     url: Optional[str]
-    notes: Optional[str]
+    notes: Optional[str]  # Used for comments/notes
     tags: list[str]
     show_password: bool = field(default=False, repr=False)
 
@@ -185,15 +186,15 @@ class MattStash:
     def _is_simple_secret(self, e) -> bool:
         """
         A 'simple secret' mimics credstash semantics: only the password field is used.
-        Consider it simple if username, url, notes are empty/None and password is non-empty.
-        Tags are ignored for this determination.
+        Consider it simple if username and url are empty/None and password is non-empty.
+        Notes/comments are allowed and do not change this classification. Tags are ignored.
         """
-
         def _empty(v):
             return v is None or (isinstance(v, str) and v.strip() == "")
 
         try:
-            return (not _empty(e.password)) and _empty(e.username) and _empty(e.url) and _empty(e.notes)
+            # Treat entries with only password set (regardless of notes) as simple secrets
+            return (not _empty(e.password)) and _empty(e.username) and _empty(e.url)
         except Exception:
             return False
 
@@ -221,7 +222,7 @@ class MattStash:
             # Simple-secret mode (credstash-like): only password is populated
             if self._is_simple_secret(e):
                 value = e.password if show_password else ("*****" if e.password else None)
-                return {"name": title, "version": vstr, "value": value}
+                return {"name": title, "version": vstr, "value": value, "notes": e.notes if e.notes else None}
             return Credential(
                 credential_name=title,
                 username=e.username,
@@ -251,7 +252,7 @@ class MattStash:
             # Simple-secret mode (credstash-like): only password is populated
             if self._is_simple_secret(e):
                 value = e.password if show_password else ("*****" if e.password else None)
-                return {"name": title, "version": vstr, "value": value}
+                return {"name": title, "version": vstr, "value": value, "notes": e.notes if e.notes else None}
             return Credential(
                 credential_name=title,
                 username=e.username,
@@ -268,7 +269,7 @@ class MattStash:
             return None
         if self._is_simple_secret(e):
             value = e.password if show_password else ("*****" if e.password else None)
-            return {"name": title, "version": None, "value": value}
+            return {"name": title, "version": None, "value": value, "notes": e.notes if e.notes else None}
         return Credential(
             credential_name=title,
             username=e.username,
@@ -361,13 +362,15 @@ class MattStash:
             e = kp.add_entry(grp, title=entry_title, username="", password="", url="", notes="")
 
         # Decide mode
-        simple_mode = value is not None and username is None and password is None and url is None and notes is None and (
+        simple_mode = value is not None and username is None and password is None and url is None and (
                     tags is None or len(tags) == 0)
 
         if simple_mode:
             e.username = ""
             e.url = ""
-            e.notes = ""
+            # Only set notes if provided, otherwise leave as is (don't wipe)
+            if notes is not None:
+                e.notes = notes
             e.password = value
             if tags is not None:
                 try:
@@ -379,8 +382,13 @@ class MattStash:
                         except Exception:
                             pass
             kp.save()
-            # Return credstash-like structure (masked by default)
-            return {"name": title, "version": vstr, "value": "*****" if (value is not None) else None}
+            # Return credstash-like structure (masked by default), include notes
+            return {
+                "name": title,
+                "version": vstr,
+                "value": "*****" if (value is not None) else None,
+                "notes": e.notes if e.notes else None,
+            }
 
         # Full credential mode
         if username is not None:
@@ -578,6 +586,7 @@ def put(
         password: Optional[str] = None,
         url: Optional[str] = None,
         notes: Optional[str] = None,
+        comment: Optional[str] = None,
         tags: Optional[list[str]] = None,
         version: Optional[int] = None,
         autoincrement: bool = True,
@@ -586,17 +595,20 @@ def put(
     Create or update an entry. If only 'value' is provided, store it in the password field (credstash-like).
     Otherwise, update fields provided and return a Credential.
     Supports versioning.
+    The 'notes' or 'comment' parameter can be used to set notes/comments for the credential.
     """
     global _default_instance
     if path or db_password or _default_instance is None:
         _default_instance = MattStash(path=path, password=db_password)
+    # Prefer notes if provided, else comment, else None
+    notes_val = notes if notes is not None else comment
     return _default_instance.put(
         title,
         value=value,
         username=username,
         password=password,
         url=url,
-        notes=notes,
+        notes=notes_val,
         tags=tags,
         version=version,
         autoincrement=autoincrement,
@@ -710,7 +722,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_put.add_argument("--username")
     p_put.add_argument("--password")
     p_put.add_argument("--url")
-    p_put.add_argument("--notes")
+    p_put.add_argument("--notes", help="Notes or comments for this entry")
+    p_put.add_argument("--comment", help="Alias for --notes (notes/comments for this entry)")
     p_put.add_argument("--tag", action="append", dest="tags", help="Repeatable; adds a tag")
     p_put.add_argument("--json", action="store_true", help="Output JSON")
 
@@ -743,6 +756,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 path=args.path,
                 db_password=args.password,
                 value=args.value,
+                notes=args.notes,
+                comment=args.comment,
                 tags=args.tags,
             )
             if args.json:
@@ -762,6 +777,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             password=args.password,
             url=args.url,
             notes=args.notes,
+            comment=args.comment,
             tags=args.tags,
         )
         if args.json:
@@ -781,7 +797,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             for c in creds:
                 pwd_disp = c.password if args.show_password else ("*****" if c.password else None)
-                print(f"- {c.credential_name} user={c.username!r} url={c.url!r} pwd={pwd_disp!r} tags={c.tags}")
+                notes_snippet = ""
+                if c.notes and c.notes.strip():
+                    snippet = c.notes.strip().splitlines()[0]
+                    notes_snippet = f" notes={snippet!r}"
+                print(f"- {c.credential_name} user={c.username!r} url={c.url!r} pwd={pwd_disp!r} tags={c.tags}{notes_snippet}")
         return 0
 
     if args.cmd == "keys":
@@ -817,7 +837,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print(f"  url:      {c.url}")
                 print(f"  tags:     {', '.join(c.tags) if c.tags else ''}")
                 if c.notes:
-                    print("  notes:")
+                    print("  notes/comments:")
                     for line in (c.notes or '').splitlines():
                         print(f"    {line}")
         return 0

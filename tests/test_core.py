@@ -327,3 +327,31 @@ def test_cli_delete_removes_entry(temp_db: Path, as_module: bool):
     proc = subprocess.run(list_cmd, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert "ToDelete" not in proc.stdout
+
+
+@pytest.mark.parametrize("as_module", [True, False])
+def test_cli_put_with_comment(temp_db: Path, as_module: bool):
+    if as_module:
+        cmd = [
+            sys.executable, "-m", "mattstash.core", "--db", str(temp_db),
+            "put", "with-comment", "--value", "pw123", "--comment", "this is a note"
+        ]
+    else:
+        cmd = ["mattstash", "--db", str(temp_db), "put", "with-comment", "--value", "pw123", "--comment",
+               "this is a note"]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+    # Now fetch it back and ensure the comment is visible
+    if as_module:
+        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "get", "with-comment", "--json"]
+    else:
+        cmd = ["mattstash", "--db", str(temp_db), "get", "with-comment", "--json"]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["name"] == "with-comment"
+    assert payload["value"] == "*****"
+    assert payload.get("notes") == "this is a note"
