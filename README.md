@@ -76,10 +76,13 @@ mattstash keys
 mattstash versions "My Service"
 mattstash versions "My Service" --json
 
-# Build an S3 client from a KeePass entry and test connectivity
+# Use `get_s3_client(...)` to build a ready-to-use boto3 S3 client from a KeePass entry
 mattstash s3-test "Hetzner S3" --bucket my-bucket
 mattstash s3-test "Hetzner S3" --addressing virtual --region us-east-1
 mattstash s3-test "Hetzner S3" --quiet   # no output, exit code only
+
+# Build a database connection URL from a KeePass entry
+mattstash db-url "My Database" --database mydb
 ```
 
 ### Adding S3 credentials
@@ -99,25 +102,52 @@ mattstash put "Hetzner S3" --username KEY --password SECRET --url https://endpoi
 
 The `s3-test` command expects the AWS-style key, secret, and endpoint to be stored in these fields in the KeePass entry.
 
-You can also use the Python API to fetch S3 credentials and create a boto3 client, for example:
+You can also use the Python API to fetch S3 credentials and create a boto3 client using the helper function `get_s3_client`, which returns a ready-to-use authenticated boto3 S3 client.
+
+Example using the module-level helper:
 
 ```python
-import boto3
+from mattstash.s3 import get_s3_client
+from mattstash.core import MattStash
+
+client = get_s3_client("Hetzner S3")
+# Upload a file
+client.upload_file('localfile.txt', 'my-bucket', 'remote/path/localfile.txt')
+```
+
+Or using the instance method:
+
+```python
 from mattstash.core import MattStash
 
 stash = MattStash()
-entry = stash.get("Hetzner S3")
-
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=entry['username'],
-    aws_secret_access_key=entry['password'],
-    endpoint_url=entry['url']
-)
-
+client = stash.get_s3_client("Hetzner S3")
 # Upload a file
-s3_client.upload_file('localfile.txt', 'my-bucket', 'remote/path/localfile.txt')
+client.upload_file('localfile.txt', 'my-bucket', 'remote/path/localfile.txt')
 ```
+
+### Adding database credentials
+
+To add a credential for database connectivity, use the `put` command with these fields:
+
+- `--username` for the database user
+- `--password` for the database password
+- `--url` for the database host URL (must include port)
+- `--notes` for any additional information
+
+Example:
+
+```bash
+mattstash put "My Database" --username dbuser --password dbpass --url 127.0.0.1:5432 --notes "Postgres DB"
+```
+
+You can then build a Postgres/SQLAlchemy connection URL using the `db-url` command:
+
+```bash
+mattstash db-url "My Database" --database mydb
+```
+
+The tool validates the URL format and requires that the `url` field includes a port number.
 
 Global options:
 
@@ -134,6 +164,7 @@ Subcommand options:
 - `delete`: (no options)
 - `versions`: `--json`
 - `s3-test`: `--region`, `--addressing {path,virtual}`, `--signature-version`, `--retries-max-attempts`, `--bucket`, `--quiet`
+- `db-url`: `--database` (required; database name), `--mask-password` (optional, default true)
 
 ### Exit codes
 
@@ -165,6 +196,9 @@ mattstash versions "Hetzner S3"
 
 # S3 test against a Hetzner/MinIO-style endpoint stored in KeePass entry "objectstore"
 mattstash s3-test "objectstore" --bucket cornyhorse-data
+
+# Build a Postgres connection URL from a KeePass entry
+mattstash db-url "My Database" --database mydb
 ```
 
 ## Python API usage
@@ -209,17 +243,37 @@ versions = stash.versions("My Service")
 for version in versions:
     print(version)
 
-# Create an S3 client from a KeePass entry
-import boto3
+# Use `get_s3_client(...)` to create a ready-to-use boto3 S3 client from a KeePass entry
 
-entry = stash.get("Hetzner S3")
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=entry['username'],
-    aws_secret_access_key=entry['password'],
-    endpoint_url=entry['url']
-)
+from mattstash.s3 import get_s3_client
 
+client = get_s3_client("Hetzner S3")
 # Example: upload a file
-s3_client.upload_file('localfile.txt', 'my-bucket', 'remote/path/localfile.txt')
+client.upload_file('localfile.txt', 'my-bucket', 'remote/path/localfile.txt')
+
+# Or using the instance method
+client2 = stash.get_s3_client("Hetzner S3")
+client2.upload_file('localfile.txt', 'my-bucket', 'remote/path/localfile.txt')
 ```
+
+### Database connection URL support
+
+You can add database credentials similarly using `--username`, `--password`, `--url` (including port), and `--notes` fields:
+
+```python
+stash.put("My Database", username="dbuser", password="dbpass", url="127.0.0.1:5432", notes="Postgres DB")
+```
+
+To build a full SQLAlchemy/Postgres connection URL, use the `get_db_url` method:
+
+```python
+# Build a connection URL with password masked (default)
+url = stash.get_db_url("My Database", database="mydb")
+print(url)  # e.g. postgresql://dbuser:****@127.0.0.1:5432/mydb
+
+# Build a connection URL with password visible
+url_unmasked = stash.get_db_url("My Database", database="mydb", mask_password=False)
+print(url_unmasked)  # e.g. postgresql://dbuser:dbpass@127.0.0.1:5432/mydb
+```
+
+Note that the tool validates that the `url` field includes a port and that the resulting URL is valid for your database driver.

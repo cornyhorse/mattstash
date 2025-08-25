@@ -5,20 +5,30 @@ build-backend = "hatchling.build"
 [project]
 name = "mattstash"
 version = "0.1.0"
-description = "Tiny KeePass-powered secrets accessor with optional boto3 S3 client helper."
-readme = "README.md"
+description = "Tiny KeePass-powered secrets accessor with optional S3 helper and Postgres URL builder."
+readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
 authors = [{ name = "Matthew Kingsbury" }]
-keywords = ["keepass", "secrets", "credentials", "boto3", "s3"]
+keywords = [
+    "keepass", "secrets", "credentials-store", "password-manager",
+    "cli", "s3", "postgres", "connection-string"
+]
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3 :: Only",
-    "License :: OSI Approved :: MIT License",
-    "Typing :: Typed",
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
     "Topic :: Security :: Cryptography",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
 ]
 
 # Hard, minimal runtime deps for the core
@@ -31,8 +41,9 @@ dependencies = [
 s3 = ["boto3>=1.28,<2.0", "botocore>=1.31,<2.0"]
 
 [project.urls]
-Homepage = "https://github.com/your-org-or-user/mattstash"
-Issues = "https://github.com/your-org-or-user/mattstash/issues"
+Homepage = "https://github.com/cornyhorse/mattstash"
+Repository = "https://github.com/cornyhorse/mattstash"
+Issues = "https://github.com/cornyhorse/mattstash/issues"
 
 [project.scripts]
 mattstash = "mattstash.core:main"
