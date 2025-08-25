@@ -44,6 +44,7 @@ s3 = ["boto3>=1.28,<2.0", "botocore>=1.31,<2.0"]
 Homepage = "https://github.com/cornyhorse/mattstash"
 Repository = "https://github.com/cornyhorse/mattstash"
 Issues = "https://github.com/cornyhorse/mattstash/issues"
+Changelog = "https://github.com/cornyhorse/mattstash/releases"
 
 [project.scripts]
 mattstash = "mattstash.core:main"
