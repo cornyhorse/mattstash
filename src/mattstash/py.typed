@@ -1,0 +1,5 @@
+def test_imports():
+    import mattstash
+    assert hasattr(mattstash, "MattStash")
+    assert hasattr(mattstash, "get")
+    assert hasattr(mattstash, "list_creds")
