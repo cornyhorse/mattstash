@@ -7,11 +7,12 @@ import sys
 import json
 from pathlib import Path
 from unittest.mock import patch, Mock
-from mattstash.core import main, _serialize_credential, Credential
+from mattstash.core import main
+from mattstash.credential import serialize_credential, Credential
 
 
 def test_serialize_credential_with_password():
-    """Test _serialize_credential with show_password=True"""
+    """Test serialize_credential with show_password=True"""
     cred = Credential(
         credential_name="test",
         username="user",
@@ -21,12 +22,12 @@ def test_serialize_credential_with_password():
         tags=["tag1"]
     )
 
-    result = _serialize_credential(cred, show_password=True)
+    result = serialize_credential(cred, show_password=True)
     assert result["password"] == "secret"
 
 
 def test_serialize_credential_without_password():
-    """Test _serialize_credential with show_password=False"""
+    """Test serialize_credential with show_password=False"""
     cred = Credential(
         credential_name="test",
         username="user",
@@ -36,7 +37,7 @@ def test_serialize_credential_without_password():
         tags=["tag1"]
     )
 
-    result = _serialize_credential(cred, show_password=False)
+    result = serialize_credential(cred, show_password=False)
     assert result["password"] == "*****"
 
 
