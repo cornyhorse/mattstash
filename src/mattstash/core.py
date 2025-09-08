@@ -10,10 +10,19 @@ import os
 import sys
 import argparse
 import json
+import logging
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from pykeepass import PyKeePass
 from urllib.parse import urlparse
+
+from .config import config
+from .exceptions import (
+    MattStashError, DatabaseNotFoundError, DatabaseAccessError,
+    CredentialNotFoundError, InvalidCredentialError
+)
+from .credential_store import CredentialStore
+from .version_manager import VersionManager
 
 try:
     # module-level helper for creating new databases
@@ -21,6 +30,7 @@ try:
 except Exception:  # pragma: no cover
     _kp_create_database = None
 
+logger = logging.getLogger(__name__)
 
 def _ensure_scheme(u: Optional[str]) -> Optional[str]:
     if not u:
@@ -40,14 +50,12 @@ __all__ = [
     "get_db_url",
 ]
 
-DEFAULT_KDBX_PATH = os.path.expanduser("~/.config/mattstash/mattstash.kdbx")
+# For backward compatibility
+DEFAULT_KDBX_PATH = config.default_db_path
+DEFAULT_KDBX_SIDECAR_BASENAME = config.sidecar_basename
+PAD_WIDTH = config.version_pad_width
 
-# Sidecar plaintext file name stored next to the KDBX DB
-DEFAULT_KDBX_SIDECAR_BASENAME = ".mattstash.txt"
-
-# Zero-padding width for version strings
-PAD_WIDTH = 10
-
+CredentialResult = Union['Credential', dict[str, Any]]
 
 @dataclass
 class Credential:

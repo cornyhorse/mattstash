@@ -13,6 +13,8 @@ In plain English:
 
 [`boto3`](https://github.com/boto/boto3), which is used for optional S3 client support, is licensed under the Apache 2.0 license, which is permissive and fully compatible with MIT.
 
+Additionally, `mattstash` supports optional database-related dependencies for building connection URLs. These include `sqlalchemy` (MIT License) and `psycopg` (LGPL). These packages are not required for the core functionality of `mattstash` and are only needed if you use the database helper features.
+
 ## CLI
 
 After installation, a `mattstash` command is available.
