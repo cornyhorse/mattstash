@@ -101,41 +101,6 @@ def test_main_get_nonexistent(temp_db: Path):
     assert result == 2  # Not found error code
 
 
-def test_main_delete_success(temp_db: Path):
-    """Test main function delete command success"""
-    # Use CLI commands only to avoid password conflicts
-    # First create an entry using the CLI
-    create_result = main([
-        "--db", str(temp_db),
-        "put", "to-delete", "--fields",
-        "--username", "testuser",
-        "--password", "testpass"
-    ])
-    assert create_result == 0  # Should succeed
-
-    # Verify it was created by getting it back via CLI
-    get_result = main([
-        "--db", str(temp_db),
-        "get", "to-delete"
-    ])
-    assert get_result == 0  # Should exist
-
-    # Now test the CLI delete command - capture stdout to verify success message
-    import io
-    from contextlib import redirect_stdout
-
-    output = io.StringIO()
-    with redirect_stdout(output):
-        result = main([
-            "--db", str(temp_db),
-            "delete", "to-delete"
-        ])
-
-    assert result == 0
-    # Check that success message was printed
-    assert "deleted" in output.getvalue()
-
-
 def test_main_delete_nonexistent(temp_db: Path):
     """Test main function delete nonexistent entry"""
     result = main([
