@@ -7,8 +7,8 @@ import sys
 import json
 from pathlib import Path
 from unittest.mock import patch, Mock
-from mattstash.core import main
-from mattstash.credential import serialize_credential, Credential
+from mattstash.cli import main
+from mattstash.models.credential import serialize_credential, Credential
 
 
 def test_serialize_credential_with_password():

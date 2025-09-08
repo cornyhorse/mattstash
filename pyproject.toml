@@ -47,4 +47,4 @@ Issues = "https://github.com/cornyhorse/mattstash/issues"
 Changelog = "https://github.com/cornyhorse/mattstash/releases"
 
 [project.scripts]
-mattstash = "mattstash.core:main"
+mattstash = "mattstash.cli.main:main"

@@ -4,13 +4,14 @@ mattstash.module_functions
 Module-level convenience functions for MattStash operations.
 """
 
-from typing import Optional, Union, Dict, Any, list
-from .core import MattStash, Credential
+from typing import Optional, Union, Dict, Any, List
+from .core.mattstash import MattStash
+from .models.credential import Credential
 
 # Module-level convenience: mattstash.get("CREDENTIAL NAME")
 _default_instance: Optional[MattStash] = None
 
-CredentialResult = Union[Credential, dict[str, Any]]
+CredentialResult = Union[Credential, Dict[str, Any]]
 
 
 def get_db_url(
@@ -54,7 +55,7 @@ def list_creds(
         path: Optional[str] = None,
         password: Optional[str] = None,
         show_password: bool = False,
-) -> list[Credential]:
+) -> List[Credential]:
     global _default_instance
     if path or password or _default_instance is None:
         _default_instance = MattStash(path=path, password=password)
@@ -72,7 +73,7 @@ def put(
         url: Optional[str] = None,
         notes: Optional[str] = None,
         comment: Optional[str] = None,
-        tags: Optional[list[str]] = None,
+        tags: Optional[List[str]] = None,
         version: Optional[int] = None,
         autoincrement: bool = True,
 ):
@@ -104,7 +105,7 @@ def list_versions(
         title: str,
         path: Optional[str] = None,
         password: Optional[str] = None,
-) -> list[str]:
+) -> List[str]:
     """
     List all versions (zero-padded strings) for a given title, sorted ascending.
     """

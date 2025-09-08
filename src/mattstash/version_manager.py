@@ -8,7 +8,7 @@ import re
 from typing import Optional, Tuple, List
 from pykeepass.entry import Entry
 
-from .config import config
+from .models.config import config
 
 
 class VersionManager:

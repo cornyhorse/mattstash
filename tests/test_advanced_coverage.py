@@ -7,7 +7,7 @@ import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, Mock, MagicMock
-from mattstash.core import MattStash, get_db_url, get_s3_client
+from mattstash import MattStash, get_db_url, get_s3_client
 
 
 def test_bootstrap_functionality(tmp_path: Path):
@@ -32,7 +32,7 @@ def test_bootstrap_skipped_when_db_exists(tmp_path: Path):
     db_path = tmp_path / "existing_db.kdbx"
     db_path.write_text("existing db content")
     
-    with patch('mattstash.core._kp_create_database') as mock_create:
+    with patch('mattstash.core.bootstrap._kp_create_database') as mock_create:
         ms = MattStash(path=str(db_path))
         # Should not attempt to create since DB exists
         mock_create.assert_not_called()
@@ -44,7 +44,7 @@ def test_bootstrap_skipped_when_sidecar_exists(tmp_path: Path):
     sidecar_path = db_path.parent / ".mattstash.txt"
     sidecar_path.write_text("existing password")
     
-    with patch('mattstash.core._kp_create_database') as mock_create:
+    with patch('mattstash.core.bootstrap._kp_create_database') as mock_create:
         ms = MattStash(path=str(db_path))
         # Should not attempt to create since sidecar exists
         mock_create.assert_not_called()
@@ -54,7 +54,7 @@ def test_bootstrap_error_handling(tmp_path: Path):
     """Test bootstrap error handling when creation fails"""
     db_path = tmp_path / "new_db.kdbx"
     
-    with patch('mattstash.core._kp_create_database', side_effect=Exception("Creation failed")):
+    with patch('mattstash.core.bootstrap._kp_create_database', side_effect=Exception("Creation failed")):
         with patch('builtins.print') as mock_print:
             ms = MattStash(path=str(db_path))
             # Should print error message
@@ -65,7 +65,7 @@ def test_bootstrap_create_database_none(tmp_path: Path):
     """Test bootstrap when _kp_create_database is None"""
     db_path = tmp_path / "new_db.kdbx"
     
-    with patch('mattstash.core._kp_create_database', None):
+    with patch('mattstash.core.bootstrap._kp_create_database', None):
         with patch('builtins.print') as mock_print:
             ms = MattStash(path=str(db_path))
             # Should print error about unavailable function
@@ -86,8 +86,8 @@ def test_password_resolution_from_env(tmp_path: Path):
 
     with patch.dict(os.environ, {'KDBX_PASSWORD': 'env_password'}, clear=False):
         ms = MattStash(path=str(db_path), password=None)
-        # Test the resolution method directly
-        resolved_password = ms._resolve_password()
+        # Test the resolution method through the password resolver
+        resolved_password = ms._password_resolver.resolve_password()
         assert resolved_password == 'env_password'
 
 
@@ -111,7 +111,7 @@ def test_password_resolution_no_sources(tmp_path: Path):
     try:
         with patch('builtins.print') as mock_print:
             ms = MattStash(path=str(db_path), password=None)
-            resolved = ms._resolve_password()
+            resolved = ms._password_resolver.resolve_password()
             # Should return None when no sources available
             assert resolved is None
             # Should print messages about missing sources
@@ -124,7 +124,7 @@ def test_password_resolution_no_sources(tmp_path: Path):
 
 def test_get_db_url_function_creates_instance():
     """Test get_db_url module-level function creates instance"""
-    with patch('mattstash.core.MattStash') as mock_class:
+    with patch('mattstash.module_functions.MattStash') as mock_class:
         mock_instance = Mock()
         mock_instance.get_db_url.return_value = "test://url"
         mock_class.return_value = mock_instance
@@ -138,7 +138,7 @@ def test_get_db_url_function_creates_instance():
 
 def test_get_db_url_with_path_and_password():
     """Test get_db_url with explicit path and password"""
-    with patch('mattstash.core.MattStash') as mock_class:
+    with patch('mattstash.module_functions.MattStash') as mock_class:
         mock_instance = Mock()
         mock_instance.get_db_url.return_value = "test://url"
         mock_class.return_value = mock_instance
@@ -151,10 +151,10 @@ def test_get_db_url_with_path_and_password():
 def test_get_s3_client_function():
     """Test get_s3_client module-level function"""
     # Need to clear the global instance to force creation
-    import mattstash.core
-    mattstash.core._default_instance = None
+    import mattstash.module_functions
+    mattstash.module_functions._default_instance = None
 
-    with patch('mattstash.core.MattStash') as mock_class:
+    with patch('mattstash.module_functions.MattStash') as mock_class:
         mock_instance = Mock()
         mock_client = Mock()
         mock_instance.get_s3_client.return_value = mock_client

@@ -174,3 +174,7 @@ class MattStash:
     def get_s3_client(self, *args, **kwargs):
         """Delegate to S3ClientBuilder."""
         return self._s3_client_builder.create_client(*args, **kwargs)
+
+    def _parse_host_port(self, endpoint):
+        """Delegate to DatabaseUrlBuilder for backward compatibility with tests."""
+        return self._db_url_builder._parse_host_port(endpoint)

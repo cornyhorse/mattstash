@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Optional
 
-from ..config import config
+from ..models.config import config
 
 
 class PasswordResolver:

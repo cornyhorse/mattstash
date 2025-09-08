@@ -9,7 +9,7 @@ import pytest
 
 # Import from installed package or src layout
 try:
-    from mattstash.core import (
+    from mattstash import (
         MattStash,
         DEFAULT_KDBX_SIDECAR_BASENAME,
     )
@@ -122,7 +122,7 @@ def test_cli_list_and_get(temp_db: Path, as_module: bool):
     kp.save()
 
     if as_module:
-        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "list"]
+        cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "list"]
     else:
         # console-script path (requires pyproject entry point). Still valid to attempt here.
         cmd = ["mattstash", "--db", str(temp_db), "list"]
@@ -133,7 +133,7 @@ def test_cli_list_and_get(temp_db: Path, as_module: bool):
 
     # Now test `get` JSON output
     if as_module:
-        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "get", "CLI-Test", "--json"]
+        cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "get", "CLI-Test", "--json"]
     else:
         cmd = ["mattstash", "--db", str(temp_db), "get", "CLI-Test", "--json"]
 
@@ -151,7 +151,7 @@ def test_cli_get_simple_secret_json(temp_db: Path, as_module: bool):
     ms.put("k", value="v")
 
     if as_module:
-        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "get", "k", "--json"]
+        cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "get", "k", "--json"]
     else:
         cmd = ["mattstash", "--db", str(temp_db), "get", "k", "--json"]
 
@@ -163,7 +163,7 @@ def test_cli_get_simple_secret_json(temp_db: Path, as_module: bool):
 
     # show-password path
     if as_module:
-        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "get", "k", "--json", "--show-password"]
+        cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "get", "k", "--json", "--show-password"]
     else:
         cmd = ["mattstash", "--db", str(temp_db), "get", "k", "--json", "--show-password"]
 
@@ -208,7 +208,7 @@ def test_cli_keys_lists_titles(temp_db: Path, as_module: bool):
     kp.save()
 
     if as_module:
-        base_cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "keys"]
+        base_cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "keys"]
     else:
         base_cmd = ["mattstash", "--db", str(temp_db), "keys"]
 
@@ -279,7 +279,7 @@ def test_cli_versions_lists_versions(temp_db: Path, as_module: bool):
 
     # Run CLI versions command normal mode
     if as_module:
-        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "versions", "vkey"]
+        cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "versions", "vkey"]
     else:
         cmd = ["mattstash", "--db", str(temp_db), "versions", "vkey"]
 
@@ -292,7 +292,7 @@ def test_cli_versions_lists_versions(temp_db: Path, as_module: bool):
 
     # Run CLI versions command with JSON output
     if as_module:
-        cmd_json = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "versions", "vkey", "--json"]
+        cmd_json = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "versions", "vkey", "--json"]
     else:
         cmd_json = ["mattstash", "--db", str(temp_db), "versions", "vkey", "--json"]
 
@@ -313,8 +313,8 @@ def test_cli_delete_removes_entry(temp_db: Path, as_module: bool):
     kp.save()
 
     if as_module:
-        delete_cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "delete", "ToDelete"]
-        list_cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "list"]
+        delete_cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "delete", "ToDelete"]
+        list_cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "list"]
     else:
         delete_cmd = ["mattstash", "--db", str(temp_db), "delete", "ToDelete"]
         list_cmd = ["mattstash", "--db", str(temp_db), "list"]
@@ -333,7 +333,7 @@ def test_cli_delete_removes_entry(temp_db: Path, as_module: bool):
 def test_cli_put_with_comment(temp_db: Path, as_module: bool):
     if as_module:
         cmd = [
-            sys.executable, "-m", "mattstash.core", "--db", str(temp_db),
+            sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db),
             "put", "with-comment", "--value", "pw123", "--comment", "this is a note"
         ]
     else:
@@ -345,7 +345,7 @@ def test_cli_put_with_comment(temp_db: Path, as_module: bool):
 
     # Now fetch it back and ensure the comment is visible
     if as_module:
-        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "get", "with-comment", "--json"]
+        cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "get", "with-comment", "--json"]
     else:
         cmd = ["mattstash", "--db", str(temp_db), "get", "with-comment", "--json"]
 
@@ -399,8 +399,8 @@ def test_cli_db_url_masks_password_and_requires_port(temp_db: Path, as_module: b
     ms.put("pg-creds-np", username="user", password="pw", url="localhost")
 
     if as_module:
-        good_cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb"]
-        bad_cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "db-url", "pg-creds-np", "--database", "testdb"]
+        good_cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb"]
+        bad_cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "db-url", "pg-creds-np", "--database", "testdb"]
     else:
         good_cmd = ["mattstash", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb"]
         bad_cmd = ["mattstash", "--db", str(temp_db), "db-url", "pg-creds-np", "--database", "testdb"]
@@ -423,7 +423,7 @@ def test_cli_db_url_unmasked_flag(temp_db: Path, as_module: bool):
     ms.put("pg-creds", username="user", password="pw", url="localhost:5432")
 
     if as_module:
-        cmd = [sys.executable, "-m", "mattstash.core", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb", "--mask-password", "False"]
+        cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb", "--mask-password", "False"]
     else:
         cmd = ["mattstash", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb", "--mask-password", "False"]
 

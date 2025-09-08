@@ -9,7 +9,7 @@ import sys
 import secrets
 from typing import Optional
 
-from ..config import config
+from ..models.config import config
 
 try:
     from pykeepass import create_database as _kp_create_database  # type: ignore

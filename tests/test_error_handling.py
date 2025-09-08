@@ -6,8 +6,8 @@ import os
 import pytest
 from pathlib import Path
 
-from mattstash.core import MattStash, Credential
-from mattstash.exceptions import (
+from mattstash import MattStash, Credential
+from mattstash.utils.exceptions import (
     DatabaseNotFoundError, DatabaseAccessError,
     CredentialNotFoundError, InvalidCredentialError
 )
@@ -19,9 +19,9 @@ def test_corrupt_database_handling(tmp_path: Path):
     corrupt_db.write_text("this is not a valid kdbx file")
 
     ms = MattStash(path=str(corrupt_db), password="test")
-    # Should handle gracefully and return None
-    result = ms._ensure_open()
-    assert result is None
+    # Should handle gracefully and return None/False
+    result = ms._ensure_initialized()
+    assert result is False
 
 
 def test_missing_database_file(tmp_path: Path):
@@ -29,8 +29,8 @@ def test_missing_database_file(tmp_path: Path):
     nonexistent_db = tmp_path / "does_not_exist.kdbx"
 
     ms = MattStash(path=str(nonexistent_db), password="test")
-    result = ms._ensure_open()
-    assert result is None
+    result = ms._ensure_initialized()
+    assert result is False
 
 
 def test_wrong_password_handling(temp_db: Path):
@@ -41,8 +41,8 @@ def test_wrong_password_handling(temp_db: Path):
 
     # Try to open with wrong password
     ms_wrong = MattStash(path=str(temp_db), password="wrong_password")
-    result = ms_wrong._ensure_open()
-    assert result is None
+    result = ms_wrong._ensure_initialized()
+    assert result is False
 
 
 def test_special_characters_in_values(temp_db: Path):
@@ -121,8 +121,11 @@ def test_concurrent_access_simulation(temp_db: Path):
     ms2.put("shared2", value="value2")
 
     # Force refresh of the database connections to see each other's changes
-    ms1._kp = None  # Force reload
-    ms2._kp = None  # Force reload
+    # In the refactored architecture, we need to reset the credential store and entry manager
+    ms1._credential_store = None
+    ms1._entry_manager = None
+    ms2._credential_store = None
+    ms2._entry_manager = None
 
     # Both should see each other's entries
     result1 = ms2.get("shared1", show_password=True)

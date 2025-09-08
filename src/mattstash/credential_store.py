@@ -10,8 +10,8 @@ from typing import Optional, List
 from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 
-from .config import config
-from .exceptions import DatabaseNotFoundError, DatabaseAccessError, CredentialNotFoundError
+from .models.config import config
+from .utils.exceptions import DatabaseNotFoundError, DatabaseAccessError, CredentialNotFoundError
 
 logger = logging.getLogger(__name__)
 

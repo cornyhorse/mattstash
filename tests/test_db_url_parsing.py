@@ -4,7 +4,8 @@ Test coverage for database URL parsing and S3 functionality.
 
 import pytest
 from pathlib import Path
-from mattstash.core import MattStash, _ensure_scheme
+from mattstash import MattStash
+from mattstash.builders.s3_client import _ensure_scheme
 
 
 def test_ensure_scheme_with_none():

@@ -3,7 +3,7 @@ Test coverage for Credential class and core functionality.
 """
 
 import pytest
-from mattstash.core import Credential, MattStash
+from mattstash import Credential, MattStash
 
 
 def test_credential_repr_with_password_shown():

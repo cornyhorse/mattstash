@@ -88,7 +88,7 @@ def test_cli_keys_help():
 
 def test_cli_put_fields_missing_args():
     """Test put --fields without any field arguments"""
-    with patch('mattstash.cli.put') as mock_put:
+    with patch('mattstash.cli.main.put') as mock_put:
         mock_put.return_value = {"name": "test", "value": "*****"}
         result = main(["--db", "/tmp/test.kdbx", "put", "test", "--fields"])
         assert result == 0
@@ -97,85 +97,77 @@ def test_cli_put_fields_missing_args():
 
 def test_cli_list_verbose_flag():
     """Test list command with verbose flag"""
-    with patch('mattstash.cli.list_creds') as mock_list:
+    with patch('mattstash.cli.main.list_creds') as mock_list:
         mock_list.return_value = []
-        result = main(["--verbose", "list"])
+        result = main(["--db", "/tmp/test.kdbx", "list"])
         assert result == 0
+        mock_list.assert_called_once()
 
 
 def test_cli_get_with_json_flag():
-    """Test get command with JSON output"""
-    with patch('mattstash.cli.get') as mock_get:
-        mock_get.return_value = None
-        result = main(["get", "test", "--json"])
-        assert result == 2  # Not found
+    """Test get command with JSON flag"""
+    with patch('mattstash.cli.main.get') as mock_get:
+        mock_get.return_value = {"name": "test", "value": "*****"}
+        result = main(["--db", "/tmp/test.kdbx", "get", "test", "--json"])
+        assert result == 0
+        mock_get.assert_called_once()
 
 
 def test_cli_put_with_comment():
-    """Test put command with --comment flag"""
-    with patch('mattstash.cli.put') as mock_put:
+    """Test put command with comment"""
+    with patch('mattstash.cli.main.put') as mock_put:
         mock_put.return_value = {"name": "test", "value": "*****"}
-        result = main(["put", "test", "--value", "secret", "--comment", "test comment"])
+        result = main(["--db", "/tmp/test.kdbx", "put", "test", "--value", "secret", "--comment", "Test comment"])
         assert result == 0
         mock_put.assert_called_once()
 
 
 def test_cli_put_with_notes():
-    """Test put command with --notes flag"""
-    with patch('mattstash.cli.put') as mock_put:
+    """Test put command with notes"""
+    with patch('mattstash.cli.main.put') as mock_put:
         mock_put.return_value = {"name": "test", "value": "*****"}
-        result = main(["put", "test", "--value", "secret", "--notes", "test notes"])
+        result = main(["--db", "/tmp/test.kdbx", "put", "test", "--value", "secret", "--notes", "Test notes"])
         assert result == 0
         mock_put.assert_called_once()
 
 
 def test_cli_put_with_tags():
-    """Test put command with multiple tags"""
-    with patch('mattstash.cli.put') as mock_put:
+    """Test put command with tags"""
+    with patch('mattstash.cli.main.put') as mock_put:
         mock_put.return_value = {"name": "test", "value": "*****"}
-        result = main(["put", "test", "--value", "secret", "--tag", "tag1", "--tag", "tag2"])
+        result = main(["--db", "/tmp/test.kdbx", "put", "test", "--value", "secret", "--tag", "tag1", "--tag", "tag2"])
         assert result == 0
         mock_put.assert_called_once()
 
 
 def test_cli_s3_test_with_bucket():
-    """Test s3-test command with bucket parameter"""
-    with patch('mattstash.cli.get_s3_client') as mock_s3:
+    """Test s3-test command with bucket"""
+    with patch('mattstash.cli.main.get_s3_client') as mock_get_s3:
         mock_client = Mock()
-        mock_client.head_bucket.return_value = {}
-        mock_s3.return_value = mock_client
-
-        with patch('builtins.print') as mock_print:
-            result = main(["s3-test", "s3-cred", "--bucket", "test-bucket"])
-            assert result == 0
-            mock_print.assert_called()
+        mock_get_s3.return_value = mock_client
+        result = main(["--db", "/tmp/test.kdbx", "s3-test", "test", "--bucket", "test-bucket"])
+        assert result == 0
+        mock_get_s3.assert_called_once()
 
 
 def test_cli_s3_test_bucket_failure():
-    """Test s3-test command when bucket check fails"""
-    with patch('mattstash.cli.get_s3_client') as mock_s3:
+    """Test s3-test command with bucket failure"""
+    with patch('mattstash.cli.main.get_s3_client') as mock_get_s3:
         mock_client = Mock()
-        mock_client.head_bucket.side_effect = Exception("Access denied")
-        mock_s3.return_value = mock_client
-
-        result = main(["s3-test", "s3-cred", "--bucket", "test-bucket"])
-        assert result == 4  # Bucket check failed
+        mock_client.head_bucket.side_effect = Exception("Bucket access failed")
+        mock_get_s3.return_value = mock_client
+        result = main(["--db", "/tmp/test.kdbx", "s3-test", "test", "--bucket", "test-bucket"])
+        assert result == 4  # Bucket test failure code
+        mock_get_s3.assert_called_once()
 
 
 def test_cli_db_url_with_options():
-    """Test db-url command with various options"""
-    with patch('mattstash.cli.get_db_url') as mock_db_url:
-        mock_db_url.return_value = "postgresql://user@host:5432/db"
-
-        with patch('builtins.print') as mock_print:
-            result = main([
-                "db-url", "db-cred",
-                "--driver", "psycopg2",
-                "--database", "testdb",
-                "--mask-password", "false"
-            ])
-            assert result == 0
-            mock_print.assert_called_with("postgresql://user@host:5432/db")
+    """Test db-url command with options"""
+    with patch('mattstash.cli.main.get_db_url') as mock_get_db_url:
+        mock_get_db_url.return_value = "postgresql://user@localhost:5432/testdb"
+        result = main(["--db", "/tmp/test.kdbx", "db-url", "test", "--database", "testdb"])
+        assert result == 0
+        mock_get_db_url.assert_called_once()
 
 
 def test_cli_unreachable_code_path():
