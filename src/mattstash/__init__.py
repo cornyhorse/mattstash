@@ -29,7 +29,7 @@ DEFAULT_KDBX_PATH = config.default_db_path
 DEFAULT_KDBX_SIDECAR_BASENAME = config.sidecar_basename
 PAD_WIDTH = config.version_pad_width
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     # Main classes
