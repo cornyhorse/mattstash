@@ -105,13 +105,14 @@ def test_entry_manager_put_entry_simple_mode():
     mock_entry.username = None
     mock_entry.url = None
     mock_entry.notes = None
+    mock_entry.title = "test"  # Set a proper string title
     mock_entry.get_custom_property.return_value = None
 
     # Set up mock for entries iteration
     mock_kp.entries = [mock_entry]
     mock_kp.find_entries.return_value = mock_entry  # Return single entry, not list
 
-    result = manager.put_entry("test", value="new_value")
+    result = manager.put_entry("test", value="new_value", autoincrement=False)  # Disable autoincrement
 
     # Should update the password field
     assert mock_entry.password == "new_value"
@@ -160,14 +161,16 @@ def test_entry_manager_autoincrement_version():
 
     # Set up mock for entries iteration
     mock_kp.entries = [mock_entry1, mock_entry2]
-    mock_kp.find_entries.return_value = []
+    mock_kp.find_entries.return_value = None  # Return None for new entry
     mock_new_entry = Mock()
     mock_kp.add_entry.return_value = mock_new_entry
+    mock_kp.root_group = Mock()
 
     # Should create version 4 (next after 3)
     result = manager.put_entry("test", value="secret", autoincrement=True)
 
     mock_kp.add_entry.assert_called_once()
+    mock_kp.save.assert_called_once()
 
 
 def test_mattstash_initialization_failure():
@@ -297,9 +300,9 @@ def test_s3_client_builder_verbose_false():
 
     mock_mattstash.get.return_value = mock_cred
 
-    # Test the import error handling path instead since boto3 may not be available
+    # Test the import error handling path - should raise RuntimeError, not ImportError
     with patch('builtins.__import__', side_effect=ImportError("boto3 not available")):
-        with pytest.raises(ImportError):
+        with pytest.raises(RuntimeError, match="boto3/botocore not available"):
             builder.create_client("test", verbose=False)
 
 

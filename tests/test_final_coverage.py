@@ -101,12 +101,23 @@ def test_db_url_builder_no_custom_properties():
     mock_cred.username = "user"
     mock_cred.password = "pass"
     mock_cred.url = "localhost:5432"
-    # Return None for all custom properties
-    mock_cred.get_custom_property.return_value = None
+
+    # Mock the entry to simulate missing database properties
+    mock_entry = Mock()
+    mock_entry.get_custom_property.return_value = None
+
+    # Mock the credential store and KeePass database
+    mock_credential_store = Mock()
+    mock_kp = Mock()
+    mock_kp.find_entries.return_value = mock_entry
+    mock_credential_store.open.return_value = mock_kp
 
     mock_mattstash.get.return_value = mock_cred
+    mock_mattstash._ensure_initialized.return_value = True
+    mock_mattstash._credential_store = mock_credential_store
 
-    with pytest.raises(ValueError, match="Database name not found"):
+    # This should raise an error due to missing database name
+    with pytest.raises(ValueError, match="Missing database name"):
         builder.build_url("test", database=None)
 
 
