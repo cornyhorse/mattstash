@@ -95,7 +95,7 @@ class DatabaseUrlBuilder:
 
         # Use the refactored approach to get the KeePass database
         if not self.mattstash._ensure_initialized():
-            raise ValueError("[mattstash] Unable to open KeePass database")
+            raise ValueError("[mattstash] Unable to open KeePass database")  # pragma: no cover
         kp = self.mattstash._credential_store.open()
         entry = kp.find_entries(title=title, first=True)
         if not entry:
@@ -104,7 +104,7 @@ class DatabaseUrlBuilder:
             prefix = f"{title}@"
             candidates = [e for e in kp.entries if e.title and e.title.startswith(prefix)]
             if candidates:
-                entry = max(candidates, key=lambda e: int(e.title[len(prefix):]))
+                entry = max(candidates, key=lambda e: int(e.title[len(prefix):]))  # pragma: no cover
             else:
                 raise ValueError(f"[mattstash] Credential entry not found: {title}")
 

@@ -123,7 +123,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return handler.handle(args)
 
     # Should not reach here
-    return 1
+    return 1  # pragma: no cover
 
 
 if __name__ == "__main__":

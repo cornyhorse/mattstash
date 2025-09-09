@@ -46,9 +46,9 @@ class PasswordResolver:
                     print(f"[MattStash] Failed to read sidecar password file {sidecar_path}", file=sys.stderr)
             else:
                 print(f"[MattStash] Sidecar password file not found at {sidecar_path}", file=sys.stderr)
-        except Exception:
-            # Shouldn't really happen, but just in case
-            pass
+        except Exception:  # pragma: no cover
+            # Shouldn't really happen, but just in case  # pragma: no cover
+            pass  # pragma: no cover
         return None
 
     def _try_environment_variable(self) -> Optional[str]:

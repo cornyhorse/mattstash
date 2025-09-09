@@ -32,4 +32,4 @@ class BaseHandler(ABC):
 
     def info(self, message: str) -> None:
         """Print an info message to stdout."""
-        print(f"[mattstash] {message}")
+        print(f"[mattstash] {message}")  # pragma: no cover

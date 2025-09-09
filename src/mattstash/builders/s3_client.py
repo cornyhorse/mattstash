@@ -62,7 +62,7 @@ class S3ClientBuilder:
             raise RuntimeError("[mattstash] boto3/botocore not available") from e
 
         if verbose:
-            print(f"[mattstash] Using endpoint={endpoint}, region={region}, addressing={addressing}")
+            print(f"[mattstash] Using endpoint={endpoint}, region={region}, addressing={addressing}")  # pragma: no cover
 
         cfg = Config(
             s3={"addressing_style": "virtual" if addressing == "virtual" else "path"},

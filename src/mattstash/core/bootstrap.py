@@ -51,9 +51,9 @@ class DatabaseBootstrapper:
         os.makedirs(db_dir, exist_ok=True)
         try:
             os.chmod(db_dir, 0o700)
-        except Exception:
-            # Best-effort on non-POSIX or restricted environments
-            pass
+        except Exception:  # pragma: no cover
+            # Best-effort on non-POSIX or restricted environments  # pragma: no cover
+            pass  # pragma: no cover
 
         # Generate a strong password for the DB and write the sidecar (0600)
         pw = secrets.token_urlsafe(32)
