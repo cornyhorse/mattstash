@@ -279,3 +279,4 @@ print(url_unmasked)  # e.g. postgresql://dbuser:dbpass@127.0.0.1:5432/mydb
 ```
 
 Note that the tool validates that the `url` field includes a port and that the resulting URL is valid for your database driver.
+
