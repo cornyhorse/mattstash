@@ -3,6 +3,9 @@
 
 set -e  # Exit on any error
 
+# Change to the project root directory (parent of scripts directory)
+cd "$(dirname "$0")/.."
+
 echo "Installing package in development mode..."
 pip install -e .
 
