@@ -4,6 +4,7 @@ Test coverage for CLI handlers to reach 100% coverage.
 
 import pytest
 import os
+import sys
 import tempfile
 from unittest.mock import patch, Mock, MagicMock
 from argparse import Namespace
@@ -24,6 +25,14 @@ def test_base_handler_info_method():
     with patch('builtins.print') as mock_print:
         handler.info("test message")
         mock_print.assert_called_once_with("[mattstash] test message")
+
+
+def test_base_handler_error_method():
+    """Test the error method in BaseHandler - covers line 27"""
+    handler = SetupHandler()  # Use a concrete implementation
+    with patch('builtins.print') as mock_print:
+        handler.error("test error message")
+        mock_print.assert_called_once_with("[mattstash] test error message", file=sys.stderr)
 
 
 def test_setup_handler_force_overwrite():
