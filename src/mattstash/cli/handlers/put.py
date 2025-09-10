@@ -37,13 +37,14 @@ class PutHandler(BaseHandler):
                     print(f"{args.title}: OK")
             return 0
 
-        # Fields mode
+        # Fields mode - use CLI --password as credential password, not database password
+        # Database password comes from sidecar file or environment variable
         result = put(
             args.title,
             path=args.path,
-            db_password=args.password,
+            db_password=None,  # Let it resolve from sidecar/.env normally
             username=args.username,
-            password=args.password,
+            password=args.password,  # This is the credential password to store
             url=args.url,
             notes=args.notes,
             comment=args.comment,

@@ -14,28 +14,34 @@ This document outlines video demonstrations for showcasing MattStash's features 
 pip install mattstash
 
 # First use - explicit setup to show bootstrap
-mattstash setup
-# Shows: "Database created: ~/.config/mattstash/mattstash.kdbx"
-#        "Password file created: ~/.config/mattstash/.mattstash.txt"
+mattstash setup --force
+# Shows: [MattStash] Created new KeePass DB at ~/.config/mattstash/mattstash.kdbx and sidecar ~/.config/mattstash/.mattstash.txt
+#        [mattstash] Setup complete!
+#        Database created: ~/.config/mattstash/mattstash.kdbx
+#        Password file created: ~/.config/mattstash/.mattstash.txt
 
 # Store first secret
 mattstash put "api-token" --value "sk-123456789"
-# Shows: api-token: stored
+# Shows: [MattStash] Loaded password from sidecar file ~/.config/mattstash/.mattstash.txt
+#        api-token: *****
 
 # Retrieve it
 mattstash get "api-token" --show-password
-# Shows: api-token: sk-123456789
+# Shows: [MattStash] Loaded password from sidecar file ~/.config/mattstash/.mattstash.txt
+#        api-token
+#          value: sk-123456789
 
 # Show it's there
 mattstash keys
-# Shows: api-token
+# Shows: [MattStash] Loaded password from sidecar file ~/.config/mattstash/.mattstash.txt
+#        api-token@0000000001
 ```
 
 **Key messages:**
 - Zero configuration required
 - Explicit setup shows what's created
 - Simple put/get operations
-- Works immediately after install
+- Automatic versioning with @0000000001 format
 
 ---
 
@@ -458,7 +464,7 @@ terminalizer record demo1 --config custom-config.yml
 ### Video Organization Strategy
 
 **Landing Page:** Video 1 (Quick Start)
-**Features Page:** Videos 2, 3 (Core Features)  
+**Features Page:** Videos 2, 3 (Core Features)
 **Integration Docs:** Videos 4, 5 (S3, Database)
 **CLI Reference:** Video 6 (Power Features)
 **Migration Guide:** Video 7 (Security/Migration)
@@ -473,3 +479,4 @@ terminalizer record demo1 --config custom-config.yml
 5. **Compatibility**: Multiple environments, migration
 
 Each video should be focused, demonstrate real value, and leave viewers wanting to try the specific feature shown.
+
