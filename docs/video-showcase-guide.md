@@ -65,7 +65,7 @@ mattstash get "stripe-key" --json --show-password
 # === Full Credentials ===
 echo "=== Full Credentials ==="
 
-# Database credentials (FIXED: --fields not -- fields)
+# Database credentials
 mattstash put "production-db" --fields \
   --username "app_user" \
   --password "secure_db_pass" \
