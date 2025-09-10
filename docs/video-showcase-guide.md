@@ -13,25 +13,27 @@ This document outlines video demonstrations for showcasing MattStash's features 
 # Show installation
 pip install mattstash
 
-# First use - auto-bootstrap
-mattstash list
-# Shows: "Database and sidecar created at ~/.credentials/"
+# First use - explicit setup to show bootstrap
+mattstash setup
+# Shows: "Database created: ~/.config/mattstash/mattstash.kdbx"
+#        "Password file created: ~/.config/mattstash/.mattstash.txt"
 
 # Store first secret
 mattstash put "api-token" --value "sk-123456789"
+# Shows: api-token: stored
 
 # Retrieve it
 mattstash get "api-token" --show-password
 # Shows: api-token: sk-123456789
 
-# List all secrets
-mattstash list
-# Shows the stored secret
+# Show it's there
+mattstash keys
+# Shows: api-token
 ```
 
 **Key messages:**
 - Zero configuration required
-- Auto-creates secure database
+- Explicit setup shows what's created
 - Simple put/get operations
 - Works immediately after install
 
@@ -63,7 +65,7 @@ mattstash get "stripe-key" --json --show-password
 # === Full Credentials ===
 echo "=== Full Credentials ==="
 
-# Database credentials
+# Database credentials (FIXED: --fields not -- fields)
 mattstash put "production-db" --fields \
   --username "app_user" \
   --password "secure_db_pass" \
@@ -76,8 +78,9 @@ mattstash put "production-db" --fields \
 mattstash get "production-db"
 # Shows formatted credential with all fields
 
-# List everything
-mattstash list
+# Show what we have
+mattstash keys
+# Shows: github-token, stripe-key, production-db
 ```
 
 **Key messages:**
