@@ -221,15 +221,24 @@ mattstash.put(
 
 ```python
 import mattstash
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, text, MetaData, Table, Column, Integer, String
+from sqlalchemy.orm import sessionmaker, declarative_base
 import psycopg2
 import redis
 import pymongo
 
-# === SQLAlchemy Integration ===
+# === SQLAlchemy PostgreSQL Integration ===
 
-# Get PostgreSQL connection URL
+# Generate database URL with masked password (for logging/display)
+masked_db_url = mattstash.get_db_url(
+    "postgres-production",
+    database="myapp_production", 
+    driver="psycopg"  # Modern psycopg3 driver
+)
+print(f"Database URL: {masked_db_url}")
+# Output: "postgresql+psycopg://app_user:*****@prod-db.company.com:5432/myapp_production"
+
+# Generate unmasked URL for actual connection
 postgres_url = mattstash.get_db_url(
     "postgres-production",
     database="myapp_production",
@@ -237,25 +246,260 @@ postgres_url = mattstash.get_db_url(
     mask_password=False  # Needed for actual connections
 )
 
-# Create SQLAlchemy engine
+# Create SQLAlchemy engine with connection pooling
 postgres_engine = create_engine(
     postgres_url,
     pool_size=10,
     max_overflow=20,
     pool_timeout=30,
-    pool_recycle=3600
+    pool_recycle=3600,
+    echo=False  # Set to True for SQL debugging
 )
 
-# Create session factory
+# Test the connection
+try:
+    with postgres_engine.connect() as connection:
+        result = connection.execute(text("SELECT version()"))
+        version = result.scalar()
+        print(f"✅ Connected to PostgreSQL: {version}")
+except Exception as e:
+    print(f"❌ Connection failed: {e}")
+
+# Create session factory for ORM operations
+Base = declarative_base()
 PostgresSession = sessionmaker(bind=postgres_engine)
 
-# Usage
-with PostgresSession() as session:
-    result = session.execute(text("SELECT version()"))
-    version = result.scalar()
-    print(f"PostgreSQL version: {version}")
+# Example model definition
+class User(Base):
+    __tablename__ = 'users'
+    
+    id = Column(Integer, primary_key=True)
+    username = Column(String(50), unique=True, nullable=False)
+    email = Column(String(100), unique=True, nullable=False)
 
-# MySQL with different driver
+# Usage with SQLAlchemy ORM
+with PostgresSession() as session:
+    # Query using ORM
+    user_count = session.query(User).count()
+    print(f"Total users in database: {user_count}")
+    
+    # Raw SQL query
+    result = session.execute(text("SELECT COUNT(*) FROM users WHERE created_at > :date"))
+    recent_users = result.scalar()
+    print(f"Recent users: {recent_users}")
+
+# Multiple database connections with different drivers
+development_url = mattstash.get_db_url(
+    "postgres-development",
+    database="myapp_dev",
+    driver="psycopg2",  # Legacy psycopg2 driver
+    mask_password=False
+)
+
+analytics_url = mattstash.get_db_url(
+    "postgres-analytics",
+    database="analytics_db", 
+    driver="asyncpg",  # Async driver for high-performance apps
+    mask_password=False
+)
+
+# Create multiple engines
+dev_engine = create_engine(development_url, echo=True)  # Debug mode for development
+analytics_engine = create_engine(analytics_url, pool_size=20)  # Larger pool for analytics
+
+print(f"Development DB: {mattstash.get_db_url('postgres-development', database='myapp_dev')}")
+print(f"Analytics DB: {mattstash.get_db_url('postgres-analytics', database='analytics_db')}")
+```
+
+### Complete PostgreSQL Integration Example
+
+```python
+import mattstash
+from sqlalchemy import create_engine, text, select
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.exc import SQLAlchemyError
+from contextlib import contextmanager
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class PostgreSQLManager:
+    """Production-ready PostgreSQL connection manager using MattStash."""
+    
+    def __init__(self, credential_name: str, database: str, **engine_kwargs):
+        self.credential_name = credential_name
+        self.database = database
+        self.engine = self._create_engine(**engine_kwargs)
+        self.Session = sessionmaker(bind=self.engine)
+    
+    def _create_engine(self, **engine_kwargs):
+        """Create SQLAlchemy engine from MattStash credentials."""
+        try:
+            # Get database URL from MattStash
+            db_url = mattstash.get_db_url(
+                self.credential_name,
+                database=self.database,
+                driver="psycopg",
+                mask_password=False
+            )
+            
+            # Default engine configuration
+            default_config = {
+                'pool_size': 5,
+                'max_overflow': 10,
+                'pool_timeout': 30,
+                'pool_recycle': 3600,
+                'pool_pre_ping': True,  # Validate connections before use
+                'echo': False
+            }
+            default_config.update(engine_kwargs)
+            
+            engine = create_engine(db_url, **default_config)
+            
+            # Test connection
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            
+            logger.info(f"✅ PostgreSQL engine created for {self.credential_name}:{self.database}")
+            return engine
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create PostgreSQL engine: {e}")
+            raise
+    
+    @contextmanager
+    def get_session(self):
+        """Context manager for database sessions with automatic cleanup."""
+        session = self.Session()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    @contextmanager 
+    def get_connection(self):
+        """Context manager for raw database connections."""
+        connection = self.engine.connect()
+        try:
+            yield connection
+        finally:
+            connection.close()
+    
+    def health_check(self) -> bool:
+        """Check database connectivity and performance."""
+        try:
+            with self.get_connection() as conn:
+                start_time = time.time()
+                result = conn.execute(text("SELECT 1, version(), current_timestamp"))
+                row = result.fetchone()
+                response_time = time.time() - start_time
+                
+                logger.info(f"Database health check passed in {response_time:.3f}s")
+                logger.info(f"PostgreSQL version: {row[1]}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Database health check failed: {e}")
+            return False
+
+# Initialize database managers for different environments
+production_db = PostgreSQLManager(
+    "postgres-production", 
+    "myapp_production",
+    pool_size=15,
+    max_overflow=25,
+    echo=False
+)
+
+development_db = PostgreSQLManager(
+    "postgres-development",
+    "myapp_dev", 
+    pool_size=5,
+    echo=True  # Enable SQL logging in development
+)
+
+analytics_db = PostgreSQLManager(
+    "postgres-analytics",
+    "analytics_db",
+    pool_size=20,  # Higher pool for analytics workloads
+    max_overflow=30
+)
+
+# Health check all databases at startup
+databases = {
+    "Production": production_db,
+    "Development": development_db, 
+    "Analytics": analytics_db
+}
+
+for name, db_manager in databases.items():
+    if db_manager.health_check():
+        print(f"✅ {name} database: Connected")
+    else:
+        print(f"❌ {name} database: Failed")
+
+# Example usage in application code
+def get_user_analytics():
+    """Example function using multiple databases."""
+    
+    # Get user data from production
+    with production_db.get_session() as session:
+        users = session.execute(
+            text("SELECT id, username, created_at FROM users WHERE active = true")
+        ).fetchall()
+    
+    # Store analytics in analytics database
+    with analytics_db.get_session() as session:
+        for user in users:
+            session.execute(
+                text("""
+                    INSERT INTO user_analytics (user_id, username, analysis_date)
+                    VALUES (:user_id, :username, CURRENT_DATE)
+                    ON CONFLICT (user_id, analysis_date) DO NOTHING
+                """),
+                {
+                    "user_id": user.id,
+                    "username": user.username
+                }
+            )
+    
+    print(f"Processed analytics for {len(users)} users")
+
+# Run analytics processing
+get_user_analytics()
+
+# Raw connection example for complex operations
+with production_db.get_connection() as conn:
+    # Execute complex query that doesn't fit ORM patterns
+    result = conn.execute(text("""
+        WITH monthly_stats AS (
+            SELECT 
+                DATE_TRUNC('month', created_at) as month,
+                COUNT(*) as user_count
+            FROM users 
+            WHERE created_at >= CURRENT_DATE - INTERVAL '12 months'
+            GROUP BY DATE_TRUNC('month', created_at)
+        )
+        SELECT month, user_count, 
+               user_count - LAG(user_count) OVER (ORDER BY month) as growth
+        FROM monthly_stats
+        ORDER BY month
+    """))
+    
+    print("Monthly user growth:")
+    for row in result:
+        growth = row.growth or 0
+        print(f"  {row.month.strftime('%Y-%m')}: {row.user_count} users (+{growth})")
+```
+
+# === MySQL Integration Example ===
+
 mysql_url = mattstash.get_db_url(
     "mysql-analytics",
     database="analytics_db",
