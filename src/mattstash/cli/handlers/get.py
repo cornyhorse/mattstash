@@ -17,7 +17,7 @@ class GetHandler(BaseHandler):
 
     def handle(self, args: Namespace) -> int:
         """Handle the get command."""
-        c = get(args.title, path=args.path, password=args.password, show_password=args.show_password)
+        c = get(args.title, path=args.path, password=args.password, show_password=args.show_password, version=getattr(args, 'version', None))
         if not c:
             self.error(f"not found: {args.title}")
             return 2

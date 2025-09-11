@@ -59,6 +59,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_get.add_argument("title", help="KeePass entry title")
     p_get.add_argument("--show-password", action="store_true", help="Show password in output")
     p_get.add_argument("--json", action="store_true", help="Output JSON")
+    p_get.add_argument("--version", type=int, help="Specific version to retrieve")
 
     # put
     p_put = subparsers.add_parser("put", help="Create/update an entry")
