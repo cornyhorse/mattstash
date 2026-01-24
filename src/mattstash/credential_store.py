@@ -12,6 +12,7 @@ from pykeepass.entry import Entry
 
 from .models.config import config
 from .utils.exceptions import DatabaseNotFoundError, DatabaseAccessError, CredentialNotFoundError
+from .utils.validation import sanitize_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,8 @@ class CredentialStore:
             return self._kp
 
         if not os.path.exists(self.db_path):
-            logger.error(f"KeePass DB file not found at {self.db_path}")
-            raise DatabaseNotFoundError(f"Database file not found: {self.db_path}")
+            logger.error("KeePass database file not found")
+            raise DatabaseNotFoundError("Database file not found")
 
         if not self.password:
             logger.error("No password provided for database")
@@ -39,11 +40,12 @@ class CredentialStore:
 
         try:
             self._kp = PyKeePass(self.db_path, password=self.password)
-            logger.info(f"Successfully opened database at {self.db_path}")
+            logger.info("Successfully opened database")
             return self._kp
         except Exception as e:
-            logger.error(f"Failed to open database: {e}")
-            raise DatabaseAccessError(f"Failed to open database: {e}")
+            sanitized_msg = sanitize_error_message(e, self.db_path)
+            logger.error(f"Failed to open database: {sanitized_msg}")
+            raise DatabaseAccessError(f"Failed to open database: {sanitized_msg}")
 
     def find_entry_by_title(self, title: str) -> Optional[Entry]:
         """Find a single entry by exact title match."""

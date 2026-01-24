@@ -55,10 +55,10 @@ def test_bootstrap_error_handling(tmp_path: Path):
     db_path = tmp_path / "new_db.kdbx"
     
     with patch('mattstash.core.bootstrap._kp_create_database', side_effect=Exception("Creation failed")):
-        with patch('builtins.print') as mock_print:
+        with patch('mattstash.core.bootstrap.logger') as mock_logger:
             ms = MattStash(path=str(db_path))
-            # Should print error message
-            assert any("Failed to create KeePass DB" in str(call) for call in mock_print.call_args_list)
+            # Should log error message
+            assert any("Failed to create KeePass DB" in str(call) for call in mock_logger.error.call_args_list)
 
 
 def test_bootstrap_create_database_none(tmp_path: Path):
@@ -66,10 +66,10 @@ def test_bootstrap_create_database_none(tmp_path: Path):
     db_path = tmp_path / "new_db.kdbx"
     
     with patch('mattstash.core.bootstrap._kp_create_database', None):
-        with patch('builtins.print') as mock_print:
+        with patch('mattstash.core.bootstrap.logger') as mock_logger:
             ms = MattStash(path=str(db_path))
-            # Should print error about unavailable function
-            assert any("not available" in str(call) for call in mock_print.call_args_list)
+            # Should log error about unavailable function
+            assert any("not available" in str(call) for call in mock_logger.error.call_args_list)
 
 
 def test_password_resolution_from_env(tmp_path: Path):
@@ -109,13 +109,13 @@ def test_password_resolution_no_sources(tmp_path: Path):
         del os.environ['KDBX_PASSWORD']
 
     try:
-        with patch('builtins.print') as mock_print:
+        with patch('mattstash.core.password_resolver.logger') as mock_logger:
             ms = MattStash(path=str(db_path), password=None)
             resolved = ms._password_resolver.resolve_password()
             # Should return None when no sources available
             assert resolved is None
-            # Should print messages about missing sources
-            assert any("not set" in str(call) for call in mock_print.call_args_list)
+            # Should log debug messages about missing sources
+            assert any("not set" in str(call) or "not found" in str(call) for call in mock_logger.debug.call_args_list)
     finally:
         # Restore env var if it existed
         if env_backup:

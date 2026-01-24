@@ -4,14 +4,17 @@ mattstash.core.entry_manager
 Handles CRUD operations for KeePass entries.
 """
 
-import sys
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 
 from ..models.credential import Credential, CredentialResult
 from ..version_manager import VersionManager
 from ..models.config import config
+from ..utils.logging_config import get_logger
+from ..utils.validation import validate_credential_title, validate_username, validate_url, validate_notes
+
+logger = get_logger(__name__)
 
 
 class EntryManager:
@@ -40,6 +43,10 @@ class EntryManager:
         """
         Fetch a KeePass entry by its Title (optionally versioned) and return a Credential payload.
         Returns None if the entry cannot be found.
+        
+        Returns:
+            Union[Dict, Credential]: Either a simple secret dict or a full Credential object
+            None: If entry not found
         """
         if version is not None:
             return self._get_versioned_entry(title, version, show_password)
@@ -58,7 +65,7 @@ class EntryManager:
         entry = self.kp.find_entries(title=entry_title, first=True)
 
         if not entry:
-            print(f"[MattStash] Entry not found: {entry_title}", file=sys.stderr)
+            logger.info(f"Entry not found: {entry_title}")
             return None
 
         return self._format_entry_result(entry, title, str(version).zfill(config.version_pad_width), show_password)
@@ -80,7 +87,7 @@ class EntryManager:
 
         versioned_candidates = [(extract_ver(e), e) for e in candidates if extract_ver(e) >= 0]
         if not versioned_candidates:
-            print(f"[MattStash] No valid versioned entries found for {title}", file=sys.stderr)
+            logger.info(f"No valid versioned entries found for {title}")
             return None
 
         max_ver, entry = max(versioned_candidates, key=lambda t: t[0])
@@ -92,7 +99,7 @@ class EntryManager:
         """Get an unversioned entry."""
         entry = self.kp.find_entries(title=title, first=True)
         if not entry:
-            print(f"[MattStash] Entry not found: {title}", file=sys.stderr)
+            logger.info(f"Entry not found: {title}")
             return None
 
         return self._format_entry_result(entry, title, None, show_password)
@@ -147,7 +154,13 @@ class EntryManager:
             tags: List of tags
             version: Specific version number
             autoincrement: Whether to auto-increment version
+        
+        Raises:
+            InvalidCredentialError: If inputs are invalid
         """
+        # Validate inputs
+        validate_credential_title(title)
+        
         value = kwargs.get('value')
         username = kwargs.get('username')
         password = kwargs.get('password')
@@ -156,6 +169,11 @@ class EntryManager:
         tags = kwargs.get('tags')
         version = kwargs.get('version')
         autoincrement = kwargs.get('autoincrement', True)
+        
+        # Validate other fields
+        validate_username(username)
+        validate_url(url)
+        validate_notes(notes)
 
         # Determine entry title (with versioning)
         entry_title, vstr = self._determine_entry_title(title, version, autoincrement)
@@ -275,7 +293,7 @@ class EntryManager:
         """Delete an entry by title. Returns True if deleted, False otherwise."""
         entry = self.kp.find_entries(title=title, first=True)
         if not entry:
-            print(f"[MattStash] Entry not found: {title}", file=sys.stderr)
+            logger.info(f"Entry not found: {title}")
             return False
 
         try:
@@ -283,5 +301,5 @@ class EntryManager:
             self.kp.save()
             return True
         except Exception as ex:
-            print(f"[MattStash] Failed to delete entry '{title}': {ex}", file=sys.stderr)
+            logger.error(f"Failed to delete entry '{title}': {ex}")
             return False

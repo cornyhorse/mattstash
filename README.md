@@ -162,6 +162,18 @@ db_url = stash.get_db_url("database", database="myapp")
 
 See [Python API Documentation](docs/python-api.md) for complete reference.
 
+## API Server (Optional)
+
+MattStash includes an optional FastAPI-based HTTP service for accessing credentials over the network. This is useful for containerized environments where multiple services need secure access to credentials.
+
+**Features:**
+- 🔒 API key authentication
+- 🐳 Docker and Kubernetes ready
+- 📊 Rate limiting and audit logging
+- 🚀 Read-only by default (secure)
+
+See the [Server README](server/README.md) for setup and deployment instructions.
+
 ## Documentation
 
 - [CLI Reference](docs/cli-reference.md) - Complete command documentation

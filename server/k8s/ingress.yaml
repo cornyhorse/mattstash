@@ -1,0 +1,31 @@
+# Optional: Ingress for external access with TLS
+# Requires an ingress controller (nginx, traefik, etc.)
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mattstash-api
+  namespace: mattstash
+  annotations:
+    # Example annotations for nginx ingress
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # Uncomment to enable rate limiting at ingress level
+    # nginx.ingress.kubernetes.io/limit-rps: "10"
+spec:
+  ingressClassName: nginx  # Adjust based on your ingress controller
+  tls:
+  - hosts:
+    - mattstash.example.com  # Replace with your domain
+    secretName: mattstash-tls-cert
+  rules:
+  - host: mattstash.example.com  # Replace with your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: mattstash-api
+            port:
+              name: http

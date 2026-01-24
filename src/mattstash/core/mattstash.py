@@ -5,7 +5,6 @@ Refactored MattStash class that orchestrates components.
 """
 
 import os
-import sys
 from typing import Optional, Dict, List
 
 from ..models.config import config
@@ -13,9 +12,12 @@ from ..models.credential import Credential, CredentialResult
 from ..credential_store import CredentialStore
 from ..builders.db_url import DatabaseUrlBuilder
 from ..builders.s3_client import S3ClientBuilder
+from ..utils.logging_config import get_logger
 from .bootstrap import DatabaseBootstrapper
 from .password_resolver import PasswordResolver
 from .entry_manager import EntryManager
+
+logger = get_logger(__name__)
 
 
 class MattStash:
@@ -52,7 +54,7 @@ class MattStash:
         """Ensure the credential store and entry manager are initialized."""
         if self._credential_store is None:
             if not self.password:
-                print("[MattStash] No password provided (sidecar file or KDBX_PASSWORD missing)", file=sys.stderr)
+                logger.error("No password provided (sidecar file or KDBX_PASSWORD missing)")
                 return False
 
             try:
@@ -61,7 +63,7 @@ class MattStash:
                 self._entry_manager = EntryManager(kp)
                 return True
             except Exception as e:
-                print(f"[MattStash] Failed to initialize: {e}", file=sys.stderr)
+                logger.error(f"Failed to initialize: {e}")
                 return False
         return True
 

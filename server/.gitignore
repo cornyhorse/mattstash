@@ -1,0 +1,28 @@
+# Environment files
+.env
+.env.local
+
+# Secrets and data
+data/*.kdbx
+secrets/*
+!secrets/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/

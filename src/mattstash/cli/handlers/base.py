@@ -9,6 +9,10 @@ from abc import ABC, abstractmethod
 from argparse import Namespace
 from typing import Any
 
+from ...utils.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class BaseHandler(ABC):
     """Base class for all CLI command handlers."""
@@ -28,7 +32,7 @@ class BaseHandler(ABC):
 
     def error(self, message: str) -> None:
         """Print an error message to stderr."""
-        print(f"[mattstash] {message}", file=sys.stderr)
+        logger.error(message)
 
     def info(self, message: str) -> None:
         """Print an info message to stdout."""

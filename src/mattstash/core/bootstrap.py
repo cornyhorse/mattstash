@@ -5,11 +5,14 @@ Database bootstrap and initialization functionality.
 """
 
 import os
-import sys
+import stat
 import secrets
 from typing import Optional
 
 from ..models.config import config
+from ..utils.logging_config import get_logger, security_warning
+
+logger = get_logger(__name__)
 
 try:
     from pykeepass import create_database as _kp_create_database  # type: ignore
@@ -37,13 +40,32 @@ class DatabaseBootstrapper:
             sidecar_exists = os.path.exists(sidecar)
 
             if db_exists or sidecar_exists:
+                # Check sidecar permissions if it exists
+                if sidecar_exists:
+                    self._check_sidecar_permissions(sidecar)
                 return  # Only bootstrap when BOTH are absent
 
             self._create_database_and_sidecar(db_dir, sidecar)
 
         except Exception as e:
             # Non-fatal: we fall back to the normal resolve/open path
-            print(f"[MattStash] Bootstrap skipped due to error: {e}", file=sys.stderr)
+            logger.warning(f"Bootstrap skipped due to error: {e}")
+
+    def _check_sidecar_permissions(self, sidecar_path: str) -> None:
+        """Check and warn if sidecar file has overly permissive permissions."""
+        try:
+            file_stat = os.stat(sidecar_path)
+            mode = file_stat.st_mode
+            
+            # Check if file is readable/writable by group or others
+            if mode & (stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH):
+                security_warning(
+                    f"Sidecar password file has insecure permissions: {oct(stat.S_IMODE(mode))}. "
+                    f"Should be 0600 (owner read/write only). File: {sidecar_path}"
+                )
+        except Exception:  # pragma: no cover
+            # Couldn't check permissions - might be non-POSIX system
+            pass  # pragma: no cover
 
     def _create_database_and_sidecar(self, db_dir: str, sidecar_path: str) -> None:
         """Create the database directory, sidecar file, and empty database."""
@@ -62,6 +84,8 @@ class DatabaseBootstrapper:
             f.write(pw.encode())
         try:
             os.chmod(sidecar_path, 0o600)
+            # Verify permissions were set correctly
+            self._check_sidecar_permissions(sidecar_path)
         except Exception:
             pass
 
@@ -70,6 +94,6 @@ class DatabaseBootstrapper:
             if _kp_create_database is None:
                 raise RuntimeError("pykeepass.create_database not available in this version")
             _kp_create_database(self.db_path, password=pw)
-            print(f"[MattStash] Created new KeePass DB at {self.db_path} and sidecar {sidecar_path}", file=sys.stderr)
+            logger.info(f"Created new KeePass DB at {self.db_path} and sidecar {sidecar_path}")
         except Exception as e:
-            print(f"[MattStash] Failed to create KeePass DB at {self.db_path}: {e}", file=sys.stderr)
+            logger.error(f"Failed to create KeePass DB: {e}")

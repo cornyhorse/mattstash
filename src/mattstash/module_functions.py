@@ -2,6 +2,23 @@
 mattstash.module_functions
 --------------------------
 Module-level convenience functions for MattStash operations.
+
+THREAD SAFETY WARNING:
+    These module-level functions use a shared global instance (_default_instance).
+    They are NOT thread-safe and should not be used in multi-threaded environments
+    or from multiple threads concurrently.
+    
+    For thread-safe usage, create separate MattStash instances per thread:
+    
+        # Thread-safe approach
+        ms = MattStash(path="/path/to/db.kdbx")
+        credential = ms.get("my-credential")
+    
+    Avoid using module-level functions in:
+    - Web applications with concurrent request handlers
+    - Async/await contexts with multiple coroutines
+    - Multi-threaded applications
+    - Test suites requiring isolation between tests
 """
 
 from typing import Optional, Union, Dict, Any, List
@@ -9,6 +26,7 @@ from .core.mattstash import MattStash
 from .models.credential import Credential
 
 # Module-level convenience: mattstash.get("CREDENTIAL NAME")
+# WARNING: This global state is not thread-safe!
 _default_instance: Optional[MattStash] = None
 
 CredentialResult = Union[Credential, Dict[str, Any]]
