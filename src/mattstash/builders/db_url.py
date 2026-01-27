@@ -88,6 +88,7 @@ class DatabaseUrlBuilder:
         if not self.mattstash._ensure_initialized():
             raise ValueError("[mattstash] Unable to open KeePass database")  # pragma: no cover
         
+        assert self.mattstash._entry_manager is not None
         result = self.mattstash._entry_manager.get_entry_with_custom_properties(title)
         if result is None:
             raise ValueError(f"[mattstash] Credential not found: {title}")

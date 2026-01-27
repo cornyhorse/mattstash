@@ -5,7 +5,7 @@ Refactored MattStash class that orchestrates components.
 """
 
 import os
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 from ..models.config import config
 from ..models.credential import Credential, CredentialResult
@@ -76,6 +76,7 @@ class MattStash:
         """
         if not self._ensure_initialized():
             return None
+        assert self._entry_manager is not None
         return self._entry_manager.get_entry(title, show_password, version)
 
     def list(self, show_password: bool = False) -> List[Credential]:
@@ -84,6 +85,7 @@ class MattStash:
         """
         if not self._ensure_initialized():
             return []
+        assert self._entry_manager is not None
         return self._entry_manager.list_entries(show_password)
 
     def put(
@@ -110,6 +112,7 @@ class MattStash:
         """
         if not self._ensure_initialized():
             return None
+        assert self._entry_manager is not None
 
         return self._entry_manager.put_entry(
             title,
@@ -129,6 +132,7 @@ class MattStash:
         """
         if not self._ensure_initialized():
             return []
+        assert self._entry_manager is not None
         return self._entry_manager.list_versions(title)
 
     def delete(self, title: str) -> bool:
@@ -137,6 +141,7 @@ class MattStash:
         """
         if not self._ensure_initialized():
             return False
+        assert self._entry_manager is not None
         return self._entry_manager.delete_entry(title)
 
     def hydrate_env(self, mapping: Dict[str, str]) -> None:
@@ -149,8 +154,11 @@ class MattStash:
         """
         if not self._ensure_initialized():
             return
+        assert self._credential_store is not None
 
         kp = self._credential_store.open()
+        if kp is None:
+            return
         for src, envname in mapping.items():
             if os.environ.get(envname):
                 continue
@@ -169,14 +177,14 @@ class MattStash:
 
     # ---- Delegated functionality to helper classes ----
 
-    def get_db_url(self, *args, **kwargs) -> str:
+    def get_db_url(self, *args: Any, **kwargs: Any) -> str:
         """Delegate to DatabaseUrlBuilder."""
         return self._db_url_builder.build_url(*args, **kwargs)
 
-    def get_s3_client(self, *args, **kwargs):
+    def get_s3_client(self, *args: Any, **kwargs: Any) -> Any:
         """Delegate to S3ClientBuilder."""
         return self._s3_client_builder.create_client(*args, **kwargs)
 
-    def _parse_host_port(self, endpoint):
+    def _parse_host_port(self, endpoint: Optional[str]) -> tuple[str, int]:
         """Delegate to DatabaseUrlBuilder for backward compatibility with tests."""
         return self._db_url_builder._parse_host_port(endpoint)

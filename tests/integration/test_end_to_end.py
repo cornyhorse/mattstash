@@ -40,14 +40,14 @@ class TestCompleteCredentialLifecycle:
         ms = MattStash(path=str(db_path))
         
         # Put credential
-        result = ms.put("api-key", value="secret-12345")
+        result = ms.put("api-key", value="secret-12345", autoincrement=False)
         assert result is not None
-        assert result.title == "api-key"
+        assert result["name"] == "api-key"
         
         # Get credential (masked)
         cred = ms.get("api-key")
         assert cred is not None
-        assert cred["title"] == "api-key"
+        assert cred["name"] == "api-key"
         assert cred["value"] == "*****"  # Masked by default
         
         # Get credential (unmasked)
@@ -67,18 +67,16 @@ class TestCompleteCredentialLifecycle:
             "postgres-dev",
             username="dbuser",
             password="dbpass",
-            url="localhost:5432",
-            database="myapp"
+            url="localhost:5432"
         )
         assert result is not None
-        assert result.title == "postgres-dev"
+        assert result.credential_name == "postgres-dev"
         
         # Get credential
         cred = ms.get("postgres-dev", show_password=True)
         assert cred.username == "dbuser"
         assert cred.password == "dbpass"
         assert cred.url == "localhost:5432"
-        assert cred.database == "myapp"
     
     def test_update_credential(self, tmp_path):
         """Test updating an existing credential."""
@@ -89,10 +87,10 @@ class TestCompleteCredentialLifecycle:
         ms = MattStash(path=str(db_path))
         
         # Create initial credential
-        ms.put("test-cred", value="initial-value")
+        ms.put("test-cred", value="initial-value", autoincrement=False)
         
         # Update credential
-        result = ms.put("test-cred", value="updated-value")
+        result = ms.put("test-cred", value="updated-value", autoincrement=False)
         assert result is not None
         
         # Verify update
@@ -107,8 +105,8 @@ class TestCompleteCredentialLifecycle:
         
         ms = MattStash(path=str(db_path))
         
-        # Create credential
-        ms.put("to-delete", value="temporary")
+        # Create credential (disable autoincrement to avoid versioning)
+        ms.put("to-delete", value="temporary", autoincrement=False)
         
         # Verify it exists
         cred = ms.get("to-delete")
@@ -130,16 +128,16 @@ class TestCompleteCredentialLifecycle:
         
         ms = MattStash(path=str(db_path))
         
-        # Create
-        result = ms.put("lifecycle-test", value="v1")
+        # Create (disable autoincrement)
+        result = ms.put("lifecycle-test", value="v1", autoincrement=False)
         assert result is not None
         
         # Read
         cred = ms.get("lifecycle-test", show_password=True)
         assert cred["value"] == "v1"
         
-        # Update
-        ms.put("lifecycle-test", value="v2")
+        # Update (still no autoincrement)
+        ms.put("lifecycle-test", value="v2", autoincrement=False)
         cred = ms.get("lifecycle-test", show_password=True)
         assert cred["value"] == "v2"
         
@@ -164,18 +162,18 @@ class TestVersioning:
         ms = MattStash(path=str(db_path))
         
         # Create multiple versions
-        ms.put("api-key@1", value="version-1")
-        ms.put("api-key@2", value="version-2")
-        ms.put("api-key@3", value="version-3")
+        ms.put("api-key", value="version-1", version=1)
+        ms.put("api-key", value="version-2", version=2)
+        ms.put("api-key", value="version-3", version=3)
         
         # Get specific versions
-        v1 = ms.get("api-key@1", show_password=True)
+        v1 = ms.get("api-key", version=1, show_password=True)
         assert v1["value"] == "version-1"
         
-        v2 = ms.get("api-key@2", show_password=True)
+        v2 = ms.get("api-key", version=2, show_password=True)
         assert v2["value"] == "version-2"
         
-        v3 = ms.get("api-key@3", show_password=True)
+        v3 = ms.get("api-key", version=3, show_password=True)
         assert v3["value"] == "version-3"
     
     def test_get_latest_version(self, tmp_path):
@@ -187,8 +185,8 @@ class TestVersioning:
         ms = MattStash(path=str(db_path))
         
         # Create versions
-        ms.put("secret@1", value="old")
-        ms.put("secret@2", value="current")
+        ms.put("secret", value="old", version=1)
+        ms.put("secret", value="current", version=2)
         
         # Get latest
         latest = ms.get("secret", show_password=True)
@@ -203,16 +201,15 @@ class TestVersioning:
         ms = MattStash(path=str(db_path))
         
         # Create versions
-        ms.put("token@1", value="v1")
-        ms.put("token@2", value="v2")
-        ms.put("token@3", value="v3")
+        ms.put("token", value="v1", version=1)
+        ms.put("token", value="v2", version=2)
+        ms.put("token", value="v3", version=3)
         
-        # List versions
-        versions = ms.get_versions("token")
+        # List versions (returns zero-padded version strings)
+        versions = ms.list_versions("token")
         assert len(versions) == 3
-        assert "token@1" in versions
-        assert "token@2" in versions
-        assert "token@3" in versions
+        # Versions are zero-padded strings like "0000000001"
+        assert len(versions[0]) == 10  # Default pad_width
 
 
 class TestListOperations:
@@ -237,16 +234,16 @@ class TestListOperations:
         
         ms = MattStash(path=str(db_path))
         
-        # Create credentials
-        ms.put("api-key-1", value="secret1")
-        ms.put("api-key-2", value="secret2")
-        ms.put("db-password", username="user", password="pass", url="localhost:5432")
+        # Create credentials (disable autoincrement)
+        ms.put("api-key-1", value="secret1", autoincrement=False)
+        ms.put("api-key-2", value="secret2", autoincrement=False)
+        ms.put("db-password", username="user", password="pass", url="localhost:5432", autoincrement=False)
         
         # List all
         credentials = ms.list()
         assert len(credentials) == 3
         
-        titles = [c["title"] for c in credentials]
+        titles = [c.credential_name for c in credentials]
         assert "api-key-1" in titles
         assert "api-key-2" in titles
         assert "db-password" in titles
@@ -263,14 +260,23 @@ class TestDatabaseUrlBuilder:
         
         ms = MattStash(path=str(db_path))
         
-        # Create database credential
+        # Create database credential with custom property for database name
         ms.put(
             "postgres-prod",
             username="admin",
             password="secret123",
             url="db.example.com:5432",
-            database="production"
+            autoincrement=False
         )
+        # Set database as custom property
+        kp = ms._credential_store.open()
+        if kp is None:
+            raise RuntimeError("Could not open database")
+        entry = kp.find_entries(title="postgres-prod", first=True)
+        if entry is None:
+            raise RuntimeError("Could not find entry")
+        entry.set_custom_property("database", "production")
+        ms._credential_store.save()
         
         # Build URL (masked)
         url = ms.get_db_url("postgres-prod")
@@ -289,8 +295,17 @@ class TestDatabaseUrlBuilder:
             username="devuser",
             password="devpass",
             url="localhost:5432",
-            database="devdb"
+            autoincrement=False
         )
+        # Set database as custom property
+        kp = ms._credential_store.open()
+        if kp is None:
+            raise RuntimeError("Could not open database")
+        entry = kp.find_entries(title="postgres-dev", first=True)
+        if entry is None:
+            raise RuntimeError("Could not find entry")
+        entry.set_custom_property("database", "devdb")
+        ms._credential_store.save()
         
         # Build URL with driver
         url = ms.get_db_url("postgres-dev", driver="psycopg")
@@ -309,8 +324,17 @@ class TestDatabaseUrlBuilder:
             username="user",
             password="pass",
             url="localhost:5432",
-            database="testdb"
+            autoincrement=False
         )
+        # Set database as custom property
+        kp = ms._credential_store.open()
+        if kp is None:
+            raise RuntimeError("Could not open database")
+        entry = kp.find_entries(title="test-db", first=True)
+        if entry is None:
+            raise RuntimeError("Could not find entry")
+        entry.set_custom_property("database", "testdb")
+        ms._credential_store.save()
         
         # Build URL unmasked
         url = ms.get_db_url("test-db", mask_password=False)
@@ -353,7 +377,7 @@ class TestErrorHandling:
         ms = MattStash(path=str(db_path))
         
         # Create simple credential
-        ms.put("simple-secret", value="just-a-value")
+        ms.put("simple-secret", value="just-a-value", autoincrement=False)
         
         # Try to build DB URL - should raise
         with pytest.raises(ValueError, match="simple secret"):
@@ -419,7 +443,7 @@ class TestMultipleOperations:
         
         # Create 10 credentials
         for i in range(10):
-            ms.put(f"credential-{i}", value=f"value-{i}")
+            ms.put(f"credential-{i}", value=f"value-{i}", autoincrement=False)
         
         # Verify all created
         credentials = ms.list()
@@ -439,15 +463,15 @@ class TestMultipleOperations:
         ms = MattStash(path=str(db_path))
         
         # Create
-        ms.put("cred1", value="value1")
-        ms.put("cred2", value="value2")
-        ms.put("cred3", value="value3")
+        ms.put("cred1", value="value1", autoincrement=False)
+        ms.put("cred2", value="value2", autoincrement=False)
+        ms.put("cred3", value="value3", autoincrement=False)
         
         # Read
         assert ms.get("cred1") is not None
         
         # Update
-        ms.put("cred2", value="updated-value2")
+        ms.put("cred2", value="updated-value2", autoincrement=False)
         
         # Delete
         ms.delete("cred3")

@@ -74,7 +74,7 @@ class MattStashConfig:
         env_val = os.getenv("MATTSTASH_S3_RETRIES")
         if env_val:
             self.default_retries = int(env_val)
-        env_val = os.getenv("MATTSTASH_CACHE_ENABLED")
+        env_val = os.getenv("MATTSTASH_ENABLE_CACHE")
         if env_val:
             self.cache_enabled = env_val.lower() in ("true", "1", "yes")
         env_val = os.getenv("MATTSTASH_CACHE_TTL")
@@ -133,7 +133,7 @@ class MattStashConfig:
                 if retries is not None:
                     self.default_retries = int(retries)
             
-            if not os.getenv("MATTSTASH_CACHE_ENABLED"):
+            if not os.getenv("MATTSTASH_ENABLE_CACHE"):
                 cache_enabled = get_config_value(file_config, 'cache', 'enabled')
                 if cache_enabled is not None:
                     self.cache_enabled = bool(cache_enabled)

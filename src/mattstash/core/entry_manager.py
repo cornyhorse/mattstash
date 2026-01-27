@@ -4,7 +4,7 @@ mattstash.core.entry_manager
 Handles CRUD operations for KeePass entries.
 """
 
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict, Union, Any
 from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 
@@ -30,7 +30,7 @@ class EntryManager:
         Consider it simple if username and url are empty/None and password is non-empty.
         Notes/comments are allowed and do not change this classification. Tags are ignored.
         """
-        def _empty(v):
+        def _empty(v: Optional[str]) -> bool:
             return v is None or (isinstance(v, str) and v.strip() == "")
 
         try:
@@ -79,7 +79,7 @@ class EntryManager:
             return None
 
         # Find max version
-        def extract_ver(e):
+        def extract_ver(e: Entry) -> int:
             try:
                 return int(e.title[len(prefix):])
             except Exception:
@@ -210,14 +210,14 @@ class EntryManager:
 
         return title, None
 
-    def _put_simple_entry(self, entry: Entry, title: str, value: str, notes: Optional[str],
-                         tags: Optional[List[str]], vstr: Optional[str]) -> Dict:
+    def _put_simple_entry(self, entry: Entry, title: str, value: Optional[str], notes: Optional[str],
+                         tags: Optional[List[str]], vstr: Optional[str]) -> Dict[str, Any]:
         """Handle simple secret entry creation/update."""
         entry.username = ""
         entry.url = ""
         if notes is not None:
             entry.notes = notes
-        entry.password = value
+        entry.password = value or ""
 
         if tags is not None:
             self._set_entry_tags(entry, tags)
@@ -258,7 +258,7 @@ class EntryManager:
             show_password=False,
         )
 
-    def _set_entry_tags(self, entry: Entry, tags: List[str]):
+    def _set_entry_tags(self, entry: Entry, tags: List[str]) -> None:
         """Set tags on an entry, handling different PyKeePass versions."""
         try:
             entry.tags = set(tags)
@@ -321,7 +321,7 @@ class EntryManager:
             candidates = [e for e in self.kp.entries if e.title and e.title.startswith(prefix)]
             if candidates:
                 # Find max version
-                def extract_ver(e):
+                def extract_ver(e: Entry) -> int:
                     try:
                         return int(e.title[len(prefix):])
                     except Exception:
@@ -335,4 +335,6 @@ class EntryManager:
         
         # Format the result
         cred_result = self.get_entry(title, show_password=True)
+        if cred_result is None:
+            return None
         return (cred_result, entry)

@@ -4,7 +4,7 @@ mattstash.s3_client
 S3 client functionality for MattStash.
 """
 
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..core.mattstash import MattStash
@@ -32,7 +32,7 @@ class S3ClientBuilder:
             signature_version: str = "s3v4",
             retries_max_attempts: int = 10,
             verbose: bool = True,
-    ):
+    ) -> Any:
         """
         Read a KeePass entry and return a configured boto3 S3 client.
 

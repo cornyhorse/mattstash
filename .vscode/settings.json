@@ -20,6 +20,8 @@
         "/^bash \\./scripts/run-tests\\.sh tests/test_connection_caching\\.py 2>&1 \\| tail -30$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "pytest": true,
+        "mypy": true
     }
 }

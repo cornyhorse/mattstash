@@ -94,7 +94,7 @@ def put(
         tags: Optional[List[str]] = None,
         version: Optional[int] = None,
         autoincrement: bool = True,
-):
+) -> Optional[CredentialResult]:
     """
     Create or update an entry. If only 'value' is provided, store it in the password field (credstash-like).
     Otherwise, update fields provided and return a Credential.
@@ -157,7 +157,7 @@ def get_s3_client(
         signature_version: str = "s3v4",
         retries_max_attempts: int = 10,
         verbose: bool = True,
-):
+) -> Any:
     global _default_instance
     if path or password or _default_instance is None:
         _default_instance = MattStash(path=path, password=password)

@@ -21,14 +21,14 @@ logger = logging.getLogger(__name__)
 class CredentialStore:
     """Handles KeePass database operations with optional caching."""
 
-    def __init__(self, db_path: str, password: str, cache_enabled: bool = False, cache_ttl: int = 300):
+    def __init__(self, db_path: str, password: str, cache_enabled: bool = False, cache_ttl: Optional[int] = None):
         self.db_path = db_path
         self.password = password
         self._kp: Optional[PyKeePass] = None
         
         # Connection caching settings
         self.cache_enabled = cache_enabled or config.cache_enabled
-        self.cache_ttl = cache_ttl if cache_ttl != 300 else config.cache_ttl
+        self.cache_ttl = cache_ttl if cache_ttl is not None else config.cache_ttl
         self._entry_cache: Dict[str, Entry] = {}
         self._cache_timestamps: Dict[str, float] = {}
 
@@ -104,12 +104,16 @@ class CredentialStore:
     def find_entries_by_prefix(self, prefix: str) -> List[Entry]:
         """Find all entries whose titles start with the given prefix."""
         kp = self.open()
+        if kp is None:
+            return []
         return [e for e in kp.entries if e.title and e.title.startswith(prefix)]
 
     def create_entry(self, title: str, username: str = "", password: str = "",
                     url: str = "", notes: str = "") -> Entry:
         """Create a new entry in the database."""
         kp = self.open()
+        if kp is None:
+            raise DatabaseAccessError("Unable to open database")
         entry = kp.add_entry(
             kp.root_group,
             title=title,
@@ -174,6 +178,8 @@ class CredentialStore:
         """Delete an entry from the database."""
         try:
             kp = self.open()
+            if kp is None:
+                return False
             kp.delete_entry(entry)
             self.save()
             return True
@@ -184,4 +190,6 @@ class CredentialStore:
     def get_all_entries(self) -> List[Entry]:
         """Get all entries from the database."""
         kp = self.open()
+        if kp is None:
+            return []
         return list(kp.entries)
