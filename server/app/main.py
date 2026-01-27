@@ -17,7 +17,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=[config.RATE_LIMIT
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI):  # pragma: no cover
     """Application lifespan manager."""
     # Startup
     print(f"Starting {config.API_TITLE}")

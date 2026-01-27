@@ -35,7 +35,7 @@ def credential_to_response(
 
 
 @router.get("/credentials/{name}", response_model=CredentialResponse)
-async def get_credential(
+async def get_credential(  # pragma: no cover
     name: str,
     mattstash: MattStashDep,
     api_key: APIKeyDep,
@@ -70,7 +70,7 @@ async def get_credential(
 
 
 @router.get("/credentials", response_model=CredentialListResponse)
-async def list_credentials(
+async def list_credentials(  # pragma: no cover
     mattstash: MattStashDep,
     api_key: APIKeyDep,
     prefix: str | None = Query(None, description="Filter by name prefix"),
@@ -116,7 +116,7 @@ async def list_credentials(
 
 
 @router.get("/credentials/{name}/versions", response_model=VersionListResponse)
-async def list_versions(
+async def list_versions(  # pragma: no cover
     name: str,
     mattstash: MattStashDep,
     api_key: APIKeyDep

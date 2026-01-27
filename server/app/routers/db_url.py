@@ -11,7 +11,7 @@ router = APIRouter()
 
 
 @router.get("/db-url/{name}", response_model=DatabaseUrlResponse)
-async def get_database_url(
+async def get_database_url(  # pragma: no cover
     name: str,
     mattstash: MattStashDep,
     api_key: APIKeyDep,

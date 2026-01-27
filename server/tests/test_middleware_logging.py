@@ -36,15 +36,15 @@ class TestLoggingMiddleware:
     
     def test_mask_multiple_patterns(self):
         """Masks multiple sensitive items."""
-        text = 'X-API-Key: key123 {"password": "pass", "value": "val"}'
+        text = 'X-API-Key: key123 {"password": "mypass", "value": "myval"}'
         result = mask_sensitive_data(text)
         
         assert 'X-API-Key: *****' in result
         assert '"password": "*****"' in result
         assert '"value": "*****"' in result
         assert 'key123' not in result
-        assert 'pass' not in result
-        assert 'val' not in result
+        assert 'mypass' not in result
+        assert 'myval' not in result
     
     def test_mask_no_sensitive_data(self):
         """Returns unchanged if no sensitive data."""

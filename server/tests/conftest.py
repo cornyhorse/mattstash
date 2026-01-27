@@ -46,50 +46,59 @@ def temp_api_keys_file() -> Generator[Path, None, None]:
 @pytest.fixture
 def mock_mattstash() -> Mock:
     """Create a mock MattStash instance."""
+    from mattstash.models.credential import Credential
+    
     mock = MagicMock(spec=MattStash)
     
-    # Default behavior for common methods
-    mock.get_credential.return_value = {
-        'name': 'test_cred',
-        'username': 'testuser',
-        'password': 'testpass',
-        'url': 'https://example.com',
-        'notes': 'Test notes'
-    }
+    # Mock get() method - returns Credential object
+    mock.get.return_value = Credential(
+        credential_name='test_cred',
+        username='testuser',
+        password='testpass',
+        url='https://example.com',
+        notes='Test notes',
+        tags=[],
+        show_password=False
+    )
     
-    mock.list_credentials.return_value = [
-        {
-            'name': 'cred1',
-            'username': 'user1',
-            'password': 'pass1',
-            'url': 'https://example1.com',
-            'notes': ''
-        },
-        {
-            'name': 'cred2',
-            'username': 'user2',
-            'password': 'pass2',
-            'url': 'https://example2.com',
-            'notes': 'Notes'
-        }
+    # Mock list() method - returns list of Credential objects
+    mock.list.return_value = [
+        Credential(
+            credential_name='cred1',
+            username='user1',
+            password='pass1',
+            url='https://example1.com',
+            notes='',
+            tags=[],
+            show_password=False
+        ),
+        Credential(
+            credential_name='cred2',
+            username='user2',
+            password='pass2',
+            url='https://example2.com',
+            notes='Notes',
+            tags=[],
+            show_password=False
+        )
     ]
     
-    mock.list_versions.return_value = [
-        {
-            'version': 3,
-            'username': 'user_v3',
-            'password': 'pass_v3',
-            'url': 'https://v3.example.com',
-            'notes': 'Version 3'
-        },
-        {
-            'version': 2,
-            'username': 'user_v2',
-            'password': 'pass_v2',
-            'url': 'https://v2.example.com',
-            'notes': 'Version 2'
-        }
-    ]
+    # Mock list_versions() method - returns list of version strings
+    mock.list_versions.return_value = ['001', '002', '003']
+    
+    # Mock put() method - returns Credential object
+    mock.put.return_value = Credential(
+        credential_name='new_cred',
+        username='newuser',
+        password='newpass',
+        url='https://new.example.com',
+        notes='New notes',
+        tags=[],
+        show_password=False
+    )
+    
+    # Mock delete() method - returns bool
+    mock.delete.return_value = True
     
     return mock
 
@@ -159,8 +168,50 @@ def test_app(clean_env, monkeypatch):
     import app.config as config_module
     reload(config_module)
     
-    from app.main import create_app
-    return create_app()
+    # Create app without lifespan (skip validation)
+    from fastapi import FastAPI
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+    from slowapi.util import get_remote_address
+    from app.config import config
+    from app.middleware.logging import RequestLoggingMiddleware
+    from app.routers import credentials, db_url, health
+    
+    # Initialize rate limiter
+    limiter = Limiter(key_func=get_remote_address, default_limits=[config.RATE_LIMIT])
+    
+    app = FastAPI(
+        title=config.API_TITLE,
+        description=config.API_DESCRIPTION,
+        version=config.API_VERSION,
+        docs_url=f"/api/{config.API_VERSION}/docs",
+        redoc_url=f"/api/{config.API_VERSION}/redoc",
+        openapi_url=f"/api/{config.API_VERSION}/openapi.json"
+    )
+    
+    # Add rate limiting
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    
+    # Skip CORS middleware for tests
+    
+    # Add request logging middleware
+    app.add_middleware(RequestLoggingMiddleware)
+    
+    # Include routers
+    app.include_router(health.router, prefix="/api", tags=["health"])
+    app.include_router(
+        credentials.router,
+        prefix=f"/api/{config.API_VERSION}",
+        tags=["credentials"]
+    )
+    app.include_router(
+        db_url.router,
+        prefix=f"/api/{config.API_VERSION}",
+        tags=["database"]
+    )
+    
+    return app
 
 
 @pytest.fixture
@@ -168,6 +219,23 @@ def test_client(test_app):
     """Create a TestClient from the test app."""
     from fastapi.testclient import TestClient
     return TestClient(test_app)
+
+
+@pytest.fixture
+def client_with_mock_mattstash(test_app, mock_mattstash):
+    """Create a test client with mocked MattStash dependency."""
+    from app.dependencies import get_mattstash
+    from fastapi.testclient import TestClient
+    
+    # Override the dependency
+    test_app.dependency_overrides[get_mattstash] = lambda: mock_mattstash
+    
+    client = TestClient(test_app)
+    
+    yield client
+    
+    # Clean up
+    test_app.dependency_overrides.clear()
 
 
 @pytest.fixture

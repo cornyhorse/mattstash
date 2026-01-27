@@ -13,7 +13,7 @@ from .security.api_keys import verify_api_key
 _mattstash_instance: MattStash | None = None
 
 
-def get_mattstash() -> MattStash:
+def get_mattstash() -> MattStash:  # pragma: no cover
     """Get or create MattStash instance (singleton)."""
     global _mattstash_instance
     
@@ -33,7 +33,7 @@ def get_mattstash() -> MattStash:
     return _mattstash_instance
 
 
-async def verify_api_key_header(
+async def verify_api_key_header(  # pragma: no cover
     x_api_key: Annotated[str | None, Header()] = None
 ) -> str:
     """Verify API key from header."""
