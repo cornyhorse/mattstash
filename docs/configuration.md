@@ -417,6 +417,6 @@ All config options can be set via environment variables:
 - `MATTSTASH_S3_ADDRESSING` → `s3.addressing`
 - `MATTSTASH_S3_SIGNATURE_VERSION` → `s3.signature_version`
 - `MATTSTASH_S3_RETRIES` → `s3.retries`
-- `MATTSTASH_CACHE_ENABLED` → `cache.enabled`
+- `MATTSTASH_ENABLE_CACHE` → `cache.enabled`
 - `MATTSTASH_CACHE_TTL` → `cache.ttl`
 

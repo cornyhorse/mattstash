@@ -64,6 +64,10 @@ class S3ClientBuilder:
         cred = self.mattstash.get(title, show_password=True)
         if cred is None:
             raise ValueError(f"[mattstash] Credential not found: {title}")
+        
+        # Simple secrets (dict) can't be used for S3
+        if isinstance(cred, dict):
+            raise ValueError(f"[mattstash] Entry '{title}' is a simple secret, cannot use for S3 client")
 
         endpoint = _ensure_scheme(cred.url)
         if not endpoint:
@@ -74,8 +78,8 @@ class S3ClientBuilder:
 
         # Lazy imports to avoid hard dependency if caller never uses S3
         try:
-            import boto3
-            from botocore.config import Config
+            import boto3  # type: ignore[import-not-found]
+            from botocore.config import Config  # type: ignore[import-not-found]
         except Exception as e:
             raise RuntimeError("[mattstash] boto3/botocore not available") from e
 

@@ -5,6 +5,7 @@ Handler for the put command.
 """
 
 import json
+import sys
 from argparse import Namespace
 
 from .base import BaseHandler
@@ -50,6 +51,9 @@ class PutHandler(BaseHandler):
             comment=args.comment,
             tags=args.tags,
         )
+        if result is None:
+            print("Error: Failed to create credential", file=sys.stderr)
+            return 1
         if args.json:
             if isinstance(result, dict):
                 print(json.dumps(result, indent=2))

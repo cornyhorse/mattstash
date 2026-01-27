@@ -140,7 +140,7 @@ class EntryManager:
             ))
         return creds
 
-    def put_entry(self, title: str, **kwargs) -> Optional[CredentialResult]:
+    def put_entry(self, title: str, **kwargs: Any) -> Optional[CredentialResult]:
         """
         Create or update an entry.
 
