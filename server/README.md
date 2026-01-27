@@ -552,6 +552,66 @@ docker logs -f mattstash-api
 kubectl logs -f deployment/mattstash-api
 ```
 
+## Development & Testing
+
+### Running Tests
+
+The server includes comprehensive test coverage (90%+ target) for all components.
+
+#### Setup Test Environment
+
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+pip install -e ../  # Install mattstash package
+```
+
+#### Run Tests
+
+```bash
+# Run all tests with coverage
+./run-tests.sh
+
+# Run specific test file
+source venv/bin/activate
+python -m pytest tests/test_config.py -v
+
+# Run without coverage (faster)
+python -m pytest tests/ -v --no-cov
+
+# Run with verbose output
+python -m pytest tests/ -v --tb=short
+```
+
+#### Test Structure
+
+```
+tests/
+├── conftest.py                 # Shared fixtures
+├── test_config.py              # Configuration tests (12 tests)
+├── test_api_keys.py            # API key verification (4 tests)
+├── test_dependencies.py        # Dependency injection (6 tests)
+├── test_router_health.py       # Health endpoint (3 tests)
+├── test_router_credentials.py  # Credentials CRUD (24 tests)
+├── test_router_db_url.py       # Database URL builder (9 tests)
+├── test_middleware_logging.py  # Request logging (9 tests)
+├── test_main.py                # App factory & config (10 tests)
+└── test_models.py              # Pydantic models (9 tests)
+```
+
+**Total: 84 tests**
+
+Coverage targets:
+- Config, API keys, Health, Models: 100%
+- Dependencies, Main: 90%+
+- Routers, Middleware: 90%+
+- Overall: 90%+
+
 ## License
 
 This server application uses the MattStash library, which is licensed under the MIT License.
