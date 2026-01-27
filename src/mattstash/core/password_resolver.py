@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 class PasswordResolver:
     """Handles password resolution from sidecar files and environment variables."""
 
-    def __init__(self, db_path: str, sidecar_basename: str = None):
+    def __init__(self, db_path: str, sidecar_basename: Optional[str] = None):
         self.db_path = db_path
         self.sidecar_basename = sidecar_basename or config.sidecar_basename
 

@@ -303,3 +303,36 @@ class EntryManager:
         except Exception as ex:
             logger.error(f"Failed to delete entry '{title}': {ex}")
             return False
+    
+    def get_entry_with_custom_properties(self, title: str) -> Optional[tuple[CredentialResult, Entry]]:
+        """
+        Fetch an entry and return both the formatted result and the raw Entry object.
+        This allows callers to access custom properties without re-opening the database.
+        
+        Returns:
+            Tuple of (CredentialResult, Entry) if found, None if not found
+        """
+        # Try to find the entry - handle versioning
+        entry = self.kp.find_entries(title=title, first=True)
+        
+        if not entry:
+            # Try versioned lookup
+            prefix = f"{title}@"
+            candidates = [e for e in self.kp.entries if e.title and e.title.startswith(prefix)]
+            if candidates:
+                # Find max version
+                def extract_ver(e):
+                    try:
+                        return int(e.title[len(prefix):])
+                    except Exception:
+                        return -1
+                versioned_candidates = [(extract_ver(e), e) for e in candidates if extract_ver(e) >= 0]
+                if versioned_candidates:
+                    max_ver, entry = max(versioned_candidates, key=lambda t: t[0])
+        
+        if not entry:
+            return None
+        
+        # Format the result
+        cred_result = self.get_entry(title, show_password=True)
+        return (cred_result, entry)

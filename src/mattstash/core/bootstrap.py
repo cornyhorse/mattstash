@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover
 class DatabaseBootstrapper:
     """Handles database initialization and bootstrap operations."""
 
-    def __init__(self, db_path: str, sidecar_basename: str = None):
+    def __init__(self, db_path: str, sidecar_basename: Optional[str] = None):
         self.db_path = db_path
         self.sidecar_basename = sidecar_basename or config.sidecar_basename
 

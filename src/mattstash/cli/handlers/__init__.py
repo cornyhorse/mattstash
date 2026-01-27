@@ -13,6 +13,7 @@ from .delete import DeleteHandler
 from .versions import VersionsHandler
 from .db_url import DbUrlHandler
 from .s3_test import S3TestHandler
+from .config import ConfigHandler
 
 __all__ = [
     "BaseHandler",
@@ -25,4 +26,5 @@ __all__ = [
     "VersionsHandler",
     "DbUrlHandler",
     "S3TestHandler",
+    "ConfigHandler",
 ]

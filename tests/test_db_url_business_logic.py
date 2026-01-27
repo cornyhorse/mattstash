@@ -26,9 +26,9 @@ def test_db_url_builder_mask_style_omit():
         "sslmode": None
     }.get(key)
 
-    mock_mattstash.get.return_value = mock_cred
+    # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._credential_store.open.return_value.find_entries.return_value = mock_entry
+    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
 
     # Test mask_style="omit" - should omit password entirely
     result = builder.build_url("test", mask_password=True, mask_style="omit")
@@ -57,9 +57,9 @@ def test_db_url_builder_unmasked_no_password():
         "sslmode": None
     }.get(key)
 
-    mock_mattstash.get.return_value = mock_cred
+    # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._credential_store.open.return_value.find_entries.return_value = mock_entry
+    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
 
     # Test mask_password=False with no password
     result = builder.build_url("test", mask_password=False)
@@ -87,9 +87,9 @@ def test_db_url_builder_with_sslmode():
         "sslmode": "require"  # SSL mode present
     }.get(key)
 
-    mock_mattstash.get.return_value = mock_cred
+    # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._credential_store.open.return_value.find_entries.return_value = mock_entry
+    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
 
     # Test with SSL mode
     result = builder.build_url("test")
@@ -117,9 +117,9 @@ def test_db_url_builder_sslmode_override():
         "sslmode": "prefer"  # Will be overridden
     }.get(key)
 
-    mock_mattstash.get.return_value = mock_cred
+    # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._credential_store.open.return_value.find_entries.return_value = mock_entry
+    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
 
     # Test with SSL mode override
     result = builder.build_url("test", sslmode_override="disable")
@@ -147,9 +147,9 @@ def test_db_url_builder_masked_stars_no_password():
         "sslmode": None
     }.get(key)
 
-    mock_mattstash.get.return_value = mock_cred
+    # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._credential_store.open.return_value.find_entries.return_value = mock_entry
+    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
 
     # Test mask_style="stars" with no password
     result = builder.build_url("test", mask_password=True, mask_style="stars")
@@ -177,9 +177,9 @@ def test_db_url_builder_unmasked_with_password():
         "sslmode": None
     }.get(key)
 
-    mock_mattstash.get.return_value = mock_cred
+    # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._credential_store.open.return_value.find_entries.return_value = mock_entry
+    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
 
     # Test mask_password=False with password
     result = builder.build_url("test", mask_password=False)
@@ -189,32 +189,21 @@ def test_db_url_builder_unmasked_with_password():
 
 
 def test_db_url_builder_credential_not_found():
-    """Test error when credential entry is not found - covers line 109"""
+    """Test error when credential is not found"""
     mock_mattstash = Mock()
     builder = DatabaseUrlBuilder(mock_mattstash)
 
-    # Mock credential exists but entry lookup fails
-    mock_cred = Mock()
-    mock_cred.username = "testuser"
-    mock_cred.password = "testpass"
-    mock_cred.url = "localhost:5432"
-
-    mock_mattstash.get.return_value = mock_cred
+    # Mock the new interface - credential not found
     mock_mattstash._ensure_initialized.return_value = True
+    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = None
 
-    # Mock database operations - no entry found and no versioned entries
-    mock_kp = Mock()
-    mock_kp.find_entries.return_value = None  # Entry not found
-    mock_kp.entries = []  # No versioned entries either
-    mock_mattstash._credential_store.open.return_value = mock_kp
-
-    # Should raise ValueError when entry is not found
-    with pytest.raises(ValueError, match="Credential entry not found: nonexistent"):
+    # Should raise ValueError when credential is not found
+    with pytest.raises(ValueError, match="Credential not found: nonexistent"):
         builder.build_url("nonexistent")
 
 
 def test_db_url_builder_versioned_entry_resolution():
-    """Test successful versioned entry resolution - covers the max() line"""
+    """Test successful versioned entry resolution"""
     mock_mattstash = Mock()
     builder = DatabaseUrlBuilder(mock_mattstash)
 
@@ -224,33 +213,20 @@ def test_db_url_builder_versioned_entry_resolution():
     mock_cred.password = "testpass"
     mock_cred.url = "localhost:5432"
 
-    mock_mattstash.get.return_value = mock_cred
-    mock_mattstash._ensure_initialized.return_value = True
-
-    # Mock database operations - no direct entry but versioned entries exist
-    mock_kp = Mock()
-    mock_kp.find_entries.return_value = None  # Direct entry not found
-
-    # Create mock versioned entries
-    mock_entry_v1 = Mock()
-    mock_entry_v1.title = "test@0000000001"
-    mock_entry_v2 = Mock()
-    mock_entry_v2.title = "test@0000000003"  # Higher version
-    mock_entry_v2.get_custom_property.side_effect = lambda key: {
+    # Mock the database entry for versioned credential
+    mock_entry = Mock()
+    mock_entry.get_custom_property.side_effect = lambda key: {
         "database": "testdb",
         "sslmode": None
     }.get(key)
 
-    # Mock other entries that shouldn't match
-    mock_other_entry = Mock()
-    mock_other_entry.title = "other@0000000001"
+    # Mock the new interface
+    mock_mattstash._ensure_initialized.return_value = True
+    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
 
-    mock_kp.entries = [mock_entry_v1, mock_other_entry, mock_entry_v2]
-    mock_mattstash._credential_store.open.return_value = mock_kp
-
-    # Should successfully find the highest versioned entry (v3)
+    # Should successfully build URL
     result = builder.build_url("test")
 
-    # Should successfully build URL using the highest version entry
+    # Should successfully build URL using the entry
     assert "postgresql://testuser:*****@localhost:5432/testdb" in result
 

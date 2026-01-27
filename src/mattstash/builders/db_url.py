@@ -84,29 +84,21 @@ class DatabaseUrlBuilder:
           - CLI masked default (omit, with driver):   `postgresql+psycopg://user@host:5432/db`
           - Unmasked with driver:                     `postgresql+psycopg://user:pw@host:5432/db`
         """
-        cred = self.mattstash.get(title, show_password=True)
-        if cred is None:
+        # Get credential and entry in single database operation
+        if not self.mattstash._ensure_initialized():
+            raise ValueError("[mattstash] Unable to open KeePass database")  # pragma: no cover
+        
+        result = self.mattstash._entry_manager.get_entry_with_custom_properties(title)
+        if result is None:
             raise ValueError(f"[mattstash] Credential not found: {title}")
+        
+        cred, entry = result
+        
         # If `cred` is a dict (simple secret), this is not a full DB cred
         if isinstance(cred, dict):
             raise ValueError("[mattstash] Entry is a simple secret and cannot be used for a DB connection")
 
         host, port = self._parse_host_port(cred.url)
-
-        # Use the refactored approach to get the KeePass database
-        if not self.mattstash._ensure_initialized():
-            raise ValueError("[mattstash] Unable to open KeePass database")  # pragma: no cover
-        kp = self.mattstash._credential_store.open()
-        entry = kp.find_entries(title=title, first=True)
-        if not entry:
-            # If versioning was used and latest resolved above, we still need the entry object to read custom props
-            # Attempt to resolve latest versioned entry
-            prefix = f"{title}@"
-            candidates = [e for e in kp.entries if e.title and e.title.startswith(prefix)]
-            if candidates:
-                entry = max(candidates, key=lambda e: int(e.title[len(prefix):]))  # pragma: no cover
-            else:
-                raise ValueError(f"[mattstash] Credential entry not found: {title}")
 
         dbname = database or entry.get_custom_property("database") or entry.get_custom_property("dbname")
         if not dbname:
