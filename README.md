@@ -23,6 +23,12 @@ pip install mattstash
 
 # With S3 support
 pip install "mattstash[s3]"
+
+# With YAML configuration file support
+pip install "mattstash[config]"
+
+# With all optional features
+pip install "mattstash[all]"
 ```
 
 ### First Use
@@ -90,6 +96,27 @@ mattstash put "api-key" --value "specific-value" --version 5
 mattstash versions "api-key"
 ```
 
+### Connection Caching
+
+Optional performance optimization for batch operations:
+
+```bash
+# Enable caching (disabled by default)
+export MATTSTASH_ENABLE_CACHE=true
+export MATTSTASH_CACHE_TTL=300  # 5 minutes
+
+# Or via configuration file
+mattstash config  # Generate ~/.config/mattstash/config.yml
+```
+
+**Benefits:**
+- Reduces database I/O for repeated lookups
+- Ideal for scripts fetching multiple credentials
+- Automatic cache invalidation on database changes
+- TTL-based expiration for freshness
+
+See [docs/caching.md](docs/caching.md) for details.
+
 ### S3 Integration
 
 Store S3 credentials and get ready-to-use boto3 clients:
@@ -129,8 +156,26 @@ mattstash db-url "prod-db" --database myapp_prod
 | `versions <name>` | Show version history |
 | `s3-test <name>` | Test S3 connectivity |
 | `db-url <name>` | Generate database URL |
+| `config` | Generate example configuration file |
 
 See [CLI Documentation](docs/cli-reference.md) for complete command reference.
+
+### Configuration Files
+
+MattStash supports YAML configuration files for persistent settings:
+
+```bash
+# Generate example config
+mattstash config
+
+# Edit configuration
+vi ~/.config/mattstash/config.yml
+```
+
+Configuration priority: CLI args > Environment variables > Config file > Defaults
+
+See [Configuration Guide](docs/configuration.md) for details.
+
 
 ## Python API
 
@@ -161,6 +206,18 @@ db_url = stash.get_db_url("database", database="myapp")
 ```
 
 See [Python API Documentation](docs/python-api.md) for complete reference.
+
+## API Server (Optional)
+
+MattStash includes an optional FastAPI-based HTTP service for accessing credentials over the network. This is useful for containerized environments where multiple services need secure access to credentials.
+
+**Features:**
+- 🔒 API key authentication
+- 🐳 Docker and Kubernetes ready
+- 📊 Rate limiting and audit logging
+- 🚀 Read-only by default (secure)
+
+See the [Server README](server/README.md) for setup and deployment instructions.
 
 ## Documentation
 

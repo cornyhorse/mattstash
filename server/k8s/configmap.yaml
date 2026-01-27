@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mattstash-config
+  namespace: mattstash
+data:
+  MATTSTASH_DB_PATH: "/data/mattstash.kdbx"
+  KDBX_PASSWORD_FILE: "/secrets/kdbx-password"
+  MATTSTASH_API_KEYS_FILE: "/secrets/api-keys"
+  MATTSTASH_LOG_LEVEL: "info"
+  MATTSTASH_RATE_LIMIT: "100/minute"
+
+---
+# Note: Store your KeePass database in a separate ConfigMap or PersistentVolume
+# For small databases, you can use a ConfigMap with base64-encoded data:
+#
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: mattstash-db
+#   namespace: mattstash
+# binaryData:
+#   mattstash.kdbx: <base64-encoded-kdbx-file>
+#
+# To create: kubectl create configmap mattstash-db --from-file=mattstash.kdbx=/path/to/your/database.kdbx -n mattstash

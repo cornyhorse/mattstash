@@ -5,16 +5,18 @@ Handles password resolution from various sources.
 """
 
 import os
-import sys
 from typing import Optional
 
 from ..models.config import config
+from ..utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class PasswordResolver:
     """Handles password resolution from sidecar files and environment variables."""
 
-    def __init__(self, db_path: str, sidecar_basename: str = None):
+    def __init__(self, db_path: str, sidecar_basename: Optional[str] = None):
         self.db_path = db_path
         self.sidecar_basename = sidecar_basename or config.sidecar_basename
 
@@ -40,12 +42,12 @@ class PasswordResolver:
                 try:
                     with open(sidecar_path, "rb") as f:
                         pw = f.read().decode().strip()
-                        print(f"[MattStash] Loaded password from sidecar file {sidecar_path}", file=sys.stderr)
+                        logger.debug(f"Loaded password from sidecar file {sidecar_path}")
                         return pw
-                except Exception:
-                    print(f"[MattStash] Failed to read sidecar password file {sidecar_path}", file=sys.stderr)
+                except Exception as e:
+                    logger.warning(f"Failed to read sidecar password file: {e}")
             else:
-                print(f"[MattStash] Sidecar password file not found at {sidecar_path}", file=sys.stderr)
+                logger.debug(f"Sidecar password file not found at {sidecar_path}")
         except Exception:  # pragma: no cover
             # Shouldn't really happen, but just in case  # pragma: no cover
             pass  # pragma: no cover
@@ -55,7 +57,7 @@ class PasswordResolver:
         """Try to read password from environment variable."""
         env_pw = os.getenv("KDBX_PASSWORD")
         if env_pw is not None:
-            print("[MattStash] Loaded password from environment variable KDBX_PASSWORD", file=sys.stderr)
+            logger.debug("Loaded password from environment variable KDBX_PASSWORD")
         else:
-            print("[MattStash] Environment variable KDBX_PASSWORD not set", file=sys.stderr)
+            logger.debug("Environment variable KDBX_PASSWORD not set")
         return env_pw

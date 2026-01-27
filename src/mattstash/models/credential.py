@@ -30,7 +30,7 @@ class Credential:
         return (f"Credential(credential_name={self.credential_name!r}, username={self.username!r}, "
                 f"password={pwd!r}, url={self.url!r}, notes={self.notes!r}, tags={self.tags!r})")
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> Dict[str, Any]:
         # Provide a dict representation with password masked if show_password is False
         return {
             "credential_name": self.credential_name,
@@ -42,7 +42,7 @@ class Credential:
         }
 
 
-def serialize_credential(cred: Credential, show_password: bool = False) -> dict:
+def serialize_credential(cred: Credential, show_password: bool = False) -> Dict[str, Any]:
     """
     Return a JSON-serializable dict for a Credential, honoring show_password.
     """

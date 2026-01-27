@@ -1,5 +1,27 @@
 {
     "chat.tools.terminal.autoApprove": {
-        "od": true
+        "od": true,
+        "./scripts/run-tests.sh": true,
+        "pip": true,
+        "/^python -m pytest tests/test_advanced_coverage\\.py::test_bootstrap_error_handling tests/test_advanced_coverage\\.py::test_bootstrap_create_database_none tests/test_advanced_coverage\\.py::test_password_resolution_no_sources tests/test_cli_handlers_coverage\\.py::test_base_handler_error_method -xvs$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^python3 -m pytest tests/test_advanced_coverage\\.py::test_bootstrap_error_handling tests/test_advanced_coverage\\.py::test_bootstrap_create_database_none tests/test_advanced_coverage\\.py::test_password_resolution_no_sources tests/test_cli_handlers_coverage\\.py::test_base_handler_error_method -xvs$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "docker build": true,
+        "docker ps": true,
+        "/^cd /Users/matt/Documents/GitHub/mattstash/server/k8s && for file in \\*\\.yaml; do echo \"Checking \\$file\\.\\.\\.\" && python3 -c \"import yaml; yaml\\.safe_load\\(open\\('\\$file'\\)\\)\" && echo \"✓ Valid YAML\"; done$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^bash \\./scripts/run-tests\\.sh tests/test_connection_caching\\.py 2>&1 \\| tail -30$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "pytest": true,
+        "mypy": true
     }
 }

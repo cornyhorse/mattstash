@@ -1,6 +1,6 @@
 # MattStash Master Plan
 
-## Current Phase: 1
+## Current Phase: 5
 ## Current Status: Not Started
 
 ## Project Summary
@@ -12,8 +12,11 @@ MattStash is a KeePass-backed secrets accessor with CLI and Python API. This pla
 
 | Phase | Name | Status | Description |
 |-------|------|--------|-------------|
-| 1 | [Code Quality & Security](plan_1.md) | Not Started | Address security issues and code quality improvements |
-| 2 | [FastAPI Secrets Service](plan_2.md) | Not Started | Create HTTP API for Docker network deployment |
+| 1 | [Code Quality & Security](plan_1.md) | ✅ Complete | Address security issues and code quality improvements |
+| 2 | [FastAPI Secrets Service](plan_2.md) | ✅ Complete | Create HTTP API for Docker network deployment |
+| 3 | Documentation & Examples | ⚠️ In Progress | Enhanced documentation and examples |
+| 4 | [Server Test Coverage](plan_4.md) | ⚠️ In Progress | Comprehensive tests for server component (90%+ coverage) |
+| 5 | [CLI-Server Integration & Testing](plan_5.md) | 🚧 Not Started | CLI server mode, integration tests, test infrastructure |
 
 ---
 
@@ -68,10 +71,71 @@ MattStash is a KeePass-backed secrets accessor with CLI and Python API. This pla
 
 ---
 
+## Phase 4: Server Test Coverage
+
+**Objective**: Create comprehensive test coverage for the FastAPI server component, targeting 90%+ coverage.
+
+### Scope
+- 15 Python files in `/server/app/`
+- All API endpoints (health, credentials, db-url)
+- Authentication and rate limiting
+- Middleware and configuration
+
+### Coverage Targets
+| Component | Target |
+|-----------|--------|
+| Routers (credentials, db_url, health) | 100% |
+| Security (api_keys) | 100% |
+| Dependencies | 100% |
+| Config | 100% |
+| Middleware | 95% |
+| Models | 85% |
+| **Overall** | **90%+** |
+
+### Pragma No Cover
+Applied judiciously to:
+- Print statements (startup/shutdown logging)
+- Pydantic `Config` classes (documentation only)
+
+📄 **[Full Details: plan_4.md](plan_4.md)**
+
+---
+
+## Phase 5: CLI-Server Integration & Comprehensive Testing
+
+**Objective**: Enable CLI to target the MattStash API server, create integration tests between CLI and server, complete server test coverage, and update test infrastructure.
+
+### Key Features
+1. **CLI Server Mode**: Add `--server-url` and `--api-key` options to CLI
+2. **HTTP Client**: New `MattStashServerClient` for server communication
+3. **Integration Tests**: End-to-end tests with CLI ↔ Server via Docker
+4. **Server Unit Tests**: Complete server test suite (90%+ coverage)
+5. **Test Infrastructure**: Updated `scripts/run-tests.sh` with `--all`, `--server`, `--integration` flags
+
+### Implementation Tasks
+- Add global CLI options for server URL and API key
+- Create HTTP client module for server communication
+- Update all CLI handlers to support local and server modes
+- Build comprehensive server unit test suite
+- Create integration test suite with Docker Compose fixtures
+- Update test script with flag-based suite selection
+
+### Documentation Updates
+- Update README.md to mention server mode
+- Add server configuration to docs/configuration.md
+- Update CLI reference with global server options
+- Reference server docs without duplication
+
+📄 **[Full Details: plan_5.md](plan_5.md)**
+
+---
+
 ## Quick Links
 
 - [Phase 1: Code Quality & Security](plan_1.md)
 - [Phase 2: FastAPI Secrets Service](plan_2.md)
+- [Phase 4: Server Test Coverage](plan_4.md)
+- [Phase 5: CLI-Server Integration & Testing](plan_5.md)
 
 ---
 
@@ -80,11 +144,17 @@ MattStash is a KeePass-backed secrets accessor with CLI and Python API. This pla
 | Date | Agent | Activity | Notes |
 |------|-------|----------|-------|
 | 2026-01-24 | Initial Review | Code review & planning | Created plan_1.md and plan_2.md |
+| 2026-01-24 | Phase 1 | Security & quality fixes | Completed Phase 1 (logging, validation, etc.) |
+| 2026-01-24 | Phase 2 | Server implementation | Completed Phase 2a + 2c (API, Docker, K8s) |
+| 2026-01-24 | Phase 4 | Test planning | Created plan_4.md for server test coverage |
+| 2026-01-26 | Phase 5 | Integration planning | Created plan_5.md for CLI-server integration |
 
 ---
 
 ## Notes
 
-- Phase 1 should be completed before Phase 2 to ensure the core library is solid
-- Phase 2 can be started in parallel for planning/design work
-- Security is the top priority throughout both phases
+- Phase 1 ✅ Complete (January 24, 2026)
+- Phase 2 ✅ Complete (January 24, 2026)
+- Phase 3 ⚠️ In Progress (Documentation & Examples)
+- Phase 4 ⚠️ In Progress (Server tests - may overlap with Phase 5 Task 3)
+- Phase 5 🚧 Not Started (CLI-server integration planned)

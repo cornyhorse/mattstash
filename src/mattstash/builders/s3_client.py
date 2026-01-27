@@ -4,7 +4,7 @@ mattstash.s3_client
 S3 client functionality for MattStash.
 """
 
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..core.mattstash import MattStash
@@ -32,7 +32,7 @@ class S3ClientBuilder:
             signature_version: str = "s3v4",
             retries_max_attempts: int = 10,
             verbose: bool = True,
-    ):
+    ) -> Any:
         """
         Read a KeePass entry and return a configured boto3 S3 client.
 
@@ -41,7 +41,25 @@ class S3ClientBuilder:
           - access_key    <- entry.username (required)
           - secret_key    <- entry.password (required)
 
-        Raises ValueError on missing/invalid credential fields.
+        Args:
+            title: Name of the KeePass entry containing S3 credentials
+            region: AWS region (default: "us-east-1")
+            addressing: S3 addressing style - "virtual" or "path" (default: "path")
+            signature_version: AWS signature version (default: "s3v4")
+            retries_max_attempts: Maximum retry attempts (default: 10)
+            verbose: Print connection details (default: True)
+            
+        Returns:
+            Configured boto3 S3 client instance
+            
+        Raises:
+            ValueError: If credential is not found or missing required fields
+            RuntimeError: If boto3/botocore is not available
+            
+        Example:
+            >>> ms = MattStash()
+            >>> s3 = ms.get_s3_client("minio-dev", region="us-west-2")
+            >>> buckets = s3.list_buckets()
         """
         cred = self.mattstash.get(title, show_password=True)
         if cred is None:

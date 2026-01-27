@@ -39,6 +39,8 @@ dependencies = [
 # Optional/extras: let users opt into boto3 only if they need S3
 [project.optional-dependencies]
 s3 = ["boto3>=1.28,<2.0", "botocore>=1.31,<2.0"]
+config = ["PyYAML>=6.0,<7.0"]
+all = ["boto3>=1.28,<2.0", "botocore>=1.31,<2.0", "PyYAML>=6.0,<7.0"]
 
 [project.urls]
 Homepage = "https://github.com/cornyhorse/mattstash"
@@ -48,3 +50,16 @@ Changelog = "https://github.com/cornyhorse/mattstash/releases"
 
 [project.scripts]
 mattstash = "mattstash.cli.main:main"
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+show_error_codes = true
+disallow_untyped_defs = true
+disallow_any_unimported = false
+
+[[tool.mypy.overrides]]
+module = ["pykeepass.*", "yaml"]
+ignore_missing_imports = true

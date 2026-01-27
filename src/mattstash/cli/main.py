@@ -18,6 +18,7 @@ from .handlers import (
     VersionsHandler,
     DbUrlHandler,
     S3TestHandler,
+    ConfigHandler,
 )
 
 
@@ -103,6 +104,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_s3.add_argument("--bucket", help="If provided, issue a HeadBucket to test connectivity")
     p_s3.add_argument("--quiet", action="store_true", help="Only exit code, no prints")
 
+    # config
+    p_config = subparsers.add_parser("config", help="Generate example configuration file")
+    p_config.add_argument("--output", help="Output path for config file (default: ~/.config/mattstash/config.yml)")
+
     args = parser.parse_args(argv)
 
     # Command handler mapping
@@ -116,6 +121,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "versions": VersionsHandler(),
         "db-url": DbUrlHandler(),
         "s3-test": S3TestHandler(),
+        "config": ConfigHandler(),
     }
 
     # Get the appropriate handler and execute it

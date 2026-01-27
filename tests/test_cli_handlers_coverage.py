@@ -30,9 +30,9 @@ def test_base_handler_info_method():
 def test_base_handler_error_method():
     """Test the error method in BaseHandler - covers line 27"""
     handler = SetupHandler()  # Use a concrete implementation
-    with patch('builtins.print') as mock_print:
+    with patch('mattstash.cli.handlers.base.logger') as mock_logger:
         handler.error("test error message")
-        mock_print.assert_called_once_with("[mattstash] test error message", file=sys.stderr)
+        mock_logger.error.assert_called_once_with("test error message")
 
 
 def test_setup_handler_force_overwrite():

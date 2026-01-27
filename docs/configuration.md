@@ -306,3 +306,117 @@ Environment=KDBX_PASSWORD_FILE=/etc/myapp/.password
 [Install]
 WantedBy=multi-user.target
 ```
+
+---
+
+## YAML Configuration File Support
+
+**New in v0.2.0** - MattStash now supports YAML configuration files for persistent settings.
+
+### Installation
+
+Configuration file support requires PyYAML:
+
+```bash
+pip install 'mattstash[config]'
+```
+
+Or install all optional dependencies:
+
+```bash
+pip install 'mattstash[all]'
+```
+
+### Configuration Priority
+
+Settings are applied in the following order (highest to lowest priority):
+
+1. **CLI Arguments** - Explicit parameters passed to commands
+2. **Environment Variables** - `MATTSTASH_*` environment variables  
+3. **Configuration File** - YAML config file
+4. **Default Values** - Built-in defaults
+
+### Configuration File Locations
+
+MattStash searches for configuration in this order:
+
+1. `~/.config/mattstash/config.yml`
+2. `~/.mattstash.yml`
+3. `.mattstash.yml` (current directory)
+
+The first file found is used.
+
+### Generating an Example Config
+
+Use the CLI to generate an example configuration file:
+
+```bash
+# Generate at default location (~/.config/mattstash/config.yml)
+mattstash config
+
+# Generate at custom location
+mattstash config --output ~/my-config.yml
+```
+
+### Available Configuration Options
+
+```yaml
+# MattStash Configuration
+# Priority: CLI args > Env vars > Config file > Defaults
+
+database:
+  path: ~/.config/mattstash/mattstash.kdbx
+  sidecar_basename: .password.txt
+
+versioning:
+  pad_width: 10
+
+logging:
+  level: INFO
+  verbose: false
+
+s3:
+  region: us-east-1
+  addressing: path
+  signature_version: s3v4
+  retries: 10
+
+cache:
+  enabled: false
+  ttl: 300
+```
+
+### Team Configuration Example
+
+Create a `.mattstash.yml` in your project repository:
+
+```yaml
+database:
+  path: ./team-secrets.kdbx
+  
+s3:
+  region: us-west-2
+  addressing: virtual
+
+logging:
+  level: DEBUG
+  verbose: true
+```
+
+Team members will automatically use these settings when working in the project directory.
+
+### Environment Variable Mapping
+
+All config options can be set via environment variables:
+
+- `MATTSTASH_DB_PATH` → `database.path`
+- `MATTSTASH_SIDECAR_BASENAME` → `database.sidecar_basename`
+- `MATTSTASH_VERSION_PAD_WIDTH` → `versioning.pad_width`
+- `MATTSTASH_LOG_LEVEL` → `logging.level`
+- `MATTSTASH_S3_REGION` → `s3.region`
+- `MATTSTASH_S3_ADDRESSING` → `s3.addressing`
+- `MATTSTASH_S3_SIGNATURE_VERSION` → `s3.signature_version`
+- `MATTSTASH_S3_RETRIES` → `s3.retries`
+- `MATTSTASH_CACHE_ENABLED` → `cache.enabled`
+- `MATTSTASH_CACHE_TTL` → `cache.ttl`
+
