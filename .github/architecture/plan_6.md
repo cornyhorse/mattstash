@@ -1,7 +1,8 @@
 # Phase 6: Code Review & Security Audit Remediation
 
-## Status: 🔴 NOT STARTED
+## Status: � IN PROGRESS — Sprint 1 Complete
 ## Created: February 26, 2026
+## Last Updated: February 26, 2026
 ## Audit Performed By: GitHub Copilot (automated)
 
 ## Objective
@@ -22,7 +23,7 @@ Remediate findings from the comprehensive code review and security audit conduct
 - **App tests**: 209 passed, 1 skipped — **73% coverage** (not >90% as previously claimed)
 - **Server tests**: 43/84 passing (test isolation issues with FastAPI dependency injection)
 - **Integration tests**: Created but require Docker to run
-- **mypy strict**: Cannot verify (mypy not installed in venv)
+- **mypy strict**: ✅ Verified passing — 0 errors in 34 source files (mypy installed and confirmed)
 
 ---
 
@@ -44,33 +45,37 @@ Remediate findings from the comprehensive code review and security audit conduct
 
 #### A1. Fix `build_db_url()` calling non-existent method (App CR-1)
 **Priority**: Critical  
+**Status**: ✅ FIXED  
 **File**: `src/mattstash/builders/db_url.py` line 42  
 **Issue**: `build_db_url()` calls `builder.build_postgresql_url()` but the method is named `build_url()`. This causes `AttributeError` at runtime.  
-**Fix**: Change `build_postgresql_url` to `build_url` in the convenience function.  
+**Fix**: Changed `build_postgresql_url` to `build_url` in the convenience function.  
 **Effort**: 5 minutes  
 **Risk**: None — straightforward rename
 
 #### A2. Fix API key timing attack vulnerability (Server C1)
 **Priority**: Critical  
+**Status**: ✅ FIXED  
 **File**: `server/app/security/api_keys.py` line 19  
 **Issue**: `api_key in valid_keys` uses non-constant-time comparison, enabling timing side-channel attacks to guess API keys.  
-**Fix**: Use `hmac.compare_digest()` with iteration over valid keys.  
+**Fix**: Replaced with `hmac.compare_digest()` iteration over valid keys.  
 **Effort**: 15 minutes  
 **Risk**: Low
 
 #### A3. Enable rate limiting on endpoints (Server C2)
 **Priority**: Critical  
+**Status**: ✅ FIXED  
 **File**: `server/app/main.py`, `server/app/routers/*.py`  
 **Issue**: slowapi `Limiter` is initialized but no `@limiter.limit()` decorators are applied to endpoints, and no `Request` parameter is injected. Rate limiting is effectively disabled.  
-**Fix**: Add `@limiter.limit()` to each route and inject `request: Request`.  
+**Fix**: Extracted limiter to `server/app/rate_limit.py`, added `@limiter.limit()` decorators and `request: Request` to all endpoints.  
 **Effort**: 1 hour  
 **Risk**: Low — standard slowapi pattern
 
 #### A4. Fix Docker HEALTHCHECK hitting wrong path (Server C3)
 **Priority**: Critical  
+**Status**: ✅ FIXED  
 **Files**: `server/Dockerfile` line 17, `server/Dockerfile.multistage` line 45, `server/docker-compose.prod.yml` line 60  
 **Issue**: Healthchecks hit `/health` but the route is mounted at `/api/health`. Container always reported unhealthy.  
-**Fix**: Change all healthcheck URLs to `http://localhost:8000/api/health`.  
+**Fix**: Changed all healthcheck URLs to `http://localhost:8000/api/health`.  
 **Effort**: 5 minutes  
 **Risk**: None
 
@@ -80,72 +85,82 @@ Remediate findings from the comprehensive code review and security audit conduct
 
 #### B1. Fix `serialize_credential()` mutating input (App CR-2)
 **Priority**: High  
+**Status**: ✅ FIXED  
 **File**: `src/mattstash/models/credential.py` line 48-52  
 **Issue**: `serialize_credential(cred, show_password=True)` permanently mutates `cred.show_password = True` on the caller's object.  
-**Fix**: Save and restore original value, or create copy.  
+**Fix**: Added try/finally to save and restore original value.  
 **Effort**: 10 minutes
 
 #### B2. Fix `hydrate_env()` crash on mapping keys without `:` (App CR-3)
 **Priority**: High  
+**Status**: ✅ FIXED  
 **File**: `src/mattstash/core/mattstash.py` line 155-170  
 **Issue**: `src.split(":", 1)` raises unhandled `ValueError` if mapping key doesn't contain `:`.  
-**Fix**: Add input validation with clear error message.  
+**Fix**: Added validation with warning log and `continue` for malformed keys.  
 **Effort**: 15 minutes
 
 #### B3. Remove CWD config file loading (App CR-4)
 **Priority**: High  
+**Status**: ✅ FIXED  
 **File**: `src/mattstash/utils/config_loader.py` line 46  
 **Issue**: Loading `.mattstash.yml` from current working directory enables untrusted configuration injection — a malicious config in any directory could redirect DB path.  
-**Fix**: Remove `Path.cwd() / ".mattstash.yml"` from config search paths, or add a warning when loading from CWD.  
+**Fix**: Removed `Path.cwd() / ".mattstash.yml"` from config search paths.  
 **Effort**: 10 minutes
 
 #### B4. Replace `sys.exit(1)` in `BaseHandler.get_server_client()` (App CR-5)
 **Priority**: High  
+**Status**: ✅ FIXED  
 **File**: `src/mattstash/cli/handlers/base.py` line 50-55  
 **Issue**: `sys.exit(1)` bypasses the handler return-code pattern, making it untestable.  
-**Fix**: Return error code instead.  
+**Fix**: Returns `None` instead; all 7 handler call sites updated with None check returning error code 1. Added `Optional[Any]` return type. Removed unused `sys` import.  
 **Effort**: 15 minutes
 
 #### B5. Stop leaking exception details to clients (Server H1)
 **Priority**: High  
+**Status**: ✅ FIXED  
 **Files**: `server/app/dependencies.py` line 29, `server/app/routers/credentials.py` lines 67/100/126, `server/app/routers/db_url.py` line 62  
 **Issue**: 500-level responses include `str(e)` with internal paths, library names, etc.  
-**Fix**: Return generic "Internal server error"; log full exception server-side.  
+**Fix**: All 500 responses now return generic "Internal server error"; full exceptions logged server-side.  
 **Effort**: 30 minutes
 
 #### B6. Fix Dockerfile.multistage permissions (Server H2)
 **Priority**: High  
+**Status**: ✅ FIXED  
 **File**: `server/Dockerfile.multistage` lines 14-35  
 **Issue**: Packages installed to `/root/.local` but process runs as non-root user who can't access `/root/`.  
-**Fix**: Copy packages to `/home/mattstash/.local`.  
+**Fix**: Reordered to create user first, copy packages to `/home/mattstash/.local` with correct ownership.  
 **Effort**: 10 minutes
 
 #### B7. Add `Cache-Control: no-store` for credential responses (Server H3)
 **Priority**: High  
+**Status**: ✅ FIXED  
 **File**: `server/app/routers/credentials.py`  
 **Issue**: Credential responses (especially with `show_password=true`) can be cached by proxies and appear in logs via GET query params.  
-**Fix**: Add `Cache-Control: no-store` header to credential responses.  
+**Fix**: Added `Cache-Control: no-store` header to get_credential response.  
 **Effort**: 15 minutes
 
 #### B8. Wire up `mask_sensitive_data()` in logging middleware (Server H4)
 **Priority**: High  
+**Status**: ✅ FIXED  
 **File**: `server/app/middleware/logging.py`  
 **Issue**: `mask_sensitive_data()` is defined but never called. Logging middleware doesn't mask sensitive data.  
-**Fix**: Apply masking function in middleware dispatch method.  
+**Fix**: Applied `mask_sensitive_data()` to all log messages in middleware dispatch method.  
 **Effort**: 15 minutes
 
 #### B9. Add input validation on credential `name` path parameter (Server H5)
 **Priority**: High  
+**Status**: ✅ FIXED  
 **Files**: `server/app/routers/credentials.py`, `server/app/routers/db_url.py`  
 **Issue**: `name` parameter accepted as raw string with no validation. Could enable KeePass group hierarchy traversal.  
-**Fix**: Add regex constraint: `^[a-zA-Z0-9_.-]+$`, max_length=255.  
+**Fix**: Added `_validate_credential_name()` with regex `^[a-zA-Z0-9_.-]+$` and max_length=255 to all endpoints.  
 **Effort**: 15 minutes
 
 #### B10. Add input validation on `driver` parameter (Server H6)
 **Priority**: High  
+**Status**: ✅ FIXED  
 **File**: `server/app/routers/db_url.py` line 20  
 **Issue**: `driver` parameter passed directly to URL builder without validation.  
-**Fix**: Add allowlist regex: `^[a-zA-Z0-9_]+$`.  
+**Fix**: Added allowlist regex `^[a-zA-Z0-9_]+$` validation.  
 **Effort**: 10 minutes
 
 #### B11. Resolve `--password` ambiguity in CLI `put` command (App CR-6)
@@ -203,15 +218,17 @@ Remediate findings from the comprehensive code review and security audit conduct
 **Effort**: 20 minutes
 
 #### C8. Fix Docker network isolation (Server M4)
+**Status**: ✅ FIXED  
 **File**: `server/docker-compose.prod.yml` line 71  
 **Issue**: `internal: false` allows container internet access; should be `true` for secrets server.  
 **Fix**: Set `internal: true`.  
 **Effort**: 5 minutes
 
 #### C9. Add thread safety to MattStash singleton (Server M5)
+**Status**: ✅ FIXED  
 **File**: `server/app/dependencies.py` lines 13-26  
 **Issue**: Race condition on `_mattstash_instance is None` with concurrent requests.  
-**Fix**: Use `threading.Lock`.  
+**Fix**: Added `threading.Lock` with double-checked locking pattern.  
 **Effort**: 15 minutes
 
 #### C10. Pin server dependencies to exact versions (Server M6)
@@ -277,9 +294,10 @@ Remediate findings from the comprehensive code review and security audit conduct
 **Effort**: 5 minutes
 
 #### D9. Use unified auth error messages (Server L1)
+**Status**: ✅ FIXED  
 **File**: `server/app/dependencies.py`  
 **Issue**: Different messages for missing vs. invalid API key aids enumeration.  
-**Fix**: Use single generic "Authentication failed" message.  
+**Fix**: Both cases now return generic "Authentication failed" message.  
 **Effort**: 5 minutes
 
 #### D10. Remove unused `CreateCredentialRequest`/`CreateCredentialResponse` models (Server L3)
@@ -291,6 +309,7 @@ Remediate findings from the comprehensive code review and security audit conduct
 **Effort**: 5 minutes
 
 #### D12. Add missing return type annotation to `get_server_client()` (App CR-23)
+**Status**: ✅ FIXED  
 **File**: `src/mattstash/cli/handlers/base.py` line 45  
 **Effort**: 2 minutes
 
@@ -331,7 +350,9 @@ Remediate findings from the comprehensive code review and security audit conduct
 
 #### E4. Install and verify mypy strict mode compliance
 **Priority**: Low  
+**Status**: ✅ VERIFIED  
 **Issue**: mypy not installed in venv; compliance claim from Phase 3 cannot be verified.  
+**Result**: Installed mypy, confirmed 0 errors in 34 source files under `--strict`. Also fixed 6 pre-existing errors in `http_client.py`.  
 **Effort**: 1-2 hours
 
 ---

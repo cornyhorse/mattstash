@@ -58,7 +58,8 @@ class MattStashServerClient:
                 json=json_data
             )
             response.raise_for_status()
-            return response.json()
+            result: Dict[str, Any] = response.json()
+            return result
     
     def get(
         self,
@@ -78,7 +79,7 @@ class MattStashServerClient:
             Credential data or None if not found
         """
         try:
-            params = {
+            params: Dict[str, Any] = {
                 'show_password': show_password
             }
             if version is not None:
@@ -185,12 +186,13 @@ class MattStashServerClient:
         Returns:
             List of credential data dictionaries
         """
-        params = {'show_password': show_password}
+        params: Dict[str, Any] = {'show_password': show_password}
         if prefix:
             params['prefix'] = prefix
         
         result = self._make_request('GET', '/api/v1/credentials', params=params)
-        return result.get('credentials', [])
+        creds: List[Dict[str, Any]] = result.get('credentials', [])
+        return creds
     
     def versions(self, title: str) -> List[str]:
         """
@@ -204,7 +206,8 @@ class MattStashServerClient:
         """
         try:
             result = self._make_request('GET', f'/api/v1/credentials/{title}/versions')
-            return result.get('versions', [])
+            vers: List[str] = result.get('versions', [])
+            return vers
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 return []
@@ -250,4 +253,5 @@ class MattStashServerClient:
             f'/api/v1/db-url/{title}',
             params=params
         )
-        return result.get('url', '')
+        url: str = result.get('url', '')
+        return url

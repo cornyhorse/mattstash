@@ -38,7 +38,6 @@ def load_yaml_config() -> Dict[str, Any]:
     config_paths = [
         Path.home() / ".config" / "mattstash" / "config.yml",
         Path.home() / ".mattstash.yml",
-        Path.cwd() / ".mattstash.yml",
     ]
     
     for path in config_paths:

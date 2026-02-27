@@ -40,6 +40,8 @@ class DbUrlHandler(BaseHandler):
         """Handle db-url command in server mode."""
         try:
             client = self.get_server_client(args)
+            if client is None:
+                return 1
             url = client.db_url(
                 args.title,
                 driver=args.driver,

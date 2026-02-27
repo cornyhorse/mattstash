@@ -45,10 +45,16 @@ class Credential:
 def serialize_credential(cred: Credential, show_password: bool = False) -> Dict[str, Any]:
     """
     Return a JSON-serializable dict for a Credential, honoring show_password.
+
+    This function does NOT mutate the original Credential object.
     """
-    if show_password:
-        cred.show_password = True
-    return cred.as_dict()
+    original_show = cred.show_password
+    try:
+        if show_password:
+            cred.show_password = True
+        return cred.as_dict()
+    finally:
+        cred.show_password = original_show
 
 
 # Type alias for credential results

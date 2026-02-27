@@ -39,7 +39,7 @@ def build_db_url(
         Database connection URL string
     """
     builder = DatabaseUrlBuilder(mattstash)
-    return builder.build_postgresql_url(
+    return builder.build_url(
         title=name,
         driver=driver,
         database=database,

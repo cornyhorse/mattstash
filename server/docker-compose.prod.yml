@@ -57,7 +57,7 @@ services:
     
     # Health check
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -83,4 +83,4 @@ networks:
   internal:
     driver: bridge
     # Network isolation - no external access by default
-    internal: false
+    internal: true

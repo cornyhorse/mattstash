@@ -49,20 +49,22 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             # Calculate duration
             duration = time.time() - start_time
             
-            # Log response
-            logger.info(
+            # Log response (mask any sensitive data)
+            log_msg = (
                 f"Response: {method} {path} - "
                 f"Status: {response.status_code} - "
                 f"Duration: {duration:.3f}s"
             )
+            logger.info(mask_sensitive_data(log_msg))
             
             return response
             
         except Exception as e:
             duration = time.time() - start_time
-            logger.error(
+            error_msg = (
                 f"Error: {method} {path} - "
                 f"Exception: {type(e).__name__}: {str(e)} - "
                 f"Duration: {duration:.3f}s"
             )
+            logger.error(mask_sensitive_data(error_msg))
             raise

@@ -41,6 +41,8 @@ class ListHandler(BaseHandler):
         """Handle list command in server mode."""
         try:
             client = self.get_server_client(args)
+            if client is None:
+                return 1
             creds = client.list(show_password=args.show_password)
             
             if args.json:
@@ -83,6 +85,8 @@ class KeysHandler(BaseHandler):
         """Handle keys command in server mode."""
         try:
             client = self.get_server_client(args)
+            if client is None:
+                return 1
             creds = client.list(show_password=False)
             titles = [c.get('name', '') for c in creds]
             

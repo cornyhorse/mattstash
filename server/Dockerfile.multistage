@@ -21,18 +21,19 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy Python packages from builder
-COPY --from=builder /root/.local /root/.local
+# Create non-root user
+RUN useradd -m -u 1000 mattstash && \
+    chown -R mattstash:mattstash /app
+
+# Copy Python packages from builder to non-root user's home
+COPY --from=builder /root/.local /home/mattstash/.local
+RUN chown -R mattstash:mattstash /home/mattstash/.local
 
 # Copy server application code
 COPY app/ ./app/
 
 # Make sure scripts in .local are usable
-ENV PATH=/root/.local/bin:$PATH
-
-# Create non-root user
-RUN useradd -m -u 1000 mattstash && \
-    chown -R mattstash:mattstash /app
+ENV PATH=/home/mattstash/.local/bin:$PATH
 
 # Expose port
 EXPOSE 8000
@@ -42,7 +43,7 @@ USER mattstash
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
 
 # Run application
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -33,6 +33,8 @@ class VersionsHandler(BaseHandler):
         """Handle versions command in server mode."""
         try:
             client = self.get_server_client(args)
+            if client is None:
+                return 1
             vers = client.versions(args.title)
             
             if not vers:

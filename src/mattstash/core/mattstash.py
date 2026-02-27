@@ -165,6 +165,9 @@ class MattStash:
         for src, envname in mapping.items():
             if os.environ.get(envname):
                 continue
+            if ":" not in src:
+                logger.warning("Invalid mapping key %r: expected 'Title:FIELD' format", src)
+                continue
             base_title, field = src.split(":", 1)
             entry = kp.find_entries(title=base_title, first=True)
             if not entry:

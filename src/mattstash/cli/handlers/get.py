@@ -55,6 +55,8 @@ class GetHandler(BaseHandler):
         """Handle get command in server mode."""
         try:
             client = self.get_server_client(args)
+            if client is None:
+                return 1
             result = client.get(
                 args.title,
                 show_password=args.show_password,

@@ -31,6 +31,8 @@ class DeleteHandler(BaseHandler):
         """Handle delete command in server mode."""
         try:
             client = self.get_server_client(args)
+            if client is None:
+                return 1
             ok = client.delete(args.title)
             
             if ok:

@@ -94,6 +94,8 @@ class PutHandler(BaseHandler):
         """Handle put command in server mode."""
         try:
             client = self.get_server_client(args)
+            if client is None:
+                return 1
             
             # Determine if simple value mode or fields mode
             kwargs = {}

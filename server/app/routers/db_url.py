@@ -1,17 +1,29 @@
 """Database URL builder router."""
-from fastapi import APIRouter, HTTPException, Query, status
+import logging
+import re
+
+from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from mattstash.builders.db_url import build_db_url
 from mattstash.utils.exceptions import CredentialNotFoundError
 
 from ..dependencies import APIKeyDep, MattStashDep
+from ..rate_limit import limiter
 from ..models.responses import DatabaseUrlResponse
 
+logger = logging.getLogger("mattstash.api")
 router = APIRouter()
+
+# Validation patterns
+_VALID_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+$")
+_VALID_DRIVER_PATTERN = re.compile(r"^[a-zA-Z0-9_]+$")
+_MAX_NAME_LENGTH = 255
 
 
 @router.get("/db-url/{name}", response_model=DatabaseUrlResponse)
+@limiter.limit("60/minute")
 async def get_database_url(  # pragma: no cover
+    request: Request,
     name: str,
     mattstash: MattStashDep,
     api_key: APIKeyDep,
@@ -27,6 +39,17 @@ async def get_database_url(  # pragma: no cover
     - **database**: Optional database name
     - **mask_password**: Whether to mask the password in the URL (default: true)
     """
+    # Validate inputs
+    if not name or len(name) > _MAX_NAME_LENGTH or not _VALID_NAME_PATTERN.match(name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid credential name"
+        )
+    if not _VALID_DRIVER_PATTERN.match(driver):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid driver name"
+        )
     try:
         # Build the URL
         url = build_db_url(
@@ -58,8 +81,11 @@ async def get_database_url(  # pragma: no cover
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Credential not found: {name}"
         )
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error("Error building database URL for %s: %s", name, e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error building database URL: {str(e)}"
+            detail="Internal server error"
         )
