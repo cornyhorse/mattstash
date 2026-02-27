@@ -5,6 +5,7 @@ Command-line interface for MattStash.
 """
 
 import sys
+import os
 import argparse
 from typing import Optional
 
@@ -34,8 +35,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
     parser = argparse.ArgumentParser(prog="mattstash", description="KeePass-backed secrets accessor")
+    
+    # Global options for local mode
     parser.add_argument("--db", dest="path", help="Path to KeePass .kdbx (default: ~/.config/mattstash/mattstash.kdbx)")
     parser.add_argument("--password", dest="password", help="Password for the KeePass DB (overrides sidecar/env)")
+    
+    # Global options for server mode
+    parser.add_argument(
+        "--server-url",
+        dest="server_url",
+        default=os.environ.get("MATTSTASH_SERVER_URL"),
+        help="MattStash server URL (enables server mode). Can also use MATTSTASH_SERVER_URL env var."
+    )
+    parser.add_argument(
+        "--api-key",
+        dest="api_key",
+        default=os.environ.get("MATTSTASH_API_KEY"),
+        help="API key for server authentication. Can also use MATTSTASH_API_KEY env var."
+    )
+    
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
 
     subparsers = parser.add_subparsers(dest="cmd", required=True)
@@ -65,7 +83,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # put
     p_put = subparsers.add_parser("put", help="Create/update an entry")
     p_put.add_argument("title", help="KeePass entry title")
-    group = p_put.add_mutually_exclusive_group(required=True)
+    group = p_put.add_mutually_exclusive_group(required=False)
     group.add_argument("--value", help="Simple secret value (credstash-like; stored in password field)")
     group.add_argument("--fields", action="store_true", help="Provide explicit fields instead of --value")
     p_put.add_argument("--username")

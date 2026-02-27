@@ -67,6 +67,27 @@ mattstash list
 mattstash delete "old-token"
 ```
 
+## Server Mode (Optional)
+
+MattStash can run as a network service for containerized environments. The CLI can target either local KeePass databases (default) or a remote MattStash server.
+
+### Using CLI with Server
+
+```bash
+# Set server URL and API key
+export MATTSTASH_SERVER_URL="http://localhost:8000"
+export MATTSTASH_API_KEY="your-api-key"
+
+# Now all commands use the server
+mattstash get "api-token"
+mattstash list
+
+# Or specify inline
+mattstash --server-url http://localhost:8000 --api-key "key" get "api-token"
+```
+
+For server setup and deployment, see [Server Documentation](server/README.md) and [Server Quick Start](server/QUICKSTART.md).
+
 ## Features
 
 ### Two Storage Modes

@@ -52,18 +52,21 @@ class MattStash:
 
     def _ensure_initialized(self) -> bool:
         """Ensure the credential store and entry manager are initialized."""
-        if self._credential_store is None:
+        if self._credential_store is None or self._entry_manager is None:
             if not self.password:
                 logger.error("No password provided (sidecar file or KDBX_PASSWORD missing)")
                 return False
 
             try:
-                self._credential_store = CredentialStore(self.path, self.password)
-                kp = self._credential_store.open()
+                store = CredentialStore(self.path, self.password)
+                kp = store.open()
                 self._entry_manager = EntryManager(kp)
+                self._credential_store = store
                 return True
             except Exception as e:
                 logger.error(f"Failed to initialize: {e}")
+                self._credential_store = None
+                self._entry_manager = None
                 return False
         return True
 

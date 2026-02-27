@@ -58,6 +58,62 @@
         "/^source venv/bin/activate && python -m pytest tests/ --co -q 2>&1 \\| tail -3$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^cd /Users/matt/Documents/GitHub/mattstash/server && python -m pytest tests/ --cov=app --cov-report=term \\| grep -E \"\\(TOTAL\\|test_\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash/server && python -m pytest tests/ --cov=app --cov-report=term 2>&1 \\| tail -25$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && pip install pytest pytest-cov httpx$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash/server && python -m pytest tests/ --cov=app --cov-report=term 2>&1 \\| grep -A 50 \"test session\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash/server && python -m pytest tests/ --cov=app --cov-report=term$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && pip install fastapi slowapi$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash/server && python -m pytest tests/ --cov=app --cov-report=term 2>&1 \\| tail -40$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash && python -c \"from mattstash\\.cli\\.http_client import MattStashServerClient; print\\('HTTP client import successful'\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash && python -m mattstash\\.cli\\.main --help \\| head -20$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash && \\./scripts/run-tests\\.sh --app 2>&1 \\| tail -30$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash && python -m pytest tests/test_final_coverage\\.py::test_delete_handler_success -v 2>&1 \\| tail -20$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash && python -m pytest tests/test_final_coverage\\.py::test_delete_handler_success -v$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash && python -m pytest tests/test_final_coverage\\.py -v 2>&1 \\| tail -10$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source /Users/matt/\\.venvs/mattstash/bin/activate && cd /Users/matt/Documents/GitHub/mattstash && python -m pytest tests/ -x --ignore=tests/integration/ 2>&1 \\| tail -15$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }
