@@ -74,9 +74,31 @@ src/mattstash/
 
 ---
 
-## Development Scripts
+## Development Environment
 
-### Available Scripts
+### Python Virtual Environment
+
+This project uses a centralized virtual environment located at:
+```
+/Users/matt/.venvs/mattstash
+```
+
+**Important**: Always activate this venv before running Python commands:
+```bash
+source /Users/matt/.venvs/mattstash/bin/activate
+```
+
+The server component has its own venv at:
+```
+/Users/matt/Documents/GitHub/mattstash/server/venv
+```
+
+Activate for server work:
+```bash
+cd server && source venv/bin/activate
+```
+
+### Development Scripts
 
 #### `scripts/run-tests.sh` - Test Suite
 Runs the full test suite with pytest.

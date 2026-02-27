@@ -14,6 +14,41 @@ if TYPE_CHECKING:
     from ..core.mattstash import MattStash
 
 
+def build_db_url(
+    mattstash: 'MattStash',
+    name: str,
+    driver: Optional[str] = "psycopg",
+    database: Optional[str] = None,
+    sslmode_override: Optional[str] = None,
+    mask_password: bool = False,
+    mask_style: str = "stars"
+) -> str:
+    """
+    Convenience function to build a database URL from a credential.
+    
+    Args:
+        mattstash: MattStash instance
+        name: Name of the credential
+        driver: Optional driver suffix (e.g., "psycopg")
+        database: Optional database name
+        sslmode_override: Optional SSL mode override
+        mask_password: Whether to mask the password
+        mask_style: "stars" or "omit"
+        
+    Returns:
+        Database connection URL string
+    """
+    builder = DatabaseUrlBuilder(mattstash)
+    return builder.build_url(
+        title=name,
+        driver=driver,
+        database=database,
+        sslmode_override=sslmode_override,
+        mask_password=mask_password,
+        mask_style=mask_style
+    )
+
+
 class DatabaseUrlBuilder:
     """Handles construction of SQLAlchemy database URLs from KeePass entries."""
 

@@ -1,4 +1,6 @@
 """API key management and verification."""
+import hmac
+
 from ..config import config
 
 
@@ -17,6 +19,12 @@ def get_valid_api_keys() -> set[str]:
 
 
 def verify_api_key(api_key: str) -> bool:
-    """Verify if the provided API key is valid."""
+    """Verify if the provided API key is valid.
+    
+    Uses constant-time comparison to prevent timing side-channel attacks.
+    """
     valid_keys = get_valid_api_keys()
-    return api_key in valid_keys
+    return any(
+        hmac.compare_digest(api_key, valid_key)
+        for valid_key in valid_keys
+    )

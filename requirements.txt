@@ -1,4 +1,4 @@
 pykeepass
 boto3
 botocore
-pytest
+pytesthttpx>=0.24.0

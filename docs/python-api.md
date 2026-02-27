@@ -2,6 +2,20 @@
 
 Complete Python interface documentation for MattStash.
 
+## Note on Server Mode
+
+The Python API (`MattStash` class) operates on local KeePass databases only. For network-accessible credential storage, use the MattStash API server.
+
+**Local Python API**: Direct KeePass file access (this document)
+- Use `MattStash` class for local database operations
+- Suitable for local development, scripts, and applications
+
+**Server API**: REST API for network access
+- Deploy the FastAPI server component
+- Access via HTTP/HTTPS from any network location
+- See [Server API Documentation](../server/README.md#api-documentation)
+- CLI supports server mode via `--server-url` flag (see [CLI Reference](cli-reference.md))
+
 ## Quick Start
 
 ```python

@@ -100,6 +100,70 @@ MattStash sets secure permissions automatically:
 
 The database file uses KeePass encryption, so broader read permissions are acceptable.
 
+## Server Mode Configuration
+
+MattStash CLI can connect to a MattStash API server instead of local databases for network-accessible credential storage.
+
+### Enabling Server Mode
+
+```bash
+# Via environment variables (recommended)
+export MATTSTASH_SERVER_URL="http://mattstash:8000"
+export MATTSTASH_API_KEY="your-api-key-here"
+
+# Via command-line flags
+mattstash --server-url http://mattstash:8000 --api-key "key" list
+```
+
+### Mode Detection
+
+Server mode is enabled when `--server-url` is provided or `MATTSTASH_SERVER_URL` environment variable is set. When in server mode:
+
+- Local database options (`--db`, `--password`) are ignored
+- All operations are HTTP requests to the server
+- Authentication via API key is required
+- Credentials are stored/retrieved from the server's backend database
+
+### Server Mode Examples
+
+```bash
+# Set up environment
+export MATTSTASH_SERVER_URL="http://localhost:8000"
+export MATTSTASH_API_KEY="my-secure-api-key"
+
+# All commands now use the server
+mattstash get "api-token"
+mattstash put "new-secret" --value "secret-value"
+mattstash list --show-password
+
+# Override server URL for specific command
+mattstash --server-url http://staging-server:8000 get "staging-token"
+```
+
+### Switching Between Modes
+
+```bash
+# Use local database (unset server variables)
+unset MATTSTASH_SERVER_URL
+unset MATTSTASH_API_KEY
+mattstash list  # Uses local database
+
+# Use server (set server variables)
+export MATTSTASH_SERVER_URL="http://server:8000"
+export MATTSTASH_API_KEY="key"
+mattstash list  # Uses server
+
+# Inline mode selection
+mattstash --db ~/.credentials/mattstash.kdbx list  # Local
+mattstash --server-url http://server:8000 --api-key key list  # Server
+```
+
+### Server Setup
+
+For information about deploying and configuring the MattStash server, see:
+- [Server README](../server/README.md) - Deployment and API documentation
+- [Server Quick Start](../server/QUICKSTART.md) - Getting started guide
+
 ## Versioning Configuration
 
 ### Version Padding
@@ -417,6 +481,6 @@ All config options can be set via environment variables:
 - `MATTSTASH_S3_ADDRESSING` → `s3.addressing`
 - `MATTSTASH_S3_SIGNATURE_VERSION` → `s3.signature_version`
 - `MATTSTASH_S3_RETRIES` → `s3.retries`
-- `MATTSTASH_CACHE_ENABLED` → `cache.enabled`
+- `MATTSTASH_ENABLE_CACHE` → `cache.enabled`
 - `MATTSTASH_CACHE_TTL` → `cache.ttl`
 

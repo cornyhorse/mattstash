@@ -25,9 +25,9 @@ def test_cli_invalid_subcommand():
 
 def test_cli_put_without_required_args():
     """Test CLI put without required arguments"""
-    with pytest.raises(SystemExit) as exc_info:
-        main(["put", "test"])
-    # Should fail due to missing --value or --fields
+    # Should fail due to missing --value or --fields (now handled in put handler, not argparse)
+    result = main(["--db", "/tmp/test.kdbx", "put", "test"])
+    assert result == 1
 
 
 def test_cli_list_help():
@@ -93,6 +93,21 @@ def test_cli_put_fields_missing_args():
         result = main(["--db", "/tmp/test.kdbx", "put", "test", "--fields"])
         assert result == 0
         mock_put.assert_called_once()
+
+
+def test_cli_put_auto_fields_mode():
+    """Test that --username/--url without --fields auto-infers fields mode."""
+    with patch('mattstash.cli.handlers.put.put') as mock_put:
+        mock_put.return_value = {"name": "s3-backup", "value": "*****"}
+        result = main([
+            "--db", "/tmp/test.kdbx", "put", "s3-backup",
+            "--username", "ACCESS_KEY", "--password", "SECRET_KEY",
+            "--url", "https://s3.amazonaws.com"
+        ])
+        assert result == 0
+        mock_put.assert_called_once()
+        call_kwargs = mock_put.call_args
+        assert call_kwargs[1].get('username') == "ACCESS_KEY" or call_kwargs[0] == ("s3-backup",)
 
 
 def test_cli_list_verbose_flag():

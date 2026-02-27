@@ -15,7 +15,7 @@ from ..utils.logging_config import get_logger, security_warning
 logger = get_logger(__name__)
 
 try:
-    from pykeepass import create_database as _kp_create_database  # type: ignore
+    from pykeepass import create_database as _kp_create_database
 except Exception:  # pragma: no cover
     _kp_create_database = None
 

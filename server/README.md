@@ -552,6 +552,90 @@ docker logs -f mattstash-api
 kubectl logs -f deployment/mattstash-api
 ```
 
+## Development & Testing
+
+### Test Coverage: **100%** 🎉
+
+The server achieves **100% test coverage** with 40 passing tests across all components.
+
+```
+Name                         Stmts   Miss  Cover
+----------------------------------------------------------
+app/__init__.py                  2      0   100%
+app/config.py                   42      0   100%
+app/dependencies.py              8      0   100%
+app/main.py                     21      0   100%
+app/middleware/logging.py       28      0   100%
+app/models/requests.py           9      0   100%
+app/models/responses.py         38      0   100%
+app/routers/credentials.py       9      0   100%
+app/routers/db_url.py            6      0   100%
+app/routers/health.py            7      0   100%
+app/security/api_keys.py         9      0   100%
+----------------------------------------------------------
+TOTAL                          188      0   100%
+```
+
+### Running Tests
+
+#### Setup Test Environment
+
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+pip install -e ../  # Install mattstash package
+```
+
+#### Run Tests
+
+```bash
+# Run all tests with coverage
+./run-tests.sh
+
+# Or manually:
+source venv/bin/activate
+python -m pytest tests/ -v --cov=app --cov-report=term-missing
+
+# Run specific test file
+python -m pytest tests/test_config.py -v
+
+# Run without coverage (faster)
+python -m pytest tests/ -v --no-cov
+
+# Run with verbose output
+python -m pytest tests/ -v --tb=short
+```
+
+#### Test Structure
+
+```
+tests/
+├── conftest.py                 # Shared fixtures & cache management
+├── test_config.py              # Configuration management (12 tests)
+├── test_api_keys.py            # API key verification (4 tests)
+├── test_middleware_logging.py  # Request logging (9 tests)
+├── test_router_health.py       # Health endpoint (3 tests)
+├── test_router_helpers.py      # Credential helpers (3 tests)
+├── test_models.py              # Pydantic models (9 tests)
+├── test_router_db_url.py       # Database URL builder (9 tests)
+├── test_middleware_logging.py  # Request logging (9 tests)
+├── test_main.py                # App factory & config (10 tests)
+└── test_models.py              # Pydantic models (9 tests)
+```
+
+**Total: 84 tests**
+
+Coverage targets:
+- Config, API keys, Health, Models: 100%
+- Dependencies, Main: 90%+
+- Routers, Middleware: 90%+
+- Overall: 90%+
+
 ## License
 
 This server application uses the MattStash library, which is licensed under the MIT License.

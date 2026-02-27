@@ -6,11 +6,48 @@ Complete command-line interface documentation for MattStash.
 
 Available for all commands:
 
+### Local Mode Options
+
 ```bash
 --db PATH                    # Path to KeePass database (default: ~/.credentials/mattstash.kdbx)
 --password PASSWORD          # Database password (overrides sidecar/env)
+```
+
+### Server Mode Options
+
+```bash
+--server-url URL            # MattStash server URL (enables server mode)
+--api-key KEY               # API key for server authentication
+```
+
+### Other Options
+
+```bash
 --verbose                   # Enable verbose output
 ```
+
+## Environment Variables
+
+- `MATTSTASH_SERVER_URL` - Server URL (enables server mode)
+- `MATTSTASH_API_KEY` - Server API key
+- `KDBX_PASSWORD` - Database password (local mode)
+- `MATTSTASH_ENABLE_CACHE` - Enable connection caching (true/false)
+- `MATTSTASH_CACHE_TTL` - Cache TTL in seconds
+
+## Mode Selection
+
+MattStash CLI operates in one of two modes:
+
+**Local Mode** (default): Direct access to local KeePass database files
+- Uses `--db` and `--password` options
+- Reads credentials from filesystem
+- Default when no `--server-url` is specified
+
+**Server Mode**: HTTP requests to MattStash API server
+- Uses `--server-url` and `--api-key` options
+- Network-based credential access
+- Enabled when `--server-url` is provided or `MATTSTASH_SERVER_URL` environment variable is set
+- Local database options (`--db`, `--password`) are ignored in server mode
 
 ## Commands
 
