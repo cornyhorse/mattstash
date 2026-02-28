@@ -5,6 +5,8 @@ MattStash: KeePass-backed secrets management
 A simple, credstash-like interface to KeePass databases.
 """
 
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
 # Import from the new refactored structure
 # Import CLI entry point
 from .cli.main import main as cli_main
@@ -28,7 +30,10 @@ DEFAULT_KDBX_PATH = config.default_db_path
 DEFAULT_KDBX_SIDECAR_BASENAME = config.sidecar_basename
 PAD_WIDTH = config.version_pad_width
 
-__version__ = "0.1.2"
+try:
+    __version__: str = _pkg_version("mattstash")
+except PackageNotFoundError:
+    __version__ = "0.0.0"  # fallback for editable / uninstalled
 
 __all__ = [
     # Constants
