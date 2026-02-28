@@ -7,9 +7,9 @@ Handler for the setup command.
 import os
 from argparse import Namespace
 
-from .base import BaseHandler
 from ...core.bootstrap import DatabaseBootstrapper
 from ...models.config import config
+from .base import BaseHandler
 
 
 class SetupHandler(BaseHandler):

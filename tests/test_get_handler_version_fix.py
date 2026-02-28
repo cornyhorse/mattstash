@@ -5,8 +5,8 @@ This test file specifically verifies that the CLI --version argument
 is correctly passed through to the get() function and works as expected.
 """
 
-from unittest.mock import patch, Mock
 from argparse import Namespace
+from unittest.mock import Mock, patch
 
 from mattstash.cli.handlers.get import GetHandler
 
@@ -22,7 +22,7 @@ def test_get_handler_with_version_parameter():
         password="db_password",
         show_password=False,
         json=False,
-        version=3  # Specific version requested
+        version=3,  # Specific version requested
     )
 
     mock_cred = Mock()
@@ -33,7 +33,7 @@ def test_get_handler_with_version_parameter():
     mock_cred.tags = ["tag1", "tag2"]
     mock_cred.notes = "Version 3 of credential"
 
-    with patch('mattstash.cli.handlers.get.get') as mock_get:
+    with patch("mattstash.cli.handlers.get.get") as mock_get:
         mock_get.return_value = mock_cred
 
         result = handler.handle(args)
@@ -48,10 +48,10 @@ def test_get_handler_with_version_parameter():
 
         # Check keyword arguments
         kwargs = call_args[1]
-        assert kwargs['path'] == "/tmp/test.kdbx"
-        assert kwargs['password'] == "db_password"
-        assert kwargs['show_password'] is False
-        assert kwargs['version'] == 3  # Version parameter should be passed through
+        assert kwargs["path"] == "/tmp/test.kdbx"
+        assert kwargs["password"] == "db_password"
+        assert kwargs["show_password"] is False
+        assert kwargs["version"] == 3  # Version parameter should be passed through
 
 
 def test_get_handler_with_version_and_json():
@@ -60,21 +60,17 @@ def test_get_handler_with_version_and_json():
     """
     handler = GetHandler()
     args = Namespace(
-        title="api-key",
-        path="/tmp/test.kdbx",
-        password="db_password",
-        show_password=True,
-        json=True,
-        version=1
+        title="api-key", path="/tmp/test.kdbx", password="db_password", show_password=True, json=True, version=1
     )
 
     mock_cred = Mock()
     mock_cred.credential_name = "api-key"
 
-    with patch('mattstash.cli.handlers.get.get') as mock_get, \
-         patch('mattstash.cli.handlers.get.serialize_credential') as mock_serialize, \
-         patch('builtins.print') as mock_print:
-
+    with (
+        patch("mattstash.cli.handlers.get.get") as mock_get,
+        patch("mattstash.cli.handlers.get.serialize_credential") as mock_serialize,
+        patch("builtins.print") as mock_print,
+    ):
         mock_get.return_value = mock_cred
         mock_serialize.return_value = {"name": "api-key", "version": "1"}
 
@@ -85,7 +81,7 @@ def test_get_handler_with_version_and_json():
 
         # Verify version parameter was passed
         kwargs = mock_get.call_args[1]
-        assert kwargs['version'] == 1
+        assert kwargs["version"] == 1
 
         # Verify serialization and output
         mock_serialize.assert_called_once_with(mock_cred, show_password=True)
@@ -98,20 +94,13 @@ def test_get_handler_with_version_dict_result():
     """
     handler = GetHandler()
     args = Namespace(
-        title="simple-secret",
-        path="/tmp/test.kdbx",
-        password="db_password",
-        show_password=False,
-        json=False,
-        version=2
+        title="simple-secret", path="/tmp/test.kdbx", password="db_password", show_password=False, json=False, version=2
     )
 
     # Mock a simple secret result (dict format)
     mock_dict_result = {"name": "simple-secret", "value": "secret_value_v2"}
 
-    with patch('mattstash.cli.handlers.get.get') as mock_get, \
-         patch('builtins.print') as mock_print:
-
+    with patch("mattstash.cli.handlers.get.get") as mock_get, patch("builtins.print"):
         mock_get.return_value = mock_dict_result
 
         result = handler.handle(args)
@@ -121,7 +110,7 @@ def test_get_handler_with_version_dict_result():
 
         # Verify version parameter was passed
         kwargs = mock_get.call_args[1]
-        assert kwargs['version'] == 2
+        assert kwargs["version"] == 2
 
 
 def test_get_handler_without_version_parameter():
@@ -134,7 +123,7 @@ def test_get_handler_without_version_parameter():
         path="/tmp/test.kdbx",
         password="db_password",
         show_password=False,
-        json=False
+        json=False,
         # No version attribute - should default to None
     )
 
@@ -146,7 +135,7 @@ def test_get_handler_without_version_parameter():
     mock_cred.tags = []
     mock_cred.notes = None
 
-    with patch('mattstash.cli.handlers.get.get') as mock_get:
+    with patch("mattstash.cli.handlers.get.get") as mock_get:
         mock_get.return_value = mock_cred
 
         result = handler.handle(args)
@@ -156,7 +145,7 @@ def test_get_handler_without_version_parameter():
 
         # Verify version parameter defaults to None when not provided
         kwargs = mock_get.call_args[1]
-        assert kwargs['version'] is None
+        assert kwargs["version"] is None
 
 
 def test_get_handler_version_not_found():
@@ -171,10 +160,10 @@ def test_get_handler_version_not_found():
         password="db_password",
         show_password=False,
         json=False,
-        version=99  # Non-existent version
+        version=99,  # Non-existent version
     )
 
-    with patch('mattstash.cli.handlers.get.get') as mock_get:
+    with patch("mattstash.cli.handlers.get.get") as mock_get:
         mock_get.return_value = None  # Version not found
 
         result = handler.handle(args)
@@ -185,7 +174,7 @@ def test_get_handler_version_not_found():
 
         # Verify version parameter was passed
         kwargs = mock_get.call_args[1]
-        assert kwargs['version'] == 99
+        assert kwargs["version"] == 99
 
 
 def test_get_handler_version_zero():
@@ -199,7 +188,7 @@ def test_get_handler_version_zero():
         password="db_password",
         show_password=False,
         json=False,
-        version=0
+        version=0,
     )
 
     mock_cred = Mock()
@@ -210,7 +199,7 @@ def test_get_handler_version_zero():
     mock_cred.tags = []
     mock_cred.notes = "Original version"
 
-    with patch('mattstash.cli.handlers.get.get') as mock_get:
+    with patch("mattstash.cli.handlers.get.get") as mock_get:
         mock_get.return_value = mock_cred
 
         result = handler.handle(args)
@@ -220,4 +209,4 @@ def test_get_handler_version_zero():
 
         # Verify version 0 is correctly passed
         kwargs = mock_get.call_args[1]
-        assert kwargs['version'] == 0
+        assert kwargs["version"] == 0

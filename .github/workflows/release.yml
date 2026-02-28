@@ -13,7 +13,12 @@ permissions:
   contents: write
 
 jobs:
+  # Wait for the CI workflow to pass before releasing
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: [ci]
     runs-on: ubuntu-latest
     # Skip if the commit was made by the release bot (prevents infinite loop)
     if: "!contains(github.event.head_commit.message, '[skip-release]')"

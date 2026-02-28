@@ -4,9 +4,9 @@ mattstash.core
 Core functionality for MattStash.
 """
 
-from .mattstash import MattStash
 from .bootstrap import DatabaseBootstrapper
-from .password_resolver import PasswordResolver
 from .entry_manager import EntryManager
+from .mattstash import MattStash
+from .password_resolver import PasswordResolver
 
-__all__ = ['MattStash', 'DatabaseBootstrapper', 'PasswordResolver', 'EntryManager']
+__all__ = ["DatabaseBootstrapper", "EntryManager", "MattStash", "PasswordResolver"]

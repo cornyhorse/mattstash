@@ -1,20 +1,21 @@
 # tests/test_core.py
 import json
 import os
-import sys
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 # Import from installed package or src layout
 try:
-    from mattstash import (
-        MattStash,
-        DEFAULT_KDBX_SIDECAR_BASENAME,
-    )
     from pykeepass import PyKeePass
-except Exception as e:  # pragma: no cover - helpful error if import fails
+
+    from mattstash import (
+        DEFAULT_KDBX_SIDECAR_BASENAME,
+        MattStash,
+    )
+except Exception:  # pragma: no cover - helpful error if import fails
     raise
 
 
@@ -101,11 +102,13 @@ def test_hydrate_env_sets_vars(temp_db: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
     monkeypatch.delenv("AWS_REGION", raising=False)
 
-    ms.hydrate_env({
-        "AWS-Creds:AWS_ACCESS_KEY_ID": "AWS_ACCESS_KEY_ID",
-        "AWS-Creds:AWS_SECRET_ACCESS_KEY": "AWS_SECRET_ACCESS_KEY",
-        "AWS-Creds:REGION": "AWS_REGION",
-    })
+    ms.hydrate_env(
+        {
+            "AWS-Creds:AWS_ACCESS_KEY_ID": "AWS_ACCESS_KEY_ID",
+            "AWS-Creds:AWS_SECRET_ACCESS_KEY": "AWS_SECRET_ACCESS_KEY",
+            "AWS-Creds:REGION": "AWS_REGION",
+        }
+    )
 
     assert os.environ.get("AWS_ACCESS_KEY_ID") == "AKIA_TEST"
     assert os.environ.get("AWS_SECRET_ACCESS_KEY") == "SECRET_TEST"
@@ -163,7 +166,17 @@ def test_cli_get_simple_secret_json(temp_db: Path, as_module: bool):
 
     # show-password path
     if as_module:
-        cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "get", "k", "--json", "--show-password"]
+        cmd = [
+            sys.executable,
+            "-m",
+            "mattstash.cli.main",
+            "--db",
+            str(temp_db),
+            "get",
+            "k",
+            "--json",
+            "--show-password",
+        ]
     else:
         cmd = ["mattstash", "--db", str(temp_db), "get", "k", "--json", "--show-password"]
 
@@ -174,8 +187,9 @@ def test_cli_get_simple_secret_json(temp_db: Path, as_module: bool):
     assert payload["value"] == "v"
 
 
-@pytest.mark.skipif("boto3" not in sys.modules and __import__("importlib").util.find_spec("boto3") is None,
-                    reason="boto3 not installed")
+@pytest.mark.skipif(
+    "boto3" not in sys.modules and __import__("importlib").util.find_spec("boto3") is None, reason="boto3 not installed"
+)
 def test_get_s3_client_builds_without_network(temp_db: Path):
     ms = MattStash(path=str(temp_db))
 
@@ -219,7 +233,7 @@ def test_cli_keys_lists_titles(temp_db: Path, as_module: bool):
         assert title in proc.stdout
 
     # Run keys command with JSON output and check keys list
-    json_cmd = base_cmd + ["--json"]
+    json_cmd = [*base_cmd, "--json"]
     proc = subprocess.run(json_cmd, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     keys_list = json.loads(proc.stdout)
@@ -231,7 +245,7 @@ def test_delete_api_removes_entry(temp_db: Path):
     ms = MattStash(path=str(temp_db))
     kp = PyKeePass(str(temp_db), password=ms.password)
     grp = kp.root_group
-    entry = kp.add_entry(grp, title="DeleteMe", username="user", password="pass")
+    kp.add_entry(grp, title="DeleteMe", username="user", password="pass")
     kp.save()
 
     # Confirm entry exists
@@ -257,7 +271,7 @@ def test_put_get_versions(temp_db: Path):
     # Should return both versions in order
     assert len(versions) >= 2
     # The version numbers are padded strings, check that both versions are in the list
-    padded_versions = [v['version'] if isinstance(v, dict) and 'version' in v else str(v) for v in versions]
+    padded_versions = [v["version"] if isinstance(v, dict) and "version" in v else str(v) for v in versions]
     assert any(v.endswith("1") for v in padded_versions)
     assert any(v.endswith("2") for v in padded_versions)
 
@@ -333,12 +347,30 @@ def test_cli_delete_removes_entry(temp_db: Path, as_module: bool):
 def test_cli_put_with_comment(temp_db: Path, as_module: bool):
     if as_module:
         cmd = [
-            sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db),
-            "put", "with-comment", "--value", "pw123", "--comment", "this is a note"
+            sys.executable,
+            "-m",
+            "mattstash.cli.main",
+            "--db",
+            str(temp_db),
+            "put",
+            "with-comment",
+            "--value",
+            "pw123",
+            "--comment",
+            "this is a note",
         ]
     else:
-        cmd = ["mattstash", "--db", str(temp_db), "put", "with-comment", "--value", "pw123", "--comment",
-               "this is a note"]
+        cmd = [
+            "mattstash",
+            "--db",
+            str(temp_db),
+            "put",
+            "with-comment",
+            "--value",
+            "pw123",
+            "--comment",
+            "this is a note",
+        ]
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
@@ -399,8 +431,28 @@ def test_cli_db_url_masks_password_and_requires_port(temp_db: Path, as_module: b
     ms.put("pg-creds-np", username="user", password="pw", url="localhost")
 
     if as_module:
-        good_cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb"]
-        bad_cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "db-url", "pg-creds-np", "--database", "testdb"]
+        good_cmd = [
+            sys.executable,
+            "-m",
+            "mattstash.cli.main",
+            "--db",
+            str(temp_db),
+            "db-url",
+            "pg-creds",
+            "--database",
+            "testdb",
+        ]
+        bad_cmd = [
+            sys.executable,
+            "-m",
+            "mattstash.cli.main",
+            "--db",
+            str(temp_db),
+            "db-url",
+            "pg-creds-np",
+            "--database",
+            "testdb",
+        ]
     else:
         good_cmd = ["mattstash", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb"]
         bad_cmd = ["mattstash", "--db", str(temp_db), "db-url", "pg-creds-np", "--database", "testdb"]
@@ -423,9 +475,31 @@ def test_cli_db_url_unmasked_flag(temp_db: Path, as_module: bool):
     ms.put("pg-creds", username="user", password="pw", url="localhost:5432")
 
     if as_module:
-        cmd = [sys.executable, "-m", "mattstash.cli.main", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb", "--mask-password", "False"]
+        cmd = [
+            sys.executable,
+            "-m",
+            "mattstash.cli.main",
+            "--db",
+            str(temp_db),
+            "db-url",
+            "pg-creds",
+            "--database",
+            "testdb",
+            "--mask-password",
+            "False",
+        ]
     else:
-        cmd = ["mattstash", "--db", str(temp_db), "db-url", "pg-creds", "--database", "testdb", "--mask-password", "False"]
+        cmd = [
+            "mattstash",
+            "--db",
+            str(temp_db),
+            "db-url",
+            "pg-creds",
+            "--database",
+            "testdb",
+            "--mask-password",
+            "False",
+        ]
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr

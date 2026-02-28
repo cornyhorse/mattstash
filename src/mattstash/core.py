@@ -19,4 +19,11 @@ DEFAULT_KDBX_SIDECAR_BASENAME = config.sidecar_basename
 PAD_WIDTH = config.version_pad_width
 
 # Re-export the main class for backward compatibility
-__all__ = ['MattStash', 'Credential', 'CredentialResult', 'DEFAULT_KDBX_PATH', 'DEFAULT_KDBX_SIDECAR_BASENAME', 'PAD_WIDTH']
+__all__ = [
+    "DEFAULT_KDBX_PATH",
+    "DEFAULT_KDBX_SIDECAR_BASENAME",
+    "PAD_WIDTH",
+    "Credential",
+    "CredentialResult",
+    "MattStash",
+]

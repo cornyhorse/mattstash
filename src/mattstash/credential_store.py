@@ -4,15 +4,16 @@ mattstash.credential_store
 Handles KeePass database operations and credential storage.
 """
 
-import os
 import logging
+import os
 import time
-from typing import Optional, List, Dict, Any
+from typing import Dict, List, Optional
+
 from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 
 from .models.config import config
-from .utils.exceptions import DatabaseNotFoundError, DatabaseAccessError, CredentialNotFoundError
+from .utils.exceptions import DatabaseAccessError, DatabaseNotFoundError
 from .utils.validation import sanitize_error_message
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ class CredentialStore:
         self.db_path = db_path
         self.password = password
         self._kp: Optional[PyKeePass] = None
-        
+
         # Connection caching settings
         self.cache_enabled = cache_enabled or config.cache_enabled
         self.cache_ttl = cache_ttl if cache_ttl is not None else config.cache_ttl
@@ -34,17 +35,17 @@ class CredentialStore:
 
     def open(self) -> Optional[PyKeePass]:
         """Open the KeePass database.
-        
+
         Opens the KeePass database file using the provided password.
         Caches the opened database for subsequent calls.
-        
+
         Returns:
             PyKeePass instance for database operations
-            
+
         Raises:
             DatabaseNotFoundError: If database file doesn't exist
             DatabaseAccessError: If password is missing or incorrect
-            
+
         Example:
             >>> store = CredentialStore("~/.credentials/mattstash.kdbx", "password")
             >>> kp = store.open()
@@ -68,17 +69,17 @@ class CredentialStore:
         except Exception as e:
             sanitized_msg = sanitize_error_message(e, self.db_path)
             logger.error(f"Failed to open database: {sanitized_msg}")
-            raise DatabaseAccessError(f"Failed to open database: {sanitized_msg}")
+            raise DatabaseAccessError(f"Failed to open database: {sanitized_msg}") from e
 
     def find_entry_by_title(self, title: str) -> Optional[Entry]:
         """Find a single entry by exact title match with optional caching.
-        
+
         Args:
             title: Exact title of the entry to find
-            
+
         Returns:
             Entry object if found, None otherwise
-            
+
         Example:
             >>> store = CredentialStore(db_path, password, cache_enabled=True)
             >>> entry = store.find_entry_by_title("api-key")
@@ -89,16 +90,16 @@ class CredentialStore:
         cached = self._get_cached_entry(title)
         if cached is not None:
             return cached
-        
+
         # Not in cache, fetch from database
         kp = self.open()
         if kp is None:
             return None
-        
+
         entry = kp.find_entries(title=title, first=True)
         if entry is not None:
             self._cache_entry(title, entry)
-        
+
         return entry
 
     def find_entries_by_prefix(self, prefix: str) -> List[Entry]:
@@ -108,34 +109,26 @@ class CredentialStore:
             return []
         return [e for e in kp.entries if e.title and e.title.startswith(prefix)]
 
-    def create_entry(self, title: str, username: str = "", password: str = "",
-                    url: str = "", notes: str = "") -> Entry:
+    def create_entry(self, title: str, username: str = "", password: str = "", url: str = "", notes: str = "") -> Entry:
         """Create a new entry in the database."""
         kp = self.open()
         if kp is None:
             raise DatabaseAccessError("Unable to open database")
-        entry = kp.add_entry(
-            kp.root_group,
-            title=title,
-            username=username,
-            password=password,
-            url=url,
-            notes=notes
-        )
+        entry = kp.add_entry(kp.root_group, title=title, username=username, password=password, url=url, notes=notes)
         return entry
 
     def _get_cached_entry(self, title: str) -> Optional[Entry]:
         """Get entry from cache if valid.
-        
+
         Args:
             title: Title of the entry to retrieve
-            
+
         Returns:
             Cached entry if valid, None otherwise
         """
         if not self.cache_enabled:
             return None
-        
+
         if title in self._entry_cache:
             timestamp = self._cache_timestamps.get(title, 0.0)
             if time.time() - timestamp < self.cache_ttl:
@@ -146,12 +139,12 @@ class CredentialStore:
                 logger.debug(f"Cache expired for '{title}'")
                 del self._entry_cache[title]
                 del self._cache_timestamps[title]
-        
+
         return None
-    
+
     def _cache_entry(self, title: str, entry: Entry) -> None:
         """Cache an entry with current timestamp.
-        
+
         Args:
             title: Title of the entry
             entry: Entry object to cache
@@ -160,7 +153,7 @@ class CredentialStore:
             self._entry_cache[title] = entry
             self._cache_timestamps[title] = time.time()
             logger.debug(f"Cached entry '{title}'")
-    
+
     def clear_cache(self) -> None:
         """Clear all cached entries."""
         self._entry_cache.clear()

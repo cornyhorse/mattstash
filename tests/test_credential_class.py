@@ -2,8 +2,7 @@
 Test coverage for Credential class and core functionality.
 """
 
-import pytest
-from mattstash import Credential, MattStash
+from mattstash import Credential
 
 
 def test_credential_repr_with_password_shown():
@@ -15,7 +14,7 @@ def test_credential_repr_with_password_shown():
         url="https://example.com",
         notes="test notes",
         tags=["tag1", "tag2"],
-        show_password=True
+        show_password=True,
     )
 
     repr_str = repr(cred)
@@ -35,7 +34,7 @@ def test_credential_repr_with_password_hidden():
         password="secret",
         url="https://example.com",
         notes="test notes",
-        tags=["tag1", "tag2"]
+        tags=["tag1", "tag2"],
     )
 
     repr_str = repr(cred)
@@ -53,7 +52,7 @@ def test_credential_repr_with_no_password():
         password=None,
         url="https://example.com",
         notes="test notes",
-        tags=["tag1", "tag2"]
+        tags=["tag1", "tag2"],
     )
 
     repr_str = repr(cred)
@@ -69,7 +68,7 @@ def test_credential_as_dict_with_password_shown():
         url="https://example.com",
         notes="test notes",
         tags=["tag1", "tag2"],
-        show_password=True
+        show_password=True,
     )
 
     result = cred.as_dict()
@@ -90,7 +89,7 @@ def test_credential_as_dict_with_password_hidden():
         url="https://example.com",
         notes="test notes",
         tags=["tag1", "tag2"],
-        show_password=False
+        show_password=False,
     )
 
     result = cred.as_dict()
@@ -110,7 +109,7 @@ def test_credential_as_dict_with_no_password():
         password=None,
         url="https://example.com",
         notes="test notes",
-        tags=["tag1", "tag2"]
+        tags=["tag1", "tag2"],
     )
 
     result = cred.as_dict()

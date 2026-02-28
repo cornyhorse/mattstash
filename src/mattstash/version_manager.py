@@ -4,8 +4,8 @@ mattstash.version_manager
 Handles versioning logic for credentials.
 """
 
-import re
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
+
 from pykeepass.entry import Entry
 
 from .models.config import config
@@ -19,13 +19,13 @@ class VersionManager:
 
     def format_version(self, version: int) -> str:
         """Format a version number with zero padding.
-        
+
         Args:
             version: Integer version number to format
-            
+
         Returns:
             Zero-padded version string (e.g., "0000000001")
-            
+
         Example:
             >>> vm = VersionManager()
             >>> vm.format_version(42)
@@ -57,14 +57,14 @@ class VersionManager:
 
     def get_versioned_title(self, base_title: str, version: int) -> str:
         """Create a versioned title.
-        
+
         Args:
             base_title: Base credential name
             version: Version number to append
-            
+
         Returns:
             Formatted versioned title (e.g., "api-key@0000000003")
-            
+
         Example:
             >>> vm = VersionManager()
             >>> vm.get_versioned_title("api-key", 3)
@@ -74,17 +74,17 @@ class VersionManager:
 
     def get_next_version(self, base_title: str, entries: List[Entry]) -> int:
         """Calculate the next version number for a base title.
-        
+
         Scans all entries to find the highest version number for the given
         base title and returns the next sequential version.
-        
+
         Args:
             base_title: Base credential name (without version suffix)
             entries: List of KeePass entries to scan
-            
+
         Returns:
             Next available version number (max_existing + 1, or 1 if none exist)
-            
+
         Example:
             >>> vm = VersionManager()
             >>> # If entries contain api-key@0000000001 and api-key@0000000003
@@ -96,7 +96,7 @@ class VersionManager:
 
         for entry in entries:
             if entry.title and entry.title.startswith(prefix):
-                version_str = entry.title[len(prefix):]
+                version_str = entry.title[len(prefix) :]
                 try:
                     version = int(version_str)
                     max_version = max(max_version, version)
@@ -112,7 +112,7 @@ class VersionManager:
 
         for entry in entries:
             if entry.title and entry.title.startswith(prefix):
-                version_str = entry.title[len(prefix):]
+                version_str = entry.title[len(prefix) :]
                 try:
                     version = int(version_str)
                     candidates.append((version, entry))
@@ -132,7 +132,7 @@ class VersionManager:
 
         for entry in entries:
             if entry.title and entry.title.startswith(prefix):
-                version_str = entry.title[len(prefix):]
+                version_str = entry.title[len(prefix) :]
                 if version_str.isdigit() and len(version_str) == self.pad_width:
                     versions.append(version_str)
 

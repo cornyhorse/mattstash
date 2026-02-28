@@ -6,8 +6,8 @@ Handler for the delete command.
 
 from argparse import Namespace
 
-from .base import BaseHandler
 from ...module_functions import delete
+from .base import BaseHandler
 
 
 class DeleteHandler(BaseHandler):
@@ -18,7 +18,7 @@ class DeleteHandler(BaseHandler):
         # Check if server mode
         if self.is_server_mode(args):
             return self._handle_server_mode(args)
-        
+
         # Local mode
         ok = delete(args.title, path=args.path, password=args.password)
         if ok:
@@ -26,7 +26,7 @@ class DeleteHandler(BaseHandler):
             return 0
         else:
             return 2
-    
+
     def _handle_server_mode(self, args: Namespace) -> int:
         """Handle delete command in server mode."""
         try:
@@ -34,7 +34,7 @@ class DeleteHandler(BaseHandler):
             if client is None:
                 return 1
             ok = client.delete(args.title)
-            
+
             if ok:
                 print(f"{args.title}: deleted")
                 return 0
@@ -42,5 +42,5 @@ class DeleteHandler(BaseHandler):
                 self.error(f"not found: {args.title}")
                 return 2
         except Exception as e:
-            self.error(f"Server error: {str(e)}")
+            self.error(f"Server error: {e!s}")
             return 1

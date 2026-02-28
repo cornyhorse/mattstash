@@ -4,7 +4,7 @@ mattstash.models
 Data models and configuration classes.
 """
 
-from .credential import Credential, CredentialResult
 from .config import config
+from .credential import Credential, CredentialResult
 
-__all__ = ['Credential', 'CredentialResult', 'config']
+__all__ = ["Credential", "CredentialResult", "config"]

@@ -2,16 +2,15 @@
 Final targeted tests to achieve 100% coverage by covering specific missing lines.
 """
 
-import pytest
-import os
-import tempfile
-from unittest.mock import patch, Mock, MagicMock
+from unittest.mock import Mock, patch
 
-from mattstash.core.entry_manager import EntryManager
+import pytest
+
 from mattstash.builders.db_url import DatabaseUrlBuilder
 from mattstash.builders.s3_client import S3ClientBuilder
 from mattstash.cli.handlers.delete import DeleteHandler
 from mattstash.cli.handlers.put import PutHandler
+from mattstash.core.entry_manager import EntryManager
 from mattstash.version_manager import VersionManager
 
 
@@ -23,9 +22,7 @@ def test_delete_handler_success():
     args.path = "/tmp/test.kdbx"
     args.password = "test"
 
-    with patch('mattstash.cli.handlers.delete.delete', return_value=True), \
-         patch('builtins.print') as mock_print:
-
+    with patch("mattstash.cli.handlers.delete.delete", return_value=True), patch("builtins.print") as mock_print:
         result = handler.handle(args)
         assert result == 0
         mock_print.assert_called_with("test: deleted")
@@ -47,9 +44,10 @@ def test_put_handler_fields_mode_dict_output():
     args.tags = ["tag1"]
     args.json = True
 
-    with patch('mattstash.cli.handlers.put.put', return_value={"name": "test", "value": "secret"}), \
-         patch('builtins.print') as mock_print:
-
+    with (
+        patch("mattstash.cli.handlers.put.put", return_value={"name": "test", "value": "secret"}),
+        patch("builtins.print"),
+    ):
         result = handler.handle(args)
         assert result == 0
 
@@ -72,9 +70,7 @@ def test_put_handler_non_fields_mode():
 
     mock_cred = Mock()
 
-    with patch('mattstash.cli.handlers.put.put', return_value=mock_cred), \
-         patch('builtins.print') as mock_print:
-
+    with patch("mattstash.cli.handlers.put.put", return_value=mock_cred), patch("builtins.print") as mock_print:
         result = handler.handle(args)
         assert result == 0
         mock_print.assert_called_with("test: OK")
@@ -88,7 +84,7 @@ def test_db_url_builder_simple_secret_error():
     # Return a dict (simple secret) instead of credential object
     simple_secret = {"name": "test", "value": "secret"}
     mock_entry = Mock()
-    
+
     mock_mattstash._ensure_initialized.return_value = True
     mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (simple_secret, mock_entry)
 
@@ -149,7 +145,7 @@ def test_s3_client_builder_import_error():
     mock_mattstash.get.return_value = mock_cred
 
     # Test when boto3 import fails - this should raise RuntimeError
-    with patch('builtins.__import__', side_effect=ImportError("boto3 not available")):
+    with patch("builtins.__import__", side_effect=ImportError("boto3 not available")):
         with pytest.raises(RuntimeError, match="boto3/botocore not available"):
             builder.create_client("test")
 
@@ -203,7 +199,7 @@ def test_entry_manager_list_entries_simple_mode():
     mock_kp.entries = [mock_entry]
 
     # Mock the _is_simple_secret to return True
-    with patch.object(manager, '_is_simple_secret', return_value=True):
+    with patch.object(manager, "_is_simple_secret", return_value=True):
         results = manager.list_entries(show_password=True)
         assert len(results) == 1
 
@@ -226,7 +222,7 @@ def test_main_cli_fallback():
     from mattstash.cli.main import main
 
     # Patch to return an unknown command that's not in handlers
-    with patch('argparse.ArgumentParser.parse_args') as mock_parse:
+    with patch("argparse.ArgumentParser.parse_args") as mock_parse:
         mock_args = Mock()
         mock_args.cmd = "unknown_command_not_in_handlers"
         mock_parse.return_value = mock_args
@@ -245,7 +241,7 @@ def test_module_functions_global_instance_reuse():
     module_functions._default_instance = mock_instance
 
     # Call without path/password should reuse existing instance
-    result = module_functions.get("test")
+    module_functions.get("test")
 
     # Should have called the existing instance
     mock_instance.get.assert_called_once()

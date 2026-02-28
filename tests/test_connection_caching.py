@@ -4,7 +4,8 @@ Tests for connection caching functionality.
 
 import time
 import unittest
-from unittest.mock import MagicMock, patch, Mock
+from unittest.mock import MagicMock, Mock, patch
+
 from pykeepass.entry import Entry
 
 from mattstash.credential_store import CredentialStore
@@ -55,24 +56,24 @@ class TestConnectionCaching(unittest.TestCase):
         mock_entry = Mock(spec=Entry)
         mock_entry.title = "test-cred"
         mock_entry.password = "secret"
-        
+
         # Mock KeePass instance
         mock_kp_instance = MagicMock()
         mock_kp_instance.find_entries.return_value = mock_entry
         mock_pykeepass.return_value = mock_kp_instance
-        
+
         # Create store with caching enabled
         store = CredentialStore(self.db_path, self.password, cache_enabled=True)
-        
+
         # First lookup - should hit database
         result1 = store.find_entry_by_title("test-cred")
         self.assertEqual(result1, mock_entry)
         self.assertEqual(mock_kp_instance.find_entries.call_count, 1)
-        
+
         # Entry should be in cache
         self.assertIn("test-cred", store._entry_cache)
         self.assertIn("test-cred", store._cache_timestamps)
-        
+
         # Second lookup - should hit cache
         result2 = store.find_entry_by_title("test-cred")
         self.assertEqual(result2, mock_entry)
@@ -86,28 +87,28 @@ class TestConnectionCaching(unittest.TestCase):
         # Mock entry
         mock_entry = Mock(spec=Entry)
         mock_entry.title = "test-cred"
-        
+
         # Mock KeePass instance
         mock_kp_instance = MagicMock()
         mock_kp_instance.find_entries.return_value = mock_entry
         mock_pykeepass.return_value = mock_kp_instance
-        
+
         # Create store with short TTL
         store = CredentialStore(self.db_path, self.password, cache_enabled=True, cache_ttl=1)
-        
+
         # First lookup
         result1 = store.find_entry_by_title("test-cred")
         self.assertEqual(result1, mock_entry)
         self.assertEqual(mock_kp_instance.find_entries.call_count, 1)
-        
+
         # Wait for cache to expire
         time.sleep(1.1)
-        
+
         # Second lookup - should hit database again
         result2 = store.find_entry_by_title("test-cred")
         self.assertEqual(result2, mock_entry)
         self.assertEqual(mock_kp_instance.find_entries.call_count, 2)
-        
+
         # Cache should have been cleared and repopulated
         self.assertIn("test-cred", store._entry_cache)
 
@@ -118,22 +119,22 @@ class TestConnectionCaching(unittest.TestCase):
         # Mock entry
         mock_entry = Mock(spec=Entry)
         mock_entry.title = "test-cred"
-        
+
         # Mock KeePass instance
         mock_kp_instance = MagicMock()
         mock_kp_instance.find_entries.return_value = mock_entry
         mock_pykeepass.return_value = mock_kp_instance
-        
+
         # Create store with caching
         store = CredentialStore(self.db_path, self.password, cache_enabled=True)
-        
+
         # Populate cache
         store.find_entry_by_title("test-cred")
         self.assertIn("test-cred", store._entry_cache)
-        
+
         # Save database (should clear cache)
         store.save()
-        
+
         # Cache should be empty
         self.assertEqual(len(store._entry_cache), 0)
         self.assertEqual(len(store._cache_timestamps), 0)
@@ -144,19 +145,19 @@ class TestConnectionCaching(unittest.TestCase):
         """Test manual cache clearing."""
         mock_kp_instance = MagicMock()
         mock_pykeepass.return_value = mock_kp_instance
-        
+
         store = CredentialStore(self.db_path, self.password, cache_enabled=True)
-        
+
         # Manually add to cache
         mock_entry = Mock(spec=Entry)
         store._cache_entry("test", mock_entry)
-        
+
         # Verify cache has data
         self.assertEqual(len(store._entry_cache), 1)
-        
+
         # Clear cache
         store.clear_cache()
-        
+
         # Verify cache is empty
         self.assertEqual(len(store._entry_cache), 0)
         self.assertEqual(len(store._cache_timestamps), 0)
@@ -168,23 +169,23 @@ class TestConnectionCaching(unittest.TestCase):
         # Mock entry
         mock_entry = Mock(spec=Entry)
         mock_entry.title = "test-cred"
-        
+
         # Mock KeePass instance
         mock_kp_instance = MagicMock()
         mock_kp_instance.find_entries.return_value = mock_entry
         mock_pykeepass.return_value = mock_kp_instance
-        
+
         # Create store without caching
         store = CredentialStore(self.db_path, self.password, cache_enabled=False)
-        
+
         # Multiple lookups
         store.find_entry_by_title("test-cred")
         store.find_entry_by_title("test-cred")
         store.find_entry_by_title("test-cred")
-        
+
         # Should hit database every time
         self.assertEqual(mock_kp_instance.find_entries.call_count, 3)
-        
+
         # Cache should remain empty
         self.assertEqual(len(store._entry_cache), 0)
 

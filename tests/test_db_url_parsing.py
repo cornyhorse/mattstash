@@ -2,8 +2,10 @@
 Test coverage for database URL parsing and S3 functionality.
 """
 
-import pytest
 from pathlib import Path
+
+import pytest
+
 from mattstash import MattStash
 from mattstash.builders.s3_client import _ensure_scheme
 

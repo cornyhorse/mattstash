@@ -61,5 +61,39 @@ disallow_untyped_defs = true
 disallow_any_unimported = false
 
 [[tool.mypy.overrides]]
-module = ["pykeepass.*", "yaml"]
+module = ["pykeepass.*", "yaml", "httpx", "httpx.*", "boto3", "boto3.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "S",   # flake8-bandit (security)
+    "SIM", # flake8-simplify
+    "TCH", # flake8-type-checking
+    "RUF", # ruff-specific rules
+]
+ignore = [
+    "S101",  # allow assert in tests
+    "S110",  # try-except-pass — intentional for cross-platform compat
+    "S603",  # allow subprocess without shell=True check (false positives)
+    "S607",  # allow partial executable path
+    "UP006", # non-pep585-annotation — needed for Python 3.9 compat (List vs list)
+    "UP035", # deprecated-import — typing imports needed for Python 3.9 compat
+    "UP045", # non-pep604-annotation-optional — Optional[X] needed for Python 3.9
+    "SIM105", # contextlib.suppress — not always clearer than try/except/pass
+    "SIM108", # ternary — not always more readable for multi-branch logic
+    "SIM117", # nested with — often clearer when lines are long
+    "RUF022", # __all__ sorting — not critical
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S108", "S110"]

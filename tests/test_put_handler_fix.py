@@ -6,9 +6,8 @@ is correctly used as the credential password (not database password)
 when in --fields mode.
 """
 
-import pytest
-from unittest.mock import patch, Mock
 from argparse import Namespace
+from unittest.mock import Mock, patch
 
 from mattstash.cli.handlers.put import PutHandler
 
@@ -31,10 +30,10 @@ def test_put_handler_fields_mode_password_parameter_fix():
         notes="Test credential",
         comment=None,
         tags=["tag1", "tag2"],
-        json=False
+        json=False,
     )
 
-    with patch('mattstash.cli.handlers.put.put') as mock_put:
+    with patch("mattstash.cli.handlers.put.put") as mock_put:
         mock_put.return_value = Mock()  # Return a mock credential object
 
         result = handler.handle(args)
@@ -49,14 +48,14 @@ def test_put_handler_fields_mode_password_parameter_fix():
 
         # Check keyword arguments
         kwargs = call_args[1]
-        assert kwargs['path'] == "/tmp/test.kdbx"
-        assert kwargs['db_password'] is None  # Should be None to use sidecar/env resolution
-        assert kwargs['username'] == "test_user"
-        assert kwargs['password'] == "credential_secret_password"  # CLI password used as credential password
-        assert kwargs['url'] == "https://example.com"
-        assert kwargs['notes'] == "Test credential"
-        assert kwargs['comment'] is None
-        assert kwargs['tags'] == ["tag1", "tag2"]
+        assert kwargs["path"] == "/tmp/test.kdbx"
+        assert kwargs["db_password"] is None  # Should be None to use sidecar/env resolution
+        assert kwargs["username"] == "test_user"
+        assert kwargs["password"] == "credential_secret_password"  # CLI password used as credential password
+        assert kwargs["url"] == "https://example.com"
+        assert kwargs["notes"] == "Test credential"
+        assert kwargs["comment"] is None
+        assert kwargs["tags"] == ["tag1", "tag2"]
 
 
 def test_put_handler_value_mode_password_parameter():
@@ -76,10 +75,10 @@ def test_put_handler_value_mode_password_parameter():
         notes="Simple secret",
         comment=None,
         tags=None,
-        json=False
+        json=False,
     )
 
-    with patch('mattstash.cli.handlers.put.put') as mock_put:
+    with patch("mattstash.cli.handlers.put.put") as mock_put:
         mock_put.return_value = {"name": "test-secret", "value": "secret_value"}
 
         result = handler.handle(args)
@@ -94,12 +93,12 @@ def test_put_handler_value_mode_password_parameter():
 
         # Check keyword arguments
         kwargs = call_args[1]
-        assert kwargs['path'] == "/tmp/test.kdbx"
-        assert kwargs['db_password'] == "db_password_123"  # CLI password used as db password
-        assert kwargs['value'] == "secret_value"
-        assert kwargs['notes'] == "Simple secret"
-        assert kwargs['comment'] is None
-        assert kwargs['tags'] is None
+        assert kwargs["path"] == "/tmp/test.kdbx"
+        assert kwargs["db_password"] == "db_password_123"  # CLI password used as db password
+        assert kwargs["value"] == "secret_value"
+        assert kwargs["notes"] == "Simple secret"
+        assert kwargs["comment"] is None
+        assert kwargs["tags"] is None
 
 
 def test_put_handler_fields_mode_no_password():
@@ -119,10 +118,10 @@ def test_put_handler_fields_mode_no_password():
         notes=None,
         comment=None,
         tags=None,
-        json=False
+        json=False,
     )
 
-    with patch('mattstash.cli.handlers.put.put') as mock_put:
+    with patch("mattstash.cli.handlers.put.put") as mock_put:
         mock_put.return_value = Mock()
 
         result = handler.handle(args)
@@ -134,10 +133,10 @@ def test_put_handler_fields_mode_no_password():
         # Verify the correct parameters were passed
         call_args = mock_put.call_args
         kwargs = call_args[1]
-        assert kwargs['db_password'] is None  # No db password override
-        assert kwargs['password'] is None  # No credential password provided
-        assert kwargs['username'] == "test_user"
-        assert kwargs['url'] == "https://example.com"
+        assert kwargs["db_password"] is None  # No db password override
+        assert kwargs["password"] is None  # No credential password provided
+        assert kwargs["username"] == "test_user"
+        assert kwargs["url"] == "https://example.com"
 
 
 def test_put_handler_global_password_vs_field_password():
@@ -162,10 +161,10 @@ def test_put_handler_global_password_vs_field_password():
         notes="Database connection",
         comment=None,
         tags=["database"],
-        json=False
+        json=False,
     )
 
-    with patch('mattstash.cli.handlers.put.put') as mock_put:
+    with patch("mattstash.cli.handlers.put.put") as mock_put:
         mock_put.return_value = Mock()
 
         result = handler.handle(args)
@@ -175,7 +174,7 @@ def test_put_handler_global_password_vs_field_password():
         kwargs = call_args[1]
 
         # The fix ensures that in fields mode, global --password is NOT used as db_password
-        assert kwargs['db_password'] is None
+        assert kwargs["db_password"] is None
         # Instead, it's used as the credential password (which may not be intended,
         # but this is the current behavior after the fix)
-        assert kwargs['password'] == "global_db_pass"
+        assert kwargs["password"] == "global_db_pass"

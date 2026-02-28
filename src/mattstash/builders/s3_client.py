@@ -4,7 +4,7 @@ mattstash.s3_client
 S3 client functionality for MattStash.
 """
 
-from typing import Optional, TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from ..core.mattstash import MattStash
@@ -20,18 +20,18 @@ def _ensure_scheme(u: Optional[str]) -> Optional[str]:
 class S3ClientBuilder:
     """Handles creation of S3 clients from KeePass entries."""
 
-    def __init__(self, mattstash: 'MattStash'):
+    def __init__(self, mattstash: "MattStash"):
         self.mattstash = mattstash
 
     def create_client(
-            self,
-            title: str,
-            *,
-            region: str = "us-east-1",
-            addressing: str = "path",  # "virtual" or "path"
-            signature_version: str = "s3v4",
-            retries_max_attempts: int = 10,
-            verbose: bool = True,
+        self,
+        title: str,
+        *,
+        region: str = "us-east-1",
+        addressing: str = "path",  # "virtual" or "path"
+        signature_version: str = "s3v4",
+        retries_max_attempts: int = 10,
+        verbose: bool = True,
     ) -> Any:
         """
         Read a KeePass entry and return a configured boto3 S3 client.
@@ -48,14 +48,14 @@ class S3ClientBuilder:
             signature_version: AWS signature version (default: "s3v4")
             retries_max_attempts: Maximum retry attempts (default: 10)
             verbose: Print connection details (default: True)
-            
+
         Returns:
             Configured boto3 S3 client instance
-            
+
         Raises:
             ValueError: If credential is not found or missing required fields
             RuntimeError: If boto3/botocore is not available
-            
+
         Example:
             >>> ms = MattStash()
             >>> s3 = ms.get_s3_client("minio-dev", region="us-west-2")
@@ -64,7 +64,7 @@ class S3ClientBuilder:
         cred = self.mattstash.get(title, show_password=True)
         if cred is None:
             raise ValueError(f"[mattstash] Credential not found: {title}")
-        
+
         # Simple secrets (dict) can't be used for S3
         if isinstance(cred, dict):
             raise ValueError(f"[mattstash] Entry '{title}' is a simple secret, cannot use for S3 client")
@@ -78,13 +78,15 @@ class S3ClientBuilder:
 
         # Lazy imports to avoid hard dependency if caller never uses S3
         try:
-            import boto3  # type: ignore[import-not-found]
-            from botocore.config import Config  # type: ignore[import-not-found]
+            import boto3
+            from botocore.config import Config
         except Exception as e:
             raise RuntimeError("[mattstash] boto3/botocore not available") from e
 
         if verbose:
-            print(f"[mattstash] Using endpoint={endpoint}, region={region}, addressing={addressing}")  # pragma: no cover
+            print(
+                f"[mattstash] Using endpoint={endpoint}, region={region}, addressing={addressing}"
+            )  # pragma: no cover
 
         cfg = Config(
             s3={"addressing_style": "virtual" if addressing == "virtual" else "path"},

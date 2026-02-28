@@ -4,15 +4,8 @@ mattstash.cli
 Command-line interface components.
 """
 
+# Import module-level functions for backward compatibility with tests
+from ..module_functions import delete, get, get_db_url, get_s3_client, list_creds, list_versions, put
 from .main import main
 
-# Import module-level functions for backward compatibility with tests
-from ..module_functions import (
-    get, put, delete, list_creds, list_versions,
-    get_db_url, get_s3_client
-)
-
-__all__ = [
-    'main', 'get', 'put', 'delete', 'list_creds',
-    'list_versions', 'get_db_url', 'get_s3_client'
-]
+__all__ = ["delete", "get", "get_db_url", "get_s3_client", "list_creds", "list_versions", "main", "put"]

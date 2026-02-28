@@ -2,9 +2,9 @@
 Test the version manager module functionality.
 """
 
-import pytest
-from pykeepass.entry import Entry
 from unittest.mock import Mock
+
+from pykeepass.entry import Entry
 
 from mattstash.version_manager import VersionManager
 
