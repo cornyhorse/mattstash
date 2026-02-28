@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mattstash"
-version = "0.1.8"
+version = "0.1.9"
 description = "Tiny KeePass-powered secrets accessor with optional S3 helper and Postgres URL builder."
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
@@ -25,6 +25,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
     "Topic :: Security :: Cryptography",
     "Topic :: Software Development :: Libraries :: Python Modules",
