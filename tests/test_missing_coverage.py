@@ -2,19 +2,18 @@
 Test coverage for core modules and builders to reach 100% coverage.
 """
 
-import pytest
 import os
 import tempfile
-from unittest.mock import patch, Mock, MagicMock
-from pathlib import Path
+from unittest.mock import Mock, patch
 
+import pytest
+
+from mattstash.builders.db_url import DatabaseUrlBuilder
+from mattstash.builders.s3_client import S3ClientBuilder
 from mattstash.core.bootstrap import DatabaseBootstrapper
 from mattstash.core.entry_manager import EntryManager
 from mattstash.core.mattstash import MattStash
 from mattstash.core.password_resolver import PasswordResolver
-from mattstash.builders.db_url import DatabaseUrlBuilder
-from mattstash.builders.s3_client import S3ClientBuilder
-from mattstash.models.credential import Credential
 from mattstash.version_manager import VersionManager
 
 
@@ -24,9 +23,10 @@ def test_bootstrap_chmod_failure():
         db_path = os.path.join(temp_dir, "test.kdbx")
         bootstrapper = DatabaseBootstrapper(db_path)
 
-        with patch('os.chmod', side_effect=OSError("Permission denied")), \
-             patch('mattstash.core.bootstrap._kp_create_database') as mock_create:
-
+        with (
+            patch("os.chmod", side_effect=OSError("Permission denied")),
+            patch("mattstash.core.bootstrap._kp_create_database"),
+        ):
             # Should not raise exception, just continue
             bootstrapper._create_database_and_sidecar(temp_dir, os.path.join(temp_dir, ".mattstash.txt"))
 
@@ -37,7 +37,7 @@ def test_bootstrap_create_database_failure():
         db_path = os.path.join(temp_dir, "test.kdbx")
         bootstrapper = DatabaseBootstrapper(db_path)
 
-        with patch('mattstash.core.bootstrap._kp_create_database', side_effect=Exception("Database creation failed")):
+        with patch("mattstash.core.bootstrap._kp_create_database", side_effect=Exception("Database creation failed")):
             bootstrapper._create_database_and_sidecar(temp_dir, os.path.join(temp_dir, ".mattstash.txt"))
 
 
@@ -47,7 +47,7 @@ def test_bootstrap_create_database_none():
         db_path = os.path.join(temp_dir, "test.kdbx")
         bootstrapper = DatabaseBootstrapper(db_path)
 
-        with patch('mattstash.core.bootstrap._kp_create_database', None):
+        with patch("mattstash.core.bootstrap._kp_create_database", None):
             bootstrapper._create_database_and_sidecar(temp_dir, os.path.join(temp_dir, ".mattstash.txt"))
 
 
@@ -69,12 +69,12 @@ def test_password_resolver_sidecar_read_error():
         sidecar_path = os.path.join(temp_dir, ".mattstash.txt")
 
         # Create sidecar file
-        with open(sidecar_path, 'w') as f:
+        with open(sidecar_path, "w") as f:
             f.write("test_password")
 
         resolver = PasswordResolver(db_path)
 
-        with patch('builtins.open', side_effect=IOError("Read error")):
+        with patch("builtins.open", side_effect=OSError("Read error")):
             password = resolver.resolve_password()
             assert password is None
 
@@ -112,7 +112,7 @@ def test_entry_manager_put_entry_simple_mode():
     mock_kp.entries = [mock_entry]
     mock_kp.find_entries.return_value = mock_entry  # Return single entry, not list
 
-    result = manager.put_entry("test", value="new_value", autoincrement=False)  # Disable autoincrement
+    manager.put_entry("test", value="new_value", autoincrement=False)  # Disable autoincrement
 
     # Should update the password field
     assert mock_entry.password == "new_value"
@@ -131,7 +131,7 @@ def test_entry_manager_put_entry_new_versioned():
     mock_kp.add_entry.return_value = mock_new_entry
     mock_kp.root_group = Mock()
 
-    result = manager.put_entry("test", value="secret", version=1)
+    manager.put_entry("test", value="secret", version=1)
 
     mock_kp.add_entry.assert_called_once()
     mock_kp.save.assert_called_once()
@@ -167,7 +167,7 @@ def test_entry_manager_autoincrement_version():
     mock_kp.root_group = Mock()
 
     # Should create version 4 (next after 3)
-    result = manager.put_entry("test", value="secret", autoincrement=True)
+    manager.put_entry("test", value="secret", autoincrement=True)
 
     mock_kp.add_entry.assert_called_once()
     mock_kp.save.assert_called_once()
@@ -178,7 +178,7 @@ def test_mattstash_initialization_failure():
     with tempfile.TemporaryDirectory() as temp_dir:
         db_path = os.path.join(temp_dir, "test.kdbx")
 
-        with patch('mattstash.core.mattstash.PasswordResolver') as mock_resolver_class:
+        with patch("mattstash.core.mattstash.PasswordResolver") as mock_resolver_class:
             mock_resolver = Mock()
             mock_resolver.resolve_password.return_value = None
             mock_resolver_class.return_value = mock_resolver
@@ -197,7 +197,7 @@ def test_mattstash_ensure_initialized_exception():
 
         mattstash = MattStash(path=db_path, password="test")
 
-        with patch('mattstash.core.mattstash.CredentialStore', side_effect=Exception("Test error")):
+        with patch("mattstash.core.mattstash.CredentialStore", side_effect=Exception("Test error")):
             result = mattstash.get("test")
             assert result is None
 
@@ -298,20 +298,20 @@ def test_s3_client_builder_verbose_false():
     mock_mattstash.get.return_value = mock_cred
 
     # Test the import error handling path - should raise RuntimeError, not ImportError
-    with patch('builtins.__import__', side_effect=ImportError("boto3 not available")):
+    with patch("builtins.__import__", side_effect=ImportError("boto3 not available")):
         with pytest.raises(RuntimeError, match="boto3/botocore not available"):
             builder.create_client("test", verbose=False)
 
 
 def test_module_functions_instance_reuse():
     """Test module functions instance reuse logic"""
-    from mattstash.module_functions import get, _default_instance
-
     # Clear the global instance
     import mattstash.module_functions
+    from mattstash.module_functions import get
+
     mattstash.module_functions._default_instance = None
 
-    with patch('mattstash.module_functions.MattStash') as mock_mattstash_class:
+    with patch("mattstash.module_functions.MattStash") as mock_mattstash_class:
         mock_instance = Mock()
         mock_instance.get.return_value = None
         mock_mattstash_class.return_value = mock_instance
@@ -353,7 +353,7 @@ def test_legacy_core_module():
     # The core.py file appears to be legacy code that's not used
     # We need to import it to get coverage
     try:
-        import mattstash.core
+        pass
         # If it has any executable code, we should cover it
         # But it appears to be mostly imports and constants
     except Exception:

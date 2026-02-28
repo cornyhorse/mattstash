@@ -2,15 +2,11 @@
 Test error handling and edge cases for MattStash.
 """
 
-import os
-import pytest
 from pathlib import Path
 
-from mattstash import MattStash, Credential
-from mattstash.utils.exceptions import (
-    DatabaseNotFoundError, DatabaseAccessError,
-    CredentialNotFoundError, InvalidCredentialError
-)
+import pytest
+
+from mattstash import Credential, MattStash
 
 
 def test_corrupt_database_handling(tmp_path: Path):
@@ -36,8 +32,7 @@ def test_missing_database_file(tmp_path: Path):
 def test_wrong_password_handling(temp_db: Path):
     """Test behavior with incorrect password"""
     # Create a database with one password
-    ms = MattStash(path=str(temp_db))
-    original_password = ms.password
+    MattStash(path=str(temp_db))
 
     # Try to open with wrong password
     ms_wrong = MattStash(path=str(temp_db), password="wrong_password")

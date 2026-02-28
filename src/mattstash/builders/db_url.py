@@ -4,28 +4,26 @@ mattstash.db_url
 Database URL construction functionality.
 """
 
-from typing import Optional
-from urllib.parse import urlparse
-
 # Updated import path for refactored structure
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from ..core.mattstash import MattStash
 
 
 def build_db_url(
-    mattstash: 'MattStash',
+    mattstash: "MattStash",
     name: str,
     driver: Optional[str] = "psycopg",
     database: Optional[str] = None,
     sslmode_override: Optional[str] = None,
     mask_password: bool = False,
-    mask_style: str = "stars"
+    mask_style: str = "stars",
 ) -> str:
     """
     Convenience function to build a database URL from a credential.
-    
+
     Args:
         mattstash: MattStash instance
         name: Name of the credential
@@ -34,7 +32,7 @@ def build_db_url(
         sslmode_override: Optional SSL mode override
         mask_password: Whether to mask the password
         mask_style: "stars" or "omit"
-        
+
     Returns:
         Database connection URL string
     """
@@ -45,14 +43,14 @@ def build_db_url(
         database=database,
         sslmode_override=sslmode_override,
         mask_password=mask_password,
-        mask_style=mask_style
+        mask_style=mask_style,
     )
 
 
 class DatabaseUrlBuilder:
     """Handles construction of SQLAlchemy database URLs from KeePass entries."""
 
-    def __init__(self, mattstash: 'MattStash'):
+    def __init__(self, mattstash: "MattStash"):
         self.mattstash = mattstash
 
     def _parse_host_port(self, endpoint: Optional[str]) -> tuple[str, int]:
@@ -85,14 +83,14 @@ class DatabaseUrlBuilder:
         return host, port
 
     def build_url(
-            self,
-            title: str,
-            *,
-            driver: Optional[str] = None,
-            mask_password: bool = True,
-            mask_style: str = "stars",  # "stars" -> user:*****, "omit" -> user (no password section)
-            database: Optional[str] = None,
-            sslmode_override: Optional[str] = None,
+        self,
+        title: str,
+        *,
+        driver: Optional[str] = None,
+        mask_password: bool = True,
+        mask_style: str = "stars",  # "stars" -> user:*****, "omit" -> user (no password section)
+        database: Optional[str] = None,
+        sslmode_override: Optional[str] = None,
     ) -> str:
         """Construct a SQLAlchemy URL from a KeePass entry.
 
@@ -122,14 +120,14 @@ class DatabaseUrlBuilder:
         # Get credential and entry in single database operation
         if not self.mattstash._ensure_initialized():
             raise ValueError("[mattstash] Unable to open KeePass database")  # pragma: no cover
-        
+
         assert self.mattstash._entry_manager is not None
         result = self.mattstash._entry_manager.get_entry_with_custom_properties(title)
         if result is None:
             raise ValueError(f"[mattstash] Credential not found: {title}")
-        
+
         cred, entry = result
-        
+
         # If `cred` is a dict (simple secret), this is not a full DB cred
         if isinstance(cred, dict):
             raise ValueError("[mattstash] Entry is a simple secret and cannot be used for a DB connection")
@@ -138,7 +136,10 @@ class DatabaseUrlBuilder:
 
         dbname = database or entry.get_custom_property("database") or entry.get_custom_property("dbname")
         if not dbname:
-            raise ValueError("[mattstash] Missing database name. Provide --database/`database=` or set custom property 'database'/'dbname' on the credential.")
+            raise ValueError(
+                "[mattstash] Missing database name. Provide --database/`database=`"
+                " or set custom property 'database'/'dbname' on the credential."
+            )
 
         sslmode = sslmode_override if sslmode_override is not None else entry.get_custom_property("sslmode")
 
@@ -150,16 +151,10 @@ class DatabaseUrlBuilder:
             if mask_style == "omit":
                 userinfo = user
             else:  # "stars" (default)
-                if pwd:
-                    userinfo = f"{user}:*****"
-                else:
-                    userinfo = user
+                userinfo = f"{user}:*****" if pwd else user
         else:
             # include the real password if available
-            if pwd:
-                userinfo = f"{user}:{pwd}"
-            else:
-                userinfo = user
+            userinfo = f"{user}:{pwd}" if pwd else user
 
         base = f"{dialect}://{userinfo}@{host}:{port}/{dbname}"
         if sslmode:

@@ -5,8 +5,27 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_call:  # allow release.yml to call this workflow
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check src/ tests/
+
+      - name: Ruff format check
+        run: ruff format --check src/ tests/
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -32,3 +51,22 @@ jobs:
       - name: Type check
         if: matrix.python-version == '3.12'
         run: python -m mypy src/mattstash/ --strict
+
+  # Single status check that branch protection can gate on.
+  # This rolls up all matrix results into one required job.
+  ci-gate:
+    if: always()
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        run: |
+          if [[ "${{ needs.lint.result }}" != "success" ]]; then
+            echo "Lint failed or was cancelled."
+            exit 1
+          fi
+          if [[ "${{ needs.test.result }}" != "success" ]]; then
+            echo "Tests failed or were cancelled."
+            exit 1
+          fi
+          echo "All checks passed."

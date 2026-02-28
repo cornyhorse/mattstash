@@ -7,7 +7,7 @@ Credential data class and related utilities.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Union
+from typing import Any, Dict, Optional, Union
 
 
 @dataclass
@@ -16,6 +16,7 @@ class Credential:
     Container for a KeePass entry's commonly used fields.
     The 'notes' field is used for comments/notes associated with the credential.
     """
+
     credential_name: str
     username: Optional[str]
     password: Optional[str]
@@ -27,8 +28,10 @@ class Credential:
     def __repr__(self) -> str:
         # Custom repr to mask password if show_password is False
         pwd = self.password if self.show_password else ("*****" if self.password else None)
-        return (f"Credential(credential_name={self.credential_name!r}, username={self.username!r}, "
-                f"password={pwd!r}, url={self.url!r}, notes={self.notes!r}, tags={self.tags!r})")
+        return (
+            f"Credential(credential_name={self.credential_name!r}, username={self.username!r}, "
+            f"password={pwd!r}, url={self.url!r}, notes={self.notes!r}, tags={self.tags!r})"
+        )
 
     def as_dict(self) -> Dict[str, Any]:
         # Provide a dict representation with password masked if show_password is False

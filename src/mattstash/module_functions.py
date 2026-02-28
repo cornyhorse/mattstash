@@ -7,13 +7,13 @@ THREAD SAFETY WARNING:
     These module-level functions use a shared global instance (_default_instance).
     They are NOT thread-safe and should not be used in multi-threaded environments
     or from multiple threads concurrently.
-    
+
     For thread-safe usage, create separate MattStash instances per thread:
-    
+
         # Thread-safe approach
         ms = MattStash(path="/path/to/db.kdbx")
         credential = ms.get("my-credential")
-    
+
     Avoid using module-level functions in:
     - Web applications with concurrent request handlers
     - Async/await contexts with multiple coroutines
@@ -21,7 +21,8 @@ THREAD SAFETY WARNING:
     - Test suites requiring isolation between tests
 """
 
-from typing import Optional, Union, Dict, Any, List
+from typing import Any, Dict, List, Optional, Union
+
 from .core.mattstash import MattStash
 from .models.credential import Credential
 
@@ -33,15 +34,15 @@ CredentialResult = Union[Credential, Dict[str, Any]]
 
 
 def get_db_url(
-        title: str,
-        *,
-        path: Optional[str] = None,
-        password: Optional[str] = None,
-        driver: Optional[str] = None,
-        mask_password: bool = True,
-        mask_style: str = "stars",
-        database: Optional[str] = None,
-        sslmode_override: Optional[str] = None,
+    title: str,
+    *,
+    path: Optional[str] = None,
+    password: Optional[str] = None,
+    driver: Optional[str] = None,
+    mask_password: bool = True,
+    mask_style: str = "stars",
+    database: Optional[str] = None,
+    sslmode_override: Optional[str] = None,
 ) -> str:
     global _default_instance
     if path or password or _default_instance is None:
@@ -57,11 +58,11 @@ def get_db_url(
 
 
 def get(
-        title: str,
-        path: Optional[str] = None,
-        password: Optional[str] = None,
-        show_password: bool = False,
-        version: Optional[int] = None,
+    title: str,
+    path: Optional[str] = None,
+    password: Optional[str] = None,
+    show_password: bool = False,
+    version: Optional[int] = None,
 ) -> Optional[CredentialResult]:
     global _default_instance
     if path or password or _default_instance is None:
@@ -70,9 +71,9 @@ def get(
 
 
 def list_creds(
-        path: Optional[str] = None,
-        password: Optional[str] = None,
-        show_password: bool = False,
+    path: Optional[str] = None,
+    password: Optional[str] = None,
+    show_password: bool = False,
 ) -> List[Credential]:
     global _default_instance
     if path or password or _default_instance is None:
@@ -81,19 +82,19 @@ def list_creds(
 
 
 def put(
-        title: str,
-        *,
-        path: Optional[str] = None,
-        db_password: Optional[str] = None,
-        value: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        url: Optional[str] = None,
-        notes: Optional[str] = None,
-        comment: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        version: Optional[int] = None,
-        autoincrement: bool = True,
+    title: str,
+    *,
+    path: Optional[str] = None,
+    db_password: Optional[str] = None,
+    value: Optional[str] = None,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    url: Optional[str] = None,
+    notes: Optional[str] = None,
+    comment: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    version: Optional[int] = None,
+    autoincrement: bool = True,
 ) -> Optional[CredentialResult]:
     """
     Create or update an entry. If only 'value' is provided, store it in the password field (credstash-like).
@@ -120,9 +121,9 @@ def put(
 
 
 def list_versions(
-        title: str,
-        path: Optional[str] = None,
-        password: Optional[str] = None,
+    title: str,
+    path: Optional[str] = None,
+    password: Optional[str] = None,
 ) -> List[str]:
     """
     List all versions (zero-padded strings) for a given title, sorted ascending.
@@ -134,9 +135,9 @@ def list_versions(
 
 
 def delete(
-        title: str,
-        path: Optional[str] = None,
-        password: Optional[str] = None,
+    title: str,
+    path: Optional[str] = None,
+    password: Optional[str] = None,
 ) -> bool:
     """
     Delete an entry by title. Returns True if deleted, False otherwise.
@@ -148,15 +149,15 @@ def delete(
 
 
 def get_s3_client(
-        title: str,
-        *,
-        path: Optional[str] = None,
-        password: Optional[str] = None,
-        region: str = "us-east-1",
-        addressing: str = "path",
-        signature_version: str = "s3v4",
-        retries_max_attempts: int = 10,
-        verbose: bool = True,
+    title: str,
+    *,
+    path: Optional[str] = None,
+    password: Optional[str] = None,
+    region: str = "us-east-1",
+    addressing: str = "path",
+    signature_version: str = "s3v4",
+    retries_max_attempts: int = 10,
+    verbose: bool = True,
 ) -> Any:
     global _default_instance
     if path or password or _default_instance is None:

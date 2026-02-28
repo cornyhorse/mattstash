@@ -5,8 +5,8 @@ Database bootstrap and initialization functionality.
 """
 
 import os
-import stat
 import secrets
+import stat
 from typing import Optional
 
 from ..models.config import config
@@ -56,7 +56,7 @@ class DatabaseBootstrapper:
         try:
             file_stat = os.stat(sidecar_path)
             mode = file_stat.st_mode
-            
+
             # Check if file is readable/writable by group or others
             if mode & (stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH):
                 security_warning(

@@ -6,8 +6,8 @@ Handler for the s3-test command.
 
 from argparse import Namespace
 
-from .base import BaseHandler
 from ...module_functions import get_s3_client
+from .base import BaseHandler
 
 
 class S3TestHandler(BaseHandler):

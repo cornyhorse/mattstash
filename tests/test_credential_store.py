@@ -2,13 +2,13 @@
 Test the credential store module functionality.
 """
 
-import os
-import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
+
 from mattstash.credential_store import CredentialStore
-from mattstash.utils.exceptions import DatabaseNotFoundError, DatabaseAccessError
+from mattstash.utils.exceptions import DatabaseAccessError, DatabaseNotFoundError
 
 
 def test_credential_store_initialization():
@@ -30,7 +30,7 @@ def test_open_nonexistent_database():
 def test_open_no_password():
     """Test opening database without password"""
     # Create a temporary file to simulate database existence
-    with patch('os.path.exists', return_value=True):
+    with patch("os.path.exists", return_value=True):
         store = CredentialStore("/path/to/db.kdbx", "")
 
         with pytest.raises(DatabaseAccessError):
@@ -41,6 +41,7 @@ def test_open_invalid_password(temp_db: Path):
     """Test opening database with wrong password"""
     # First create a valid database
     from mattstash import MattStash
+
     ms = MattStash(path=str(temp_db))
     ms._ensure_initialized()  # This creates and opens the database
 
@@ -55,6 +56,7 @@ def test_successful_database_operations(temp_db: Path):
     """Test successful database operations"""
     # Create database first
     from mattstash import MattStash
+
     ms = MattStash(path=str(temp_db))
     password = ms.password
 
@@ -93,6 +95,7 @@ def test_successful_database_operations(temp_db: Path):
 def test_delete_entry_failure(temp_db: Path):
     """Test delete entry with mock failure"""
     from mattstash import MattStash
+
     ms = MattStash(path=str(temp_db))
     password = ms.password
 
@@ -102,7 +105,7 @@ def test_delete_entry_failure(temp_db: Path):
     mock_entry = Mock()
 
     # Mock the delete operation to fail
-    with patch.object(store, 'open') as mock_open:
+    with patch.object(store, "open") as mock_open:
         mock_kp = Mock()
         mock_kp.delete_entry.side_effect = Exception("Delete failed")
         mock_open.return_value = mock_kp
@@ -114,6 +117,7 @@ def test_delete_entry_failure(temp_db: Path):
 def test_find_entries_by_prefix_empty_result(temp_db: Path):
     """Test finding entries by prefix with no matches"""
     from mattstash import MattStash
+
     ms = MattStash(path=str(temp_db))
     password = ms.password
 
@@ -127,6 +131,7 @@ def test_find_entries_by_prefix_empty_result(temp_db: Path):
 def test_find_entry_by_title_not_found(temp_db: Path):
     """Test finding entry by title when it doesn't exist"""
     from mattstash import MattStash
+
     ms = MattStash(path=str(temp_db))
     password = ms.password
 

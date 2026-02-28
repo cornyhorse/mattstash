@@ -2,8 +2,9 @@
 Unit tests for specific db_url.py business logic paths to achieve 100% coverage.
 """
 
+from unittest.mock import Mock
+
 import pytest
-from unittest.mock import Mock, patch
 
 from mattstash.builders.db_url import DatabaseUrlBuilder
 
@@ -21,10 +22,7 @@ def test_db_url_builder_mask_style_omit():
 
     # Mock the database entry with custom properties
     mock_entry = Mock()
-    mock_entry.get_custom_property.side_effect = lambda key: {
-        "database": "testdb",
-        "sslmode": None
-    }.get(key)
+    mock_entry.get_custom_property.side_effect = lambda key: {"database": "testdb", "sslmode": None}.get(key)
 
     # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
@@ -52,10 +50,7 @@ def test_db_url_builder_unmasked_no_password():
 
     # Mock the database entry with custom properties
     mock_entry = Mock()
-    mock_entry.get_custom_property.side_effect = lambda key: {
-        "database": "testdb",
-        "sslmode": None
-    }.get(key)
+    mock_entry.get_custom_property.side_effect = lambda key: {"database": "testdb", "sslmode": None}.get(key)
 
     # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
@@ -84,7 +79,7 @@ def test_db_url_builder_with_sslmode():
     mock_entry = Mock()
     mock_entry.get_custom_property.side_effect = lambda key: {
         "database": "testdb",
-        "sslmode": "require"  # SSL mode present
+        "sslmode": "require",  # SSL mode present
     }.get(key)
 
     # Mock the new interface
@@ -114,7 +109,7 @@ def test_db_url_builder_sslmode_override():
     mock_entry = Mock()
     mock_entry.get_custom_property.side_effect = lambda key: {
         "database": "testdb",
-        "sslmode": "prefer"  # Will be overridden
+        "sslmode": "prefer",  # Will be overridden
     }.get(key)
 
     # Mock the new interface
@@ -142,10 +137,7 @@ def test_db_url_builder_masked_stars_no_password():
 
     # Mock the database entry
     mock_entry = Mock()
-    mock_entry.get_custom_property.side_effect = lambda key: {
-        "database": "testdb",
-        "sslmode": None
-    }.get(key)
+    mock_entry.get_custom_property.side_effect = lambda key: {"database": "testdb", "sslmode": None}.get(key)
 
     # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
@@ -172,10 +164,7 @@ def test_db_url_builder_unmasked_with_password():
 
     # Mock the database entry
     mock_entry = Mock()
-    mock_entry.get_custom_property.side_effect = lambda key: {
-        "database": "testdb",
-        "sslmode": None
-    }.get(key)
+    mock_entry.get_custom_property.side_effect = lambda key: {"database": "testdb", "sslmode": None}.get(key)
 
     # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
@@ -215,10 +204,7 @@ def test_db_url_builder_versioned_entry_resolution():
 
     # Mock the database entry for versioned credential
     mock_entry = Mock()
-    mock_entry.get_custom_property.side_effect = lambda key: {
-        "database": "testdb",
-        "sslmode": None
-    }.get(key)
+    mock_entry.get_custom_property.side_effect = lambda key: {"database": "testdb", "sslmode": None}.get(key)
 
     # Mock the new interface
     mock_mattstash._ensure_initialized.return_value = True
@@ -229,4 +215,3 @@ def test_db_url_builder_versioned_entry_resolution():
 
     # Should successfully build URL using the entry
     assert "postgresql://testuser:*****@localhost:5432/testdb" in result
-

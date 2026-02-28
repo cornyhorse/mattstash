@@ -5,17 +5,17 @@ Refactored MattStash class that orchestrates components.
 """
 
 import os
-from typing import Optional, Dict, List, Any
+from typing import Any, Dict, List, Optional
 
-from ..models.config import config
-from ..models.credential import Credential, CredentialResult
-from ..credential_store import CredentialStore
 from ..builders.db_url import DatabaseUrlBuilder
 from ..builders.s3_client import S3ClientBuilder
+from ..credential_store import CredentialStore
+from ..models.config import config
+from ..models.credential import Credential, CredentialResult
 from ..utils.logging_config import get_logger
 from .bootstrap import DatabaseBootstrapper
-from .password_resolver import PasswordResolver
 from .entry_manager import EntryManager
+from .password_resolver import PasswordResolver
 
 logger = get_logger(__name__)
 
@@ -24,7 +24,8 @@ class MattStash:
     """
     Simple KeePass accessor with:
       - default path of ~/.credentials/mattstash.kdbx (override via ctor)
-      - password sources: explicit arg, then sidecar file next to the DB named '.mattstash.txt', then KDBX_PASSWORD environment variable
+      - password sources: explicit arg, then sidecar file next to the DB
+        named '.mattstash.txt', then KDBX_PASSWORD environment variable
       - generic get(title) -> Credential
       - optional env hydration (mapping of keepass 'title:FIELD' -> ENVVAR)
     """
@@ -92,17 +93,17 @@ class MattStash:
         return self._entry_manager.list_entries(show_password)
 
     def put(
-            self,
-            title: str,
-            *,
-            value: Optional[str] = None,
-            username: Optional[str] = None,
-            password: Optional[str] = None,
-            url: Optional[str] = None,
-            notes: Optional[str] = None,
-            tags: Optional[List[str]] = None,
-            version: Optional[int] = None,
-            autoincrement: bool = True,
+        self,
+        title: str,
+        *,
+        value: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        url: Optional[str] = None,
+        notes: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        version: Optional[int] = None,
+        autoincrement: bool = True,
     ) -> Optional[CredentialResult]:
         """
         Create or update an entry.
@@ -126,7 +127,7 @@ class MattStash:
             notes=notes,
             tags=tags,
             version=version,
-            autoincrement=autoincrement
+            autoincrement=autoincrement,
         )
 
     def list_versions(self, title: str) -> List[str]:

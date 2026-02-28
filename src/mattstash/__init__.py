@@ -6,22 +6,21 @@ A simple, credstash-like interface to KeePass databases.
 """
 
 # Import from the new refactored structure
-from .core.mattstash import MattStash
-from .models.credential import Credential, CredentialResult, serialize_credential
-from .models.config import config
-
 # Import CLI entry point
 from .cli.main import main as cli_main
+from .core.mattstash import MattStash
+from .models.config import config
+from .models.credential import Credential, CredentialResult, serialize_credential
 
 # Import module-level functions for backward compatibility
 from .module_functions import (
-    get,
-    put,
     delete,
-    list_creds,
-    list_versions,
+    get,
     get_db_url,
     get_s3_client,
+    list_creds,
+    list_versions,
+    put,
 )
 
 # Re-export configuration constants for backward compatibility
@@ -32,26 +31,26 @@ PAD_WIDTH = config.version_pad_width
 __version__ = "0.1.2"
 
 __all__ = [
-    # Main classes
-    "MattStash",
-    "Credential",
-    "CredentialResult",
-    # Module functions
-    "get",
-    "put",
-    "delete",
-    "list_creds",
-    "list_versions",
-    "get_db_url",
-    "get_s3_client",
-    # Utility functions
-    "serialize_credential",
-    # CLI
-    "cli_main",
     # Constants
     "DEFAULT_KDBX_PATH",
     "DEFAULT_KDBX_SIDECAR_BASENAME",
     "PAD_WIDTH",
+    "Credential",
+    "CredentialResult",
+    # Main classes
+    "MattStash",
+    # CLI
+    "cli_main",
     # Configuration
     "config",
+    "delete",
+    # Module functions
+    "get",
+    "get_db_url",
+    "get_s3_client",
+    "list_creds",
+    "list_versions",
+    "put",
+    # Utility functions
+    "serialize_credential",
 ]

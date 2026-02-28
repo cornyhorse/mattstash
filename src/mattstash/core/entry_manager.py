@@ -4,15 +4,17 @@ mattstash.core.entry_manager
 Handles CRUD operations for KeePass entries.
 """
 
-from typing import Optional, List, Dict, Union, Any
+import contextlib
+from typing import Any, Dict, List, Optional
+
 from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 
-from ..models.credential import Credential, CredentialResult
-from ..version_manager import VersionManager
 from ..models.config import config
+from ..models.credential import Credential, CredentialResult
 from ..utils.logging_config import get_logger
-from ..utils.validation import validate_credential_title, validate_username, validate_url, validate_notes
+from ..utils.validation import validate_credential_title, validate_notes, validate_url, validate_username
+from ..version_manager import VersionManager
 
 logger = get_logger(__name__)
 
@@ -30,6 +32,7 @@ class EntryManager:
         Consider it simple if username and url are empty/None and password is non-empty.
         Notes/comments are allowed and do not change this classification. Tags are ignored.
         """
+
         def _empty(v: Optional[str]) -> bool:
             return v is None or (isinstance(v, str) and v.strip() == "")
 
@@ -39,11 +42,13 @@ class EntryManager:
         except Exception:
             return False
 
-    def get_entry(self, title: str, show_password: bool = False, version: Optional[int] = None) -> Optional[CredentialResult]:
+    def get_entry(
+        self, title: str, show_password: bool = False, version: Optional[int] = None
+    ) -> Optional[CredentialResult]:
         """
         Fetch a KeePass entry by its Title (optionally versioned) and return a Credential payload.
         Returns None if the entry cannot be found.
-        
+
         Returns:
             Union[Dict, Credential]: Either a simple secret dict or a full Credential object
             None: If entry not found
@@ -81,7 +86,7 @@ class EntryManager:
         # Find max version
         def extract_ver(e: Entry) -> int:
             try:
-                return int(e.title[len(prefix):])
+                return int(e.title[len(prefix) :])
             except Exception:
                 return -1
 
@@ -104,16 +109,13 @@ class EntryManager:
 
         return self._format_entry_result(entry, title, None, show_password)
 
-    def _format_entry_result(self, entry: Entry, title: str, version: Optional[str], show_password: bool) -> CredentialResult:
+    def _format_entry_result(
+        self, entry: Entry, title: str, version: Optional[str], show_password: bool
+    ) -> CredentialResult:
         """Format an entry into the appropriate result format."""
         if self._is_simple_secret(entry):
             value = entry.password if show_password else ("*****" if entry.password else None)
-            return {
-                "name": title,
-                "version": version,
-                "value": value,
-                "notes": entry.notes if entry.notes else None
-            }
+            return {"name": title, "version": version, "value": value, "notes": entry.notes if entry.notes else None}
 
         return Credential(
             credential_name=title,
@@ -129,15 +131,17 @@ class EntryManager:
         """Return a list of Credential objects for all entries in the KeePass database."""
         creds = []
         for entry in self.kp.entries:
-            creds.append(Credential(
-                credential_name=entry.title,
-                username=entry.username,
-                password=entry.password,
-                url=entry.url,
-                notes=entry.notes,
-                tags=list(entry.tags or []),
-                show_password=show_password,
-            ))
+            creds.append(
+                Credential(
+                    credential_name=entry.title,
+                    username=entry.username,
+                    password=entry.password,
+                    url=entry.url,
+                    notes=entry.notes,
+                    tags=list(entry.tags or []),
+                    show_password=show_password,
+                )
+            )
         return creds
 
     def put_entry(self, title: str, **kwargs: Any) -> Optional[CredentialResult]:
@@ -154,22 +158,22 @@ class EntryManager:
             tags: List of tags
             version: Specific version number
             autoincrement: Whether to auto-increment version
-        
+
         Raises:
             InvalidCredentialError: If inputs are invalid
         """
         # Validate inputs
         validate_credential_title(title)
-        
-        value = kwargs.get('value')
-        username = kwargs.get('username')
-        password = kwargs.get('password')
-        url = kwargs.get('url')
-        notes = kwargs.get('notes')
-        tags = kwargs.get('tags')
-        version = kwargs.get('version')
-        autoincrement = kwargs.get('autoincrement', True)
-        
+
+        value = kwargs.get("value")
+        username = kwargs.get("username")
+        password = kwargs.get("password")
+        url = kwargs.get("url")
+        notes = kwargs.get("notes")
+        tags = kwargs.get("tags")
+        version = kwargs.get("version")
+        autoincrement = kwargs.get("autoincrement", True)
+
         # Validate other fields
         validate_username(username)
         validate_url(url)
@@ -181,19 +185,25 @@ class EntryManager:
         # Find or create entry
         entry = self.kp.find_entries(title=entry_title, first=True)
         if entry is None:
-            entry = self.kp.add_entry(self.kp.root_group, title=entry_title,
-                                    username="", password="", url="", notes="")
+            entry = self.kp.add_entry(self.kp.root_group, title=entry_title, username="", password="", url="", notes="")
 
         # Decide mode: simple vs full credential
-        simple_mode = (value is not None and username is None and password is None
-                      and url is None and (tags is None or len(tags) == 0))
+        simple_mode = (
+            value is not None
+            and username is None
+            and password is None
+            and url is None
+            and (tags is None or len(tags) == 0)
+        )
 
         if simple_mode:
             return self._put_simple_entry(entry, title, value, notes, tags, vstr)
         else:
             return self._put_full_entry(entry, title, username, password, url, notes, tags)
 
-    def _determine_entry_title(self, title: str, version: Optional[int], autoincrement: bool) -> tuple[str, Optional[str]]:
+    def _determine_entry_title(
+        self, title: str, version: Optional[int], autoincrement: bool
+    ) -> tuple[str, Optional[str]]:
         """Determine the entry title and version string."""
         if version is not None or autoincrement:
             if version is None and autoincrement:
@@ -210,8 +220,15 @@ class EntryManager:
 
         return title, None
 
-    def _put_simple_entry(self, entry: Entry, title: str, value: Optional[str], notes: Optional[str],
-                         tags: Optional[List[str]], vstr: Optional[str]) -> Dict[str, Any]:
+    def _put_simple_entry(
+        self,
+        entry: Entry,
+        title: str,
+        value: Optional[str],
+        notes: Optional[str],
+        tags: Optional[List[str]],
+        vstr: Optional[str],
+    ) -> Dict[str, Any]:
         """Handle simple secret entry creation/update."""
         entry.username = ""
         entry.url = ""
@@ -231,9 +248,16 @@ class EntryManager:
             "notes": entry.notes if entry.notes else None,
         }
 
-    def _put_full_entry(self, entry: Entry, title: str, username: Optional[str],
-                       password: Optional[str], url: Optional[str], notes: Optional[str],
-                       tags: Optional[List[str]]) -> Credential:
+    def _put_full_entry(
+        self,
+        entry: Entry,
+        title: str,
+        username: Optional[str],
+        password: Optional[str],
+        url: Optional[str],
+        notes: Optional[str],
+        tags: Optional[List[str]],
+    ) -> Credential:
         """Handle full credential entry creation/update."""
         if username is not None:
             entry.username = username
@@ -265,15 +289,11 @@ class EntryManager:
         except Exception:
             # Fallback for older versions
             for t in list(entry.tags or []):
-                try:
+                with contextlib.suppress(Exception):
                     entry.remove_tag(t)
-                except Exception:
-                    pass
             for t in tags:
-                try:
+                with contextlib.suppress(Exception):
                     entry.add_tag(t)
-                except Exception:
-                    pass
 
     def list_versions(self, title: str) -> List[str]:
         """List all versions (zero-padded strings) for a given title, sorted ascending."""
@@ -282,7 +302,7 @@ class EntryManager:
 
         for entry in self.kp.entries:
             if entry.title and entry.title.startswith(prefix):
-                vstr = entry.title[len(prefix):]
+                vstr = entry.title[len(prefix) :]
                 if vstr.isdigit() and len(vstr) == config.version_pad_width:
                     versions.append(vstr)
 
@@ -303,18 +323,18 @@ class EntryManager:
         except Exception as ex:
             logger.error(f"Failed to delete entry '{title}': {ex}")
             return False
-    
+
     def get_entry_with_custom_properties(self, title: str) -> Optional[tuple[CredentialResult, Entry]]:
         """
         Fetch an entry and return both the formatted result and the raw Entry object.
         This allows callers to access custom properties without re-opening the database.
-        
+
         Returns:
             Tuple of (CredentialResult, Entry) if found, None if not found
         """
         # Try to find the entry - handle versioning
         entry = self.kp.find_entries(title=title, first=True)
-        
+
         if not entry:
             # Try versioned lookup
             prefix = f"{title}@"
@@ -323,16 +343,17 @@ class EntryManager:
                 # Find max version
                 def extract_ver(e: Entry) -> int:
                     try:
-                        return int(e.title[len(prefix):])
+                        return int(e.title[len(prefix) :])
                     except Exception:
                         return -1
+
                 versioned_candidates = [(extract_ver(e), e) for e in candidates if extract_ver(e) >= 0]
                 if versioned_candidates:
-                    max_ver, entry = max(versioned_candidates, key=lambda t: t[0])
-        
+                    _max_ver, entry = max(versioned_candidates, key=lambda t: t[0])
+
         if not entry:
             return None
-        
+
         # Format the result
         cred_result = self.get_entry(title, show_password=True)
         if cred_result is None:

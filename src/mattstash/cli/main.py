@@ -4,22 +4,22 @@ mattstash.cli.main
 Command-line interface for MattStash.
 """
 
-import sys
-import os
 import argparse
+import os
+import sys
 from typing import Optional
 
 from .handlers import (
-    SetupHandler,
-    ListHandler,
-    KeysHandler,
-    GetHandler,
-    PutHandler,
-    DeleteHandler,
-    VersionsHandler,
-    DbUrlHandler,
-    S3TestHandler,
     ConfigHandler,
+    DbUrlHandler,
+    DeleteHandler,
+    GetHandler,
+    KeysHandler,
+    ListHandler,
+    PutHandler,
+    S3TestHandler,
+    SetupHandler,
+    VersionsHandler,
 )
 
 
@@ -35,25 +35,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
     parser = argparse.ArgumentParser(prog="mattstash", description="KeePass-backed secrets accessor")
-    
+
     # Global options for local mode
     parser.add_argument("--db", dest="path", help="Path to KeePass .kdbx (default: ~/.config/mattstash/mattstash.kdbx)")
     parser.add_argument("--password", dest="password", help="Password for the KeePass DB (overrides sidecar/env)")
-    
+
     # Global options for server mode
     parser.add_argument(
         "--server-url",
         dest="server_url",
         default=os.environ.get("MATTSTASH_SERVER_URL"),
-        help="MattStash server URL (enables server mode). Can also use MATTSTASH_SERVER_URL env var."
+        help="MattStash server URL (enables server mode). Can also use MATTSTASH_SERVER_URL env var.",
     )
     parser.add_argument(
         "--api-key",
         dest="api_key",
         default=os.environ.get("MATTSTASH_API_KEY"),
-        help="API key for server authentication. Can also use MATTSTASH_API_KEY env var."
+        help="API key for server authentication. Can also use MATTSTASH_API_KEY env var.",
     )
-    
+
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
 
     subparsers = parser.add_subparsers(dest="cmd", required=True)
@@ -69,8 +69,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # keys
     p_keys = subparsers.add_parser("keys", help="List entry titles only")
-    p_keys.add_argument("--show-password", action="store_true",
-                        help="Show passwords in output")  # For symmetry, but not used
+    p_keys.add_argument(
+        "--show-password", action="store_true", help="Show passwords in output"
+    )  # For symmetry, but not used
     p_keys.add_argument("--json", action="store_true", help="Output JSON")
 
     # get
@@ -107,10 +108,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_dburl = subparsers.add_parser("db-url", help="Print SQLAlchemy-style URL from a DB credential")
     p_dburl.add_argument("title", help="KeePass entry title holding DB connection fields")
     p_dburl.add_argument("--driver", default="psycopg", help="Driver name suffix in URL (default: psycopg)")
-    p_dburl.add_argument("--database", help="Database name; if omitted, use credential custom property 'database'/'dbname'")
-    p_dburl.add_argument("--mask-password", default=True, nargs="?", const=True,
-                         type=lambda s: (str(s).lower() not in ("false", "0", "no", "off")),
-                         help="Mask password in printed URL (default True). Pass 'False' to disable.")
+    p_dburl.add_argument(
+        "--database", help="Database name; if omitted, use credential custom property 'database'/'dbname'"
+    )
+    p_dburl.add_argument(
+        "--mask-password",
+        default=True,
+        nargs="?",
+        const=True,
+        type=lambda s: str(s).lower() not in ("false", "0", "no", "off"),
+        help="Mask password in printed URL (default True). Pass 'False' to disable.",
+    )
 
     # s3-test
     p_s3 = subparsers.add_parser("s3-test", help="Create an S3 client from a credential and optionally check a bucket")
