@@ -100,6 +100,13 @@ cd server && source venv/bin/activate
 
 ### Development Scripts
 
+#### `scripts/lint.sh` - Linting
+Runs ruff check and format verification. Use `--fix` to auto-fix issues. **Always run this before committing.**
+```bash
+./scripts/lint.sh          # Check only
+./scripts/lint.sh --fix    # Auto-fix
+```
+
 #### `scripts/run-tests.sh` - Test Suite
 Runs the full test suite with pytest.
 
