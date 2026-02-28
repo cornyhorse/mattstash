@@ -7,6 +7,7 @@ Command-line interface for MattStash.
 import argparse
 import os
 import sys
+from importlib.metadata import version as _pkg_version
 from typing import Optional
 
 from .handlers import (
@@ -35,6 +36,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
     parser = argparse.ArgumentParser(prog="mattstash", description="KeePass-backed secrets accessor")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {_pkg_version('mattstash')}")
 
     # Global options for local mode
     parser.add_argument("--db", dest="path", help="Path to KeePass .kdbx (default: ~/.config/mattstash/mattstash.kdbx)")
