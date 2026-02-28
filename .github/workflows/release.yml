@@ -102,66 +102,12 @@ jobs:
         env:
           BUMP_TYPE: ${{ steps.bump.outputs.type }}
 
-      - name: Commit version bump via API
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+      - name: Commit version bump
         run: |
-          # Read the updated file content
-          CONTENT=$(base64 -w0 pyproject.toml)
-
-          # Get the current commit SHA and tree
-          MAIN_SHA=$(gh api repos/${{ github.repository }}/git/ref/heads/main --jq '.object.sha')
-          TREE_SHA=$(gh api repos/${{ github.repository }}/git/commits/${MAIN_SHA} --jq '.tree.sha')
-
-          # Get the blob SHA for pyproject.toml in the current tree
-          OLD_BLOB_SHA=$(gh api "repos/${{ github.repository }}/git/trees/${TREE_SHA}" --jq '.tree[] | select(.path=="pyproject.toml") | .sha')
-
-          # Create a new blob with the updated content
-          NEW_BLOB_SHA=$(gh api repos/${{ github.repository }}/git/blobs \
-            -f content="${CONTENT}" \
-            -f encoding=base64 \
-            --jq '.sha')
-
-          # Create a new tree replacing pyproject.toml
-          NEW_TREE_SHA=$(gh api repos/${{ github.repository }}/git/trees \
-            -f "base_tree=${TREE_SHA}" \
-            -f "tree[][path]=pyproject.toml" \
-            -f "tree[][mode]=100644" \
-            -f "tree[][type]=blob" \
-            -f "tree[][sha]=${NEW_BLOB_SHA}" \
-            --jq '.sha')
-
-          # Create the commit
-          COMMIT_SHA=$(gh api repos/${{ github.repository }}/git/commits \
-            -f "message=release: v${NEW_VERSION} [skip-release]" \
-            -f "tree=${NEW_TREE_SHA}" \
-            -f "parents[]=${MAIN_SHA}" \
-            --jq '.sha')
-
-          # Update main ref
-          gh api repos/${{ github.repository }}/git/refs/heads/main \
-            -X PATCH \
-            -f "sha=${COMMIT_SHA}" \
-            -F "force=false"
-
-          # Create the tag
-          TAG_SHA=$(gh api repos/${{ github.repository }}/git/tags \
-            -f "tag=v${NEW_VERSION}" \
-            -f "message=v${NEW_VERSION}" \
-            -f "object=${COMMIT_SHA}" \
-            -f "type=commit" \
-            --jq '.sha')
-
-          gh api repos/${{ github.repository }}/git/refs \
-            -f "ref=refs/tags/v${NEW_VERSION}" \
-            -f "sha=${TAG_SHA}"
-
-          echo "Created commit ${COMMIT_SHA} and tag v${NEW_VERSION}"
-
-          # Update local checkout for the build step
-          git fetch origin main --tags
-          git checkout "v${NEW_VERSION}"
+          git add pyproject.toml
+          git commit -m "release: v${{ steps.version.outputs.new_version }} [skip-release]"
+          git tag "v${{ steps.version.outputs.new_version }}"
+          git push origin main --tags
 
       - name: Install build tools
         run: |
