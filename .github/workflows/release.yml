@@ -3,6 +3,7 @@ name: Auto Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:  # allow manual re-runs
 
 # Prevent concurrent releases
 concurrency:
