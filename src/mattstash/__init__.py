@@ -5,7 +5,8 @@ MattStash: KeePass-backed secrets management
 A simple, credstash-like interface to KeePass databases.
 """
 
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
 # Import from the new refactored structure
 # Import CLI entry point
