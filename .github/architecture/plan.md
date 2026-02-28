@@ -184,6 +184,7 @@ Applied judiciously to:
 | 2026-01-26 | Phase 5 | Integration planning | Created plan_5.md for CLI-server integration |
 | 2026-02-26 | Audit | Code review & security audit | Created plan_6.md, corrected Phase 3/4 status |
 | 2026-02-26 | Phase 6 | Sprint 1 implementation | Fixed A1-A4 (Critical), B1-B10 (High), C8/C9, D9/D12, E4; mypy strict 0 errors |
+| 2026-02-28 | CI/CD | Auto-release pipeline | Added release.yml (auto-bump + tag + PyPI on merge to main), ci.yml (PR tests), removed duplicate publish workflows |
 
 ---
 

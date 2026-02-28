@@ -1,0 +1,133 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+
+# Prevent concurrent releases
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Skip if the commit was made by the release bot (prevents infinite loop)
+    if: "!contains(github.event.head_commit.message, '[skip-release]')"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use the default GITHUB_TOKEN - needs "Allow GitHub Actions to
+          # create and approve pull requests" enabled in repo settings, and
+          # the default token permissions set to read/write.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine bump type
+        id: bump
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          # Check for explicit bump directives in merge commit message
+          if echo "$COMMIT_MSG" | grep -qiE '\[(major|bump-major)\]'; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+          elif echo "$COMMIT_MSG" | grep -qiE '\[(minor|bump-minor)\]'; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Bump type: $(cat "$GITHUB_OUTPUT" | grep type | cut -d= -f2)"
+
+      - name: Bump version
+        id: version
+        run: |
+          python - <<'PYEOF'
+          import re, os, sys
+
+          bump_type = os.environ["BUMP_TYPE"]
+
+          with open("pyproject.toml") as f:
+              content = f.read()
+
+          m = re.search(r'version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', content)
+          if not m:
+              print("ERROR: Could not find version in pyproject.toml")
+              sys.exit(1)
+
+          major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+          old_version = f"{major}.{minor}.{patch}"
+
+          if bump_type == "major":
+              major += 1
+              minor = 0
+              patch = 0
+          elif bump_type == "minor":
+              minor += 1
+              patch = 0
+          else:
+              patch += 1
+
+          new_version = f"{major}.{minor}.{patch}"
+          content = content.replace(f'version = "{old_version}"', f'version = "{new_version}"')
+
+          with open("pyproject.toml", "w") as f:
+              f.write(content)
+
+          print(f"Bumped {old_version} -> {new_version} ({bump_type})")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"old_version={old_version}\n")
+              f.write(f"new_version={new_version}\n")
+              f.write(f"tag=v{new_version}\n")
+          PYEOF
+        env:
+          BUMP_TYPE: ${{ steps.bump.outputs.type }}
+
+      - name: Commit version bump
+        run: |
+          git add pyproject.toml
+          git commit -m "release: v${{ steps.version.outputs.new_version }} [skip-release]"
+          git tag "v${{ steps.version.outputs.new_version }}"
+          git push origin main --tags
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          print-hash: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.new_version }}"
+          name: "v${{ steps.version.outputs.new_version }}"
+          body: |
+            ## mattstash v${{ steps.version.outputs.new_version }}
+
+            Bumped from v${{ steps.version.outputs.old_version }} → v${{ steps.version.outputs.new_version }} (${{ steps.bump.outputs.type }}).
+
+            Install or upgrade:
+            ```
+            pip install mattstash==${{ steps.version.outputs.new_version }}
+            ```
+          generate_release_notes: true
