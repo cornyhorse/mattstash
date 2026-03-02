@@ -23,8 +23,11 @@ def validate_credential_title(title: str) -> None:
     Titles must:
     - Not be empty
     - Not exceed MAX_TITLE_LENGTH characters
-    - Not contain path separators or other dangerous characters
+    - Not contain backslashes, null bytes, or control characters
     - Not start with a dot (hidden file)
+
+    Forward slashes (/) are allowed — they serve as namespace separators
+    that map to KeePass group hierarchy (e.g. ``cloud/hetzner/s3-key``).
 
     Args:
         title: Credential title to validate
@@ -38,8 +41,10 @@ def validate_credential_title(title: str) -> None:
     if len(title) > MAX_TITLE_LENGTH:
         raise InvalidCredentialError(f"Credential title too long (max {MAX_TITLE_LENGTH} characters)")
 
-    # Disallow path separators and other dangerous characters
-    dangerous_chars = ["/", "\\", "\0", "\n", "\r", "\t"]
+    # Disallow backslashes, null bytes, and control characters.
+    # Forward slashes (/) are intentionally allowed as namespace separators
+    # that map to KeePass group hierarchy.
+    dangerous_chars = ["\\", "\0", "\n", "\r", "\t"]
     for char in dangerous_chars:
         if char in title:
             raise InvalidCredentialError(f"Credential title contains invalid character: {char!r}")
