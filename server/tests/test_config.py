@@ -163,3 +163,18 @@ class TestConfig:
         config = config_module.Config()
         with pytest.raises(ValueError, match="At least one API key must be provided"):
             config.get_api_keys()
+
+    def test_get_kdbx_password_file_strips_whitespace(self, tmp_path, monkeypatch, clean_env):
+        """KDBX_PASSWORD_FILE content is stripped of surrounding whitespace."""
+        password_file = tmp_path / "password.txt"
+        password_file.write_text("  mypassword  \n")
+
+        from importlib import reload
+        import app.config as config_module
+        reload(config_module)
+
+        monkeypatch.setattr(config_module.Config, "KDBX_PASSWORD", None)
+        monkeypatch.setattr(config_module.Config, "KDBX_PASSWORD_FILE", str(password_file))
+
+        config = config_module.Config()
+        assert config.get_kdbx_password() == "mypassword"

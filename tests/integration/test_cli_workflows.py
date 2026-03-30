@@ -394,3 +394,14 @@ class TestCLICompleteWorkflow:
         # Verify deletion
         result = run_cli(["get", "workflow-test", "--db", str(db_path)])
         assert result.returncode != 0
+
+
+class TestCLIServerShim:
+    """Test the informational 'server' subcommand."""
+
+    def test_server_command_shows_docker_run(self):
+        """mattstash server exits 0 and prints docker run instructions."""
+        result = run_cli(["server"])
+
+        assert result.returncode == 0
+        assert "docker run" in result.stdout

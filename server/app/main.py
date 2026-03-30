@@ -16,7 +16,7 @@ logger = logging.getLogger("mattstash.api")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # pragma: no cover
+async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
     logger.info("Starting %s", config.API_TITLE)
