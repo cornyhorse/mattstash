@@ -27,7 +27,7 @@ def get_mattstash() -> MattStash:  # pragma: no cover
                 try:
                     password = config.get_kdbx_password()
                     _mattstash_instance = MattStash(
-                        db_path=config.DB_PATH,
+                        path=config.DB_PATH,
                         password=password
                     )
                 except Exception as e:
