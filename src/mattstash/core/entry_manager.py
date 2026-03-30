@@ -310,18 +310,35 @@ class EntryManager:
         return versions
 
     def delete_entry(self, title: str) -> bool:
-        """Delete an entry by title. Returns True if deleted, False otherwise."""
+        """Delete an entry by title. Returns True if deleted, False otherwise.
+
+        Handles versioned entries: if no exact match, deletes all versioned
+        entries matching ``title@<version>``.
+        """
         entry = self.kp.find_entries(title=title, first=True)
-        if not entry:
+        if entry:
+            try:
+                self.kp.delete_entry(entry)
+                self.kp.save()
+                return True
+            except Exception as ex:
+                logger.error(f"Failed to delete entry '{title}': {ex}")
+                return False
+
+        # Try versioned entries
+        prefix = f"{title}@"
+        versioned = [e for e in self.kp.entries if e.title and e.title.startswith(prefix)]
+        if not versioned:
             logger.info(f"Entry not found: {title}")
             return False
 
         try:
-            self.kp.delete_entry(entry)
+            for entry in versioned:
+                self.kp.delete_entry(entry)
             self.kp.save()
             return True
         except Exception as ex:
-            logger.error(f"Failed to delete entry '{title}': {ex}")
+            logger.error(f"Failed to delete versioned entries for '{title}': {ex}")
             return False
 
     def get_entry_with_custom_properties(self, title: str) -> Optional[tuple[CredentialResult, Entry]]:

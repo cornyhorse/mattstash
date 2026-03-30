@@ -143,6 +143,7 @@ def test_entry_manager_delete_not_found():
     manager = EntryManager(mock_kp)
 
     mock_kp.find_entries.return_value = []
+    mock_kp.entries = []  # No entries at all (versioned fallback)
 
     result = manager.delete_entry("nonexistent")
     assert result is False

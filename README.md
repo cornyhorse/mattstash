@@ -71,6 +71,24 @@ mattstash delete "old-token"
 
 MattStash can run as a network service for containerized environments. The CLI can target either local KeePass databases (default) or a remote MattStash server.
 
+### Running the Server
+
+The API server is distributed as a Docker image — it is **not** a CLI subcommand.
+
+```bash
+docker run -d \
+  -e MATTSTASH_DB_PATH=/data/mattstash.kdbx \
+  -e KDBX_PASSWORD=<password> \
+  -e MATTSTASH_API_KEY=<api-key> \
+  -v /path/to/data:/data:ro \
+  -p 8000:8000 \
+  ghcr.io/cornyhorse/mattstash:latest
+```
+
+The server exposes a health check at `/api/health` and credential endpoints under `/api/v1/`.
+
+> **Tip:** Run `mattstash server` for a quick-reference of these instructions.
+
 ### Using CLI with Server
 
 ```bash
@@ -86,7 +104,7 @@ mattstash list
 mattstash --server-url http://localhost:8000 --api-key "key" get "api-token"
 ```
 
-For server setup and deployment, see [Server Documentation](server/README.md) and [Server Quick Start](server/QUICKSTART.md).
+For full server setup, deployment, and Docker Compose examples, see [Server Documentation](server/README.md) and [Server Quick Start](server/QUICKSTART.md).
 
 ## Features
 
@@ -231,6 +249,8 @@ See [Python API Documentation](docs/python-api.md) for complete reference.
 ## API Server (Optional)
 
 MattStash includes an optional FastAPI-based HTTP service for accessing credentials over the network. This is useful for containerized environments where multiple services need secure access to credentials.
+
+**Docker image:** `ghcr.io/cornyhorse/mattstash:latest`
 
 **Features:**
 - 🔒 API key authentication

@@ -8,8 +8,8 @@ from mattstash.builders.db_url import build_db_url
 from mattstash.utils.exceptions import CredentialNotFoundError
 
 from ..dependencies import APIKeyDep, MattStashDep
-from ..rate_limit import limiter
 from ..models.responses import DatabaseUrlResponse
+from ..rate_limit import limiter
 
 logger = logging.getLogger("mattstash.api")
 router = APIRouter()
@@ -33,7 +33,7 @@ async def get_database_url(  # pragma: no cover
 ) -> DatabaseUrlResponse:
     """
     Build a database connection URL from a credential.
-    
+
     - **name**: Credential name
     - **driver**: Database driver (default: psycopg)
     - **database**: Optional database name
@@ -58,7 +58,7 @@ async def get_database_url(  # pragma: no cover
             driver=driver,
             database=database
         )
-        
+
         # Mask password if requested
         if mask_password and "@" in url:
             # Replace password in URL with *****
@@ -73,14 +73,31 @@ async def get_database_url(  # pragma: no cover
                         if ":" in creds:
                             user, _ = creds.split(":", 1)
                             url = f"{scheme}://{user}:*****@{host}"
-        
+
         return DatabaseUrlResponse(url=url)
-    
+
     except CredentialNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Credential not found: {name}"
+        ) from None
+    except ValueError as e:
+        # build_db_url raises ValueError for missing creds
+        err_msg = str(e).lower()
+        not_found = (
+            "not found" in err_msg
+            or "simple secret" in err_msg
         )
+        if not_found:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Credential not found or unsuitable: {name}"
+            ) from None
+        logger.error("Error building database URL for %s: %s", name, e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid credential for database URL construction"
+        ) from None
     except HTTPException:
         raise
     except Exception as e:
@@ -88,4 +105,4 @@ async def get_database_url(  # pragma: no cover
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
-        )
+        ) from None

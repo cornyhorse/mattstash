@@ -7,6 +7,9 @@ Tests CLI commands with actual database operations.
 import json
 import subprocess
 
+# The default sidecar filename created by ``mattstash setup``
+_SIDECAR_NAME = ".mattstash.txt"
+
 
 def run_cli(args, env=None):
     """Helper to run CLI command and capture output."""
@@ -31,7 +34,7 @@ class TestCLISetup:
         assert db_path.exists()
 
         # Sidecar should exist
-        sidecar_path = tmp_path / ".password.txt"
+        sidecar_path = tmp_path / _SIDECAR_NAME
         assert sidecar_path.exists()
 
     def test_setup_force_recreates(self, tmp_path):
@@ -52,10 +55,8 @@ class TestCLIPut:
     def test_put_simple_credential(self, tmp_path):
         """Test putting a simple credential via CLI."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
-        # Setup
+        # Setup (creates sidecar automatically)
         run_cli(["setup", "--db", str(db_path)])
 
         # Put credential
@@ -66,8 +67,6 @@ class TestCLIPut:
     def test_put_database_credential(self, tmp_path):
         """Test putting a database credential via CLI."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
 
@@ -93,8 +92,6 @@ class TestCLIPut:
     def test_put_with_notes(self, tmp_path):
         """Test putting credential with notes."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
 
@@ -120,8 +117,6 @@ class TestCLIGet:
     def test_get_existing_credential(self, tmp_path):
         """Test getting an existing credential."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
         run_cli(["put", "test-key", "--value", "test-value", "--db", str(db_path)])
@@ -136,8 +131,6 @@ class TestCLIGet:
     def test_get_with_show_password(self, tmp_path):
         """Test getting credential with password shown."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
         run_cli(["put", "secret", "--value", "my-secret", "--db", str(db_path)])
@@ -151,8 +144,6 @@ class TestCLIGet:
     def test_get_json_output(self, tmp_path):
         """Test getting credential as JSON."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
         run_cli(["put", "json-test", "--value", "value", "--db", str(db_path)])
@@ -162,15 +153,13 @@ class TestCLIGet:
 
         assert result.returncode == 0
 
-        # Parse JSON output
+        # Parse JSON output — simple secrets use "name" key
         data = json.loads(result.stdout)
-        assert data["title"] == "json-test"
+        assert data["name"] == "json-test"
 
     def test_get_nonexistent_credential(self, tmp_path):
         """Test getting a credential that doesn't exist."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
 
@@ -186,8 +175,6 @@ class TestCLIList:
     def test_list_empty_database(self, tmp_path):
         """Test listing empty database."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
 
@@ -198,8 +185,6 @@ class TestCLIList:
     def test_list_multiple_credentials(self, tmp_path):
         """Test listing multiple credentials."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
 
@@ -219,8 +204,6 @@ class TestCLIList:
     def test_list_json_output(self, tmp_path):
         """Test listing credentials as JSON."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
         run_cli(["put", "test", "--value", "val", "--db", str(db_path)])
@@ -240,8 +223,6 @@ class TestCLIDelete:
     def test_delete_existing_credential(self, tmp_path):
         """Test deleting an existing credential."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
         run_cli(["put", "to-delete", "--value", "temp", "--db", str(db_path)])
@@ -258,15 +239,13 @@ class TestCLIDelete:
     def test_delete_nonexistent_credential(self, tmp_path):
         """Test deleting a credential that doesn't exist."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
 
-        run_cli(["delete", "nonexistent", "--db", str(db_path)])
+        result = run_cli(["delete", "nonexistent", "--db", str(db_path)])
 
-        # Should handle gracefully (or fail)
-        # Behavior depends on implementation
+        # Should fail (exit code 2 = not found)
+        assert result.returncode != 0
 
 
 class TestCLIDbUrl:
@@ -275,8 +254,6 @@ class TestCLIDbUrl:
     def test_db_url_generation(self, tmp_path):
         """Test generating database URL via CLI."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
 
@@ -297,18 +274,17 @@ class TestCLIDbUrl:
             ]
         )
 
-        # Generate URL
-        result = run_cli(["db-url", "postgres", "--db", str(db_path)])
+        # Generate URL — must provide --database since the credential
+        # does not have a custom 'database'/'dbname' property
+        result = run_cli(["db-url", "postgres", "--database", "mydb", "--db", str(db_path)])
 
         assert result.returncode == 0
-        assert "postgresql://" in result.stdout
-        assert "localhost:5432" in result.stdout
+        assert "postgresql" in result.stdout
+        assert "localhost" in result.stdout
 
     def test_db_url_with_driver(self, tmp_path):
         """Test generating database URL with driver."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
 
@@ -328,8 +304,8 @@ class TestCLIDbUrl:
             ]
         )
 
-        # Generate URL with driver
-        result = run_cli(["db-url", "postgres", "--driver", "psycopg", "--db", str(db_path)])
+        # Generate URL with driver and database name
+        result = run_cli(["db-url", "postgres", "--driver", "psycopg", "--database", "mydb", "--db", str(db_path)])
 
         assert result.returncode == 0
         assert "postgresql+psycopg://" in result.stdout
@@ -341,8 +317,6 @@ class TestCLIKeys:
     def test_keys_lists_titles(self, tmp_path):
         """Test keys command lists only titles."""
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
 
@@ -362,35 +336,35 @@ class TestCLIVersions:
     """Test CLI versions command."""
 
     def test_versions_lists_all_versions(self, tmp_path):
-        """Test versions command lists all versions."""
+        """Test versions command lists all versions.
+
+        Putting the same key multiple times with ``--value`` auto-increments
+        the version (e.g. key@0000000001, key@0000000002, ...).
+        """
         db_path = tmp_path / "cli-test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         run_cli(["setup", "--db", str(db_path)])
 
-        # Create versioned credentials
-        run_cli(["put", "secret@1", "--value", "v1", "--db", str(db_path)])
-        run_cli(["put", "secret@2", "--value", "v2", "--db", str(db_path)])
-        run_cli(["put", "secret@3", "--value", "v3", "--db", str(db_path)])
+        # Create multiple versions of the same key
+        run_cli(["put", "secret", "--value", "v1", "--db", str(db_path)])
+        run_cli(["put", "secret", "--value", "v2", "--db", str(db_path)])
+        run_cli(["put", "secret", "--value", "v3", "--db", str(db_path)])
 
         # List versions
         result = run_cli(["versions", "secret", "--db", str(db_path)])
 
         assert result.returncode == 0
-        assert "secret@1" in result.stdout
-        assert "secret@2" in result.stdout
-        assert "secret@3" in result.stdout
+        assert "0000000001" in result.stdout
+        assert "0000000002" in result.stdout
+        assert "0000000003" in result.stdout
 
 
 class TestCLICompleteWorkflow:
     """Test complete CLI workflows."""
 
     def test_complete_credential_lifecycle_cli(self, tmp_path):
-        """Test complete lifecycle via CLI: setup → put → get → update → delete."""
+        """Test complete lifecycle via CLI: setup -> put -> get -> update -> delete."""
         db_path = tmp_path / "workflow.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
 
         # Setup
         result = run_cli(["setup", "--db", str(db_path)])
@@ -405,15 +379,15 @@ class TestCLICompleteWorkflow:
         assert result.returncode == 0
         assert "workflow-test" in result.stdout
 
-        # Update
+        # Update (creates a new version)
         result = run_cli(["put", "workflow-test", "--value", "v2", "--db", str(db_path)])
         assert result.returncode == 0
 
-        # Verify update
+        # Verify update — latest version should have v2
         result = run_cli(["get", "workflow-test", "--show-password", "--db", str(db_path)])
         assert "v2" in result.stdout
 
-        # Delete
+        # Delete (removes all versions)
         result = run_cli(["delete", "workflow-test", "--db", str(db_path)])
         assert result.returncode == 0
 

@@ -20,7 +20,7 @@ _mattstash_lock = threading.Lock()
 def get_mattstash() -> MattStash:  # pragma: no cover
     """Get or create MattStash instance (thread-safe singleton)."""
     global _mattstash_instance
-    
+
     if _mattstash_instance is None:
         with _mattstash_lock:
             if _mattstash_instance is None:
@@ -31,12 +31,15 @@ def get_mattstash() -> MattStash:  # pragma: no cover
                         password=password
                     )
                 except Exception as e:
-                    logger.error("Failed to initialize MattStash: %s", e)
+                    logger.error(
+                        "Failed to initialize MattStash: %s",
+                        type(e).__name__,
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                         detail="Service temporarily unavailable"
-                    )
-    
+                    ) from None
+
     return _mattstash_instance
 
 
@@ -49,13 +52,13 @@ async def verify_api_key_header(  # pragma: no cover
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication failed"
         )
-    
+
     if not verify_api_key(x_api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication failed"
         )
-    
+
     return x_api_key
 
 
