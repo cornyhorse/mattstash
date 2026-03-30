@@ -253,6 +253,36 @@ def reset_config_cache():
 
 
 @pytest.fixture
+def real_db_mattstash(tmp_path) -> MattStash:
+    """MattStash instance backed by a real temporary KeePass database."""
+    from pykeepass import create_database
+
+    db_path = tmp_path / "roundtrip.kdbx"
+    password = "test-roundtrip-pass"
+    create_database(str(db_path), password=password)
+    # DB already exists so bootstrap_if_missing is a no-op
+    return MattStash(path=str(db_path), password=password)
+
+
+@pytest.fixture
+def real_kdbx_client(test_app, real_db_mattstash):
+    """TestClient wired to a real KeePass database (no mocks in the data layer)."""
+    from app.dependencies import get_mattstash, verify_api_key_header
+    from fastapi.testclient import TestClient
+
+    ms = real_db_mattstash
+    test_app.dependency_overrides[get_mattstash] = lambda: ms
+    # Override auth so api_keys.py's stale module-level config reference doesn't
+    # interfere; auth is tested separately in test_api_keys.py.
+    test_app.dependency_overrides[verify_api_key_header] = lambda: "test-api-key"
+
+    client = TestClient(test_app)
+    yield client
+
+    test_app.dependency_overrides.clear()
+
+
+@pytest.fixture
 def test_client_factory(monkeypatch):
     """Factory to create TestClient with custom config."""
     def _create_client(mock_mattstash_instance=None, api_keys=None):
