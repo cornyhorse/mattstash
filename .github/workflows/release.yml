@@ -159,7 +159,7 @@ jobs:
         id: version
         run: |
           git pull origin main
-          VERSION=$(grep -oP 'version\s*=\s*"\K[^"]+' pyproject.toml)
+          VERSION=$(grep -oP '^version\s*=\s*"\K[^"]+' pyproject.toml)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
