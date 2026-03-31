@@ -1,4 +1,4 @@
 """Routers package initialization."""
-from . import credentials, db_url, health
+from . import admin, credentials, db_url, health
 
-__all__ = ["health", "credentials", "db_url"]
+__all__ = ["health", "credentials", "db_url", "admin"]

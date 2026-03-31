@@ -22,9 +22,17 @@ logger = get_logger(__name__)
 class EntryManager:
     """Handles CRUD operations for KeePass entries."""
 
-    def __init__(self, kp: PyKeePass):
+    def __init__(self, kp: PyKeePass, save_callback=None):
         self.kp = kp
+        self._save_callback = save_callback
         self.version_manager = VersionManager()
+
+    def _save(self) -> None:
+        """Save changes via the store callback if available, otherwise directly."""
+        if self._save_callback is not None:
+            self._save_callback()
+        else:
+            self.kp.save()
 
     def _is_simple_secret(self, entry: Entry) -> bool:
         """
@@ -239,7 +247,7 @@ class EntryManager:
         if tags is not None:
             self._set_entry_tags(entry, tags)
 
-        self.kp.save()
+        self._save()
 
         return {
             "name": title,
@@ -270,7 +278,7 @@ class EntryManager:
         if tags is not None:
             self._set_entry_tags(entry, tags)
 
-        self.kp.save()
+        self._save()
 
         return Credential(
             credential_name=title,
@@ -319,7 +327,7 @@ class EntryManager:
         if entry:
             try:
                 self.kp.delete_entry(entry)
-                self.kp.save()
+                self._save()
                 return True
             except Exception as ex:
                 logger.error(f"Failed to delete entry '{title}': {ex}")
@@ -335,7 +343,7 @@ class EntryManager:
         try:
             for entry in versioned:
                 self.kp.delete_entry(entry)
-            self.kp.save()
+            self._save()
             return True
         except Exception as ex:
             logger.error(f"Failed to delete versioned entries for '{title}': {ex}")

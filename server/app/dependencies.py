@@ -43,6 +43,34 @@ def get_mattstash() -> MattStash:  # pragma: no cover
     return _mattstash_instance
 
 
+def reload_mattstash() -> bool:
+    """Force the singleton MattStash instance to reload from disk.
+
+    Returns:
+        True if reload was successful, False otherwise.
+    """
+    global _mattstash_instance
+
+    with _mattstash_lock:
+        if _mattstash_instance is None:
+            return False
+        return _mattstash_instance.reload()
+
+
+def reload_mattstash_if_changed() -> bool:
+    """Check for external KDBX modifications and reload if detected.
+
+    Returns:
+        True if a reload was performed, False otherwise.
+    """
+    global _mattstash_instance
+
+    with _mattstash_lock:
+        if _mattstash_instance is None:
+            return False
+        return _mattstash_instance.reload_if_changed()
+
+
 async def verify_api_key_header(  # pragma: no cover
     x_api_key: Annotated[str | None, Header()] = None
 ) -> str:

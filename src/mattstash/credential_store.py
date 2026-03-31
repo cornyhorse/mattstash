@@ -26,6 +26,7 @@ class CredentialStore:
         self.db_path = db_path
         self.password = password
         self._kp: Optional[PyKeePass] = None
+        self._file_mtime: float = 0.0
 
         # Connection caching settings
         self.cache_enabled = cache_enabled or config.cache_enabled
@@ -64,6 +65,10 @@ class CredentialStore:
 
         try:
             self._kp = PyKeePass(self.db_path, password=self.password)
+            try:
+                self._file_mtime = os.path.getmtime(self.db_path)
+            except OSError:
+                self._file_mtime = 0.0
             logger.info("Successfully opened database")
             return self._kp
         except Exception as e:
@@ -164,8 +169,38 @@ class CredentialStore:
         """Save changes to the database and clear cache."""
         if self._kp:
             self._kp.save()
+            try:
+                self._file_mtime = os.path.getmtime(self.db_path)
+            except OSError:
+                self._file_mtime = 0.0
             self.clear_cache()  # Invalidate cache on save
             logger.debug("Database saved successfully")
+
+    def has_file_changed(self) -> bool:
+        """Check if the KDBX file has been modified externally since last open/save.
+
+        Returns:
+            True if the file's mtime differs from the last recorded mtime.
+        """
+        if not os.path.exists(self.db_path):
+            return False
+        current_mtime = os.path.getmtime(self.db_path)
+        return current_mtime != self._file_mtime
+
+    def reload(self) -> Optional[PyKeePass]:
+        """Close and reopen the database from disk.
+
+        Returns:
+            PyKeePass instance after reopening.
+
+        Raises:
+            DatabaseNotFoundError: If database file doesn't exist.
+            DatabaseAccessError: If password is incorrect.
+        """
+        self._kp = None
+        self.clear_cache()
+        logger.info("Reloading database from disk")
+        return self.open()
 
     def delete_entry(self, entry: Entry) -> bool:
         """Delete an entry from the database."""
