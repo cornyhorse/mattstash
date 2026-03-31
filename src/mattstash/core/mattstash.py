@@ -61,7 +61,7 @@ class MattStash:
             try:
                 store = CredentialStore(self.path, self.password)
                 kp = store.open()
-                self._entry_manager = EntryManager(kp)
+                self._entry_manager = EntryManager(kp, save_callback=store.save)
                 self._credential_store = store
                 return True
             except Exception as e:
@@ -147,6 +147,42 @@ class MattStash:
             return False
         assert self._entry_manager is not None
         return self._entry_manager.delete_entry(title)
+
+    def reload(self) -> bool:
+        """
+        Reload the KeePass database from disk.
+        Useful when the file has been modified externally (e.g., by the CLI).
+
+        Returns:
+            True if reload was successful, False otherwise.
+        """
+        if self._credential_store is None:
+            # Not yet initialized; just ensure initialization
+            return self._ensure_initialized()
+
+        try:
+            kp = self._credential_store.reload()
+            self._entry_manager = EntryManager(kp, save_callback=self._credential_store.save)
+            logger.info("Database reloaded successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to reload database: {e}")
+            return False
+
+    def reload_if_changed(self) -> bool:
+        """
+        Check if the KDBX file has been modified externally and reload if so.
+
+        Returns:
+            True if a reload was performed, False if no change was detected.
+        """
+        if self._credential_store is None:
+            return False
+
+        if self._credential_store.has_file_changed():
+            logger.info("External database modification detected, reloading")
+            return self.reload()
+        return False
 
     def hydrate_env(self, mapping: Dict[str, str]) -> None:
         """

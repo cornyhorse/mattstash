@@ -175,7 +175,7 @@ def test_app(clean_env, monkeypatch):
     from slowapi.util import get_remote_address
     from app.config import config
     from app.middleware.logging import RequestLoggingMiddleware
-    from app.routers import credentials, db_url, health
+    from app.routers import admin, credentials, db_url, health
     
     # Initialize rate limiter
     limiter = Limiter(key_func=get_remote_address, default_limits=[config.RATE_LIMIT])
@@ -209,6 +209,11 @@ def test_app(clean_env, monkeypatch):
         db_url.router,
         prefix=f"/api/{config.API_VERSION}",
         tags=["database"]
+    )
+    app.include_router(
+        admin.router,
+        prefix=f"/api/{config.API_VERSION}",
+        tags=["admin"]
     )
     
     return app

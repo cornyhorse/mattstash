@@ -24,6 +24,9 @@ class Config:
     # Rate limiting
     RATE_LIMIT: str = os.getenv("MATTSTASH_RATE_LIMIT", "100/minute")
     
+    # Database file change polling
+    DB_POLL_INTERVAL: int = int(os.getenv("MATTSTASH_DB_POLL_INTERVAL", "5"))
+    
     # API metadata
     API_VERSION: str = "v1"
     API_TITLE: str = "MattStash API"
