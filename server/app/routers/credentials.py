@@ -98,6 +98,8 @@ async def get_credential(  # pragma: no cover
     - **show_password**: Whether to show the actual password (default: masked)
     """
     _validate_credential_name(name)
+    if show_password:
+        logger.warning("Unmasked credential requested for %s from %s", name, request.client.host if request.client else "unknown")
     try:
         credential = mattstash.get(name, show_password=True, version=version)
 
@@ -134,6 +136,7 @@ async def get_credential(  # pragma: no cover
 @limiter.limit("30/minute")
 async def list_credentials(  # pragma: no cover
     request: Request,
+    response: Response,
     mattstash: MattStashDep,
     api_key: APIKeyDep,
     prefix: str | None = Query(None, description="Filter by name prefix"),
@@ -145,6 +148,9 @@ async def list_credentials(  # pragma: no cover
     - **prefix**: Optional prefix filter
     - **show_password**: Whether to show actual passwords (default: masked)
     """
+    response.headers["Cache-Control"] = "no-store"
+    if show_password:
+        logger.warning("Unmasked credential list requested from %s", request.client.host if request.client else "unknown")
     try:
         # mattstash.list() returns List[Credential]
         all_creds = mattstash.list(show_password=True)
@@ -234,6 +240,7 @@ async def list_versions(  # pragma: no cover
 @limiter.limit("30/minute")
 async def create_credential(  # pragma: no cover
     request: Request,
+    response: Response,
     name: str,
     body: CreateCredentialRequest,
     mattstash: MattStashDep,
@@ -245,6 +252,7 @@ async def create_credential(  # pragma: no cover
     - **name**: Credential name
     """
     _validate_credential_name(name)
+    response.headers["Cache-Control"] = "no-store"
     try:
         result = mattstash.put(
             name,
@@ -253,6 +261,7 @@ async def create_credential(  # pragma: no cover
             password=body.password,
             url=body.url,
             notes=body.notes,
+            tags=body.tags,
         )
 
         if result is None:
@@ -287,6 +296,7 @@ async def create_credential(  # pragma: no cover
 @limiter.limit("30/minute")
 async def delete_credential(  # pragma: no cover
     request: Request,
+    response: Response,
     name: str,
     mattstash: MattStashDep,
     api_key: APIKeyDep,
@@ -297,6 +307,7 @@ async def delete_credential(  # pragma: no cover
     - **name**: Credential name
     """
     _validate_credential_name(name)
+    response.headers["Cache-Control"] = "no-store"
     try:
         deleted = mattstash.delete(name)
 

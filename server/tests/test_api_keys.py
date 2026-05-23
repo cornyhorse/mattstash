@@ -27,7 +27,7 @@ class TestAPIKeysSimple:
         # Second call - should return cached value
         keys2 = get_valid_api_keys()
         
-        assert keys1 is keys2  # Same object reference (cached)
+        assert keys1 == keys2
         assert keys1 == {"cached-key"}
     
     def test_verify_api_key_valid(self, clean_env, monkeypatch):

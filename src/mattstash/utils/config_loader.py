@@ -6,7 +6,6 @@ Configuration file loading utilities.
 Supports YAML configuration files from:
 1. ~/.config/mattstash/config.yml
 2. ~/.mattstash.yml
-3. .mattstash.yml (current directory)
 
 Priority: CLI args > Environment variables > Config file > Defaults
 """
@@ -25,7 +24,6 @@ def load_yaml_config() -> Dict[str, Any]:
     Searches for configuration in the following order:
     1. ~/.config/mattstash/config.yml
     2. ~/.mattstash.yml
-    3. .mattstash.yml (current directory)
 
     Returns:
         Dictionary of configuration values, empty dict if no file found
@@ -185,7 +183,7 @@ database:
 
   # Basename for sidecar password file
   # Full path will be: <db_directory>/<sidecar_basename>
-  sidecar_basename: .password.txt
+  sidecar_basename: .mattstash.txt
 
 # Versioning settings
 versioning:

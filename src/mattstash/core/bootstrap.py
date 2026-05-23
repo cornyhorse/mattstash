@@ -4,6 +4,7 @@ mattstash.core.bootstrap
 Database bootstrap and initialization functionality.
 """
 
+import contextlib
 import os
 import secrets
 import stat
@@ -80,8 +81,10 @@ class DatabaseBootstrapper:
         # Generate a strong password for the DB and write the sidecar (0600)
         pw = secrets.token_urlsafe(32)
 
+        sidecar_created = False
         with open(sidecar_path, "wb") as f:
             f.write(pw.encode())
+        sidecar_created = True
         try:
             os.chmod(sidecar_path, 0o600)
             # Verify permissions were set correctly
@@ -97,3 +100,7 @@ class DatabaseBootstrapper:
             logger.info(f"Created new KeePass DB at {self.db_path} and sidecar {sidecar_path}")
         except Exception as e:
             logger.error(f"Failed to create KeePass DB: {e}")
+            if sidecar_created:
+                with contextlib.suppress(OSError):
+                    os.remove(sidecar_path)
+            raise

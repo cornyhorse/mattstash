@@ -4,6 +4,20 @@ from pathlib import Path
 from typing import Optional
 
 
+def _get_int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    """Read and validate a bounded integer environment variable."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 class Config:
     """Application configuration loaded from environment variables."""
     
@@ -14,7 +28,7 @@ class Config:
     
     # Server settings
     HOST: str = os.getenv("MATTSTASH_HOST", "0.0.0.0")
-    PORT: int = int(os.getenv("MATTSTASH_PORT", "8000"))
+    PORT: int = _get_int_env("MATTSTASH_PORT", 8000, minimum=1, maximum=65535)
     LOG_LEVEL: str = os.getenv("MATTSTASH_LOG_LEVEL", "info")
     
     # API Security
@@ -23,9 +37,15 @@ class Config:
     
     # Rate limiting
     RATE_LIMIT: str = os.getenv("MATTSTASH_RATE_LIMIT", "100/minute")
+    MAX_REQUEST_BODY_BYTES: int = _get_int_env(
+        "MATTSTASH_MAX_REQUEST_BODY_BYTES",
+        1_048_576,
+        minimum=1,
+        maximum=10_485_760,
+    )
     
     # Database file change polling
-    DB_POLL_INTERVAL: int = int(os.getenv("MATTSTASH_DB_POLL_INTERVAL", "5"))
+    DB_POLL_INTERVAL: int = _get_int_env("MATTSTASH_DB_POLL_INTERVAL", 5, minimum=0, maximum=3600)
     
     # API metadata
     API_VERSION: str = "v1"

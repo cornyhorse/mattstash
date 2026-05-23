@@ -50,7 +50,7 @@ class MattStashServerClient:
         """
         url = f"{self.base_url}{endpoint}"
 
-        with httpx.Client(timeout=self.timeout) as client:
+        with httpx.Client(timeout=self.timeout, verify=True) as client:
             response = client.request(method=method, url=url, headers=self.headers, params=params, json=json_data)
             response.raise_for_status()
             result: Dict[str, Any] = response.json()
@@ -112,7 +112,7 @@ class MattStashServerClient:
 
         if value is not None:
             # Simple value mode
-            data["password"] = value
+            data["value"] = value
         else:
             # Full credential mode
             if username is not None:

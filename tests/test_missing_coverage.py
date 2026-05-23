@@ -38,7 +38,10 @@ def test_bootstrap_create_database_failure():
         bootstrapper = DatabaseBootstrapper(db_path)
 
         with patch("mattstash.core.bootstrap._kp_create_database", side_effect=Exception("Database creation failed")):
-            bootstrapper._create_database_and_sidecar(temp_dir, os.path.join(temp_dir, ".mattstash.txt"))
+            sidecar_path = os.path.join(temp_dir, ".mattstash.txt")
+            with pytest.raises(Exception, match="Database creation failed"):
+                bootstrapper._create_database_and_sidecar(temp_dir, sidecar_path)
+            assert not os.path.exists(sidecar_path)
 
 
 def test_bootstrap_create_database_none():
@@ -48,7 +51,10 @@ def test_bootstrap_create_database_none():
         bootstrapper = DatabaseBootstrapper(db_path)
 
         with patch("mattstash.core.bootstrap._kp_create_database", None):
-            bootstrapper._create_database_and_sidecar(temp_dir, os.path.join(temp_dir, ".mattstash.txt"))
+            sidecar_path = os.path.join(temp_dir, ".mattstash.txt")
+            with pytest.raises(RuntimeError, match="not available"):
+                bootstrapper._create_database_and_sidecar(temp_dir, sidecar_path)
+            assert not os.path.exists(sidecar_path)
 
 
 def test_password_resolver_no_env_no_sidecar():

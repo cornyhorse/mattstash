@@ -126,6 +126,7 @@ class TestRequestModels:
         assert request.password is None
         assert request.url is None
         assert request.notes is None
+        assert request.tags is None
     
     def test_create_credential_request_full(self):
         """Full mode (all fields)."""
@@ -133,7 +134,8 @@ class TestRequestModels:
             "username": "admin",
             "password": "secret123",
             "url": "postgres.example.com:5432",
-            "notes": "Production database"
+            "notes": "Production database",
+            "tags": ["prod", "database"],
         }
         request = CreateCredentialRequest(**data)
         
@@ -142,3 +144,14 @@ class TestRequestModels:
         assert request.password == "secret123"
         assert request.url == "postgres.example.com:5432"
         assert request.notes == "Production database"
+        assert request.tags == ["prod", "database"]
+
+    def test_create_credential_request_rejects_mixed_modes(self):
+        """Simple value mode cannot be mixed with full credential fields."""
+        with pytest.raises(ValidationError):
+            CreateCredentialRequest(value="secret", username="admin")
+
+    def test_create_credential_request_requires_secret_material(self):
+        """Requests must include a value or at least one credential field."""
+        with pytest.raises(ValidationError):
+            CreateCredentialRequest(notes="metadata only")

@@ -1,5 +1,6 @@
 """API key management and verification."""
 import hmac
+import threading
 import time
 
 from ..config import config
@@ -8,25 +9,28 @@ from ..config import config
 _api_keys: set[str] | None = None
 _api_keys_loaded_at: float = 0.0
 _CACHE_TTL_SECONDS: float = 300.0  # Re-read key source every 5 minutes
+_cache_lock = threading.Lock()
 
 
 def get_valid_api_keys() -> set[str]:
     """Get the set of valid API keys (cached with TTL)."""
     global _api_keys, _api_keys_loaded_at
 
-    now = time.monotonic()
-    if _api_keys is None or (now - _api_keys_loaded_at) >= _CACHE_TTL_SECONDS:
-        _api_keys = config.get_api_keys()
-        _api_keys_loaded_at = now
+    with _cache_lock:
+        now = time.monotonic()
+        if _api_keys is None or (now - _api_keys_loaded_at) >= _CACHE_TTL_SECONDS:
+            _api_keys = config.get_api_keys()
+            _api_keys_loaded_at = now
 
-    return _api_keys
+        return set(_api_keys)
 
 
 def invalidate_api_key_cache() -> None:
     """Force the key cache to be reloaded on the next verification."""
     global _api_keys, _api_keys_loaded_at
-    _api_keys = None
-    _api_keys_loaded_at = 0.0
+    with _cache_lock:
+        _api_keys = None
+        _api_keys_loaded_at = 0.0
 
 
 def verify_api_key(api_key: str) -> bool:

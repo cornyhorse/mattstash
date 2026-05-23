@@ -76,9 +76,8 @@ class TestLoggingMiddleware:
             
             # Verify request was logged
             assert mock_logger.info.called
-            first_call = mock_logger.info.call_args_list[0][0][0]
-            assert "Request: GET /api/v1/credentials" in first_call
-            assert "127.0.0.1" in first_call
+            first_call = mock_logger.info.call_args_list[0][0]
+            assert first_call == ("Request: %s %s from %s", "GET", "/api/v1/credentials", "127.0.0.1")
     
     @pytest.mark.asyncio
     async def test_middleware_logs_response(self, clean_env, monkeypatch):
@@ -129,7 +128,8 @@ class TestLoggingMiddleware:
             assert mock_logger.error.called
             error_msg = mock_logger.error.call_args[0][0]
             assert "Error: GET /api/v1/error" in error_msg
-            assert "ValueError: Test error" in error_msg
+            assert "ValueError" in error_msg
+            assert "Test error" not in error_msg
             assert "Duration:" in error_msg
     
     @pytest.mark.asyncio
@@ -152,5 +152,5 @@ class TestLoggingMiddleware:
             response = await middleware.dispatch(mock_request, mock_call_next)
             
             # Should log "unknown" for missing client
-            first_call = mock_logger.info.call_args_list[0][0][0]
-            assert "unknown" in first_call
+            first_call = mock_logger.info.call_args_list[0][0]
+            assert first_call == ("Request: %s %s from %s", "GET", "/api/health", "unknown")

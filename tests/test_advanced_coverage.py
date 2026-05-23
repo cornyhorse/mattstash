@@ -54,12 +54,14 @@ def test_bootstrap_skipped_when_sidecar_exists(tmp_path: Path):
 def test_bootstrap_error_handling(tmp_path: Path):
     """Test bootstrap error handling when creation fails"""
     db_path = tmp_path / "new_db.kdbx"
+    sidecar_path = db_path.parent / ".mattstash.txt"
 
     with patch("mattstash.core.bootstrap._kp_create_database", side_effect=Exception("Creation failed")):
         with patch("mattstash.core.bootstrap.logger") as mock_logger:
             MattStash(path=str(db_path))
             # Should log error message
             assert any("Failed to create KeePass DB" in str(call) for call in mock_logger.error.call_args_list)
+            assert not sidecar_path.exists()
 
 
 def test_bootstrap_create_database_none(tmp_path: Path):
@@ -71,6 +73,7 @@ def test_bootstrap_create_database_none(tmp_path: Path):
             MattStash(path=str(db_path))
             # Should log error about unavailable function
             assert any("not available" in str(call) for call in mock_logger.error.call_args_list)
+            assert not (db_path.parent / ".mattstash.txt").exists()
 
 
 def test_password_resolution_from_env(tmp_path: Path):

@@ -158,8 +158,18 @@ jobs:
       - name: Extract version from pyproject.toml
         id: version
         run: |
-          git pull origin main
-          VERSION=$(grep -oP '^version\s*=\s*"\K[^"]+' pyproject.toml)
+          git pull --ff-only origin main
+          VERSION=$(python3 - <<'PYEOF'
+          import re
+          from pathlib import Path
+
+          content = Path("pyproject.toml").read_text()
+          match = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
+          if match is None:
+              raise SystemExit("Could not find version in pyproject.toml")
+          print(match.group(1))
+          PYEOF
+          )
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx

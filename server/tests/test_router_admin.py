@@ -50,6 +50,24 @@ class TestAdminReloadEndpoint:
 
         assert response.status_code == 401
 
+    def test_invalidate_api_key_cache_success(self, test_app):
+        """API key cache invalidation endpoint is authenticated and callable."""
+        from app.dependencies import verify_api_key_header
+
+        test_app.dependency_overrides[verify_api_key_header] = lambda: "test-api-key"
+
+        with patch("app.routers.admin.invalidate_api_key_cache") as invalidate:
+            client = TestClient(test_app)
+            response = client.post(
+                "/api/v1/admin/invalidate-api-key-cache",
+                headers={"X-API-Key": "test-api-key"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "api_key_cache_invalidated"
+        invalidate.assert_called_once()
+        test_app.dependency_overrides.clear()
+
 
 class TestReloadDependencyFunctions:
     """Tests for reload_mattstash and reload_mattstash_if_changed in dependencies."""

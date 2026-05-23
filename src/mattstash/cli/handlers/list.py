@@ -31,8 +31,9 @@ class ListHandler(BaseHandler):
                 pwd_disp = c.password if args.show_password else ("*****" if c.password else None)
                 notes_snippet = ""
                 if c.notes and c.notes.strip():
-                    snippet = c.notes.strip().splitlines()[0]
-                    notes_snippet = f" notes={snippet!r}"
+                    lines = c.notes.strip().splitlines()
+                    if lines:
+                        notes_snippet = f" notes={lines[0]!r}"
                 print(
                     f"- {c.credential_name} user={c.username!r}"
                     f" url={c.url!r} pwd={pwd_disp!r} tags={c.tags}{notes_snippet}"
@@ -53,9 +54,11 @@ class ListHandler(BaseHandler):
                 for c in creds:
                     pwd_disp = c.get("password", "*****")
                     notes_snippet = ""
-                    if c.get("notes"):
-                        snippet = c["notes"].strip().splitlines()[0]
-                        notes_snippet = f" notes={snippet!r}"
+                    notes = c.get("notes")
+                    if isinstance(notes, str) and notes.strip():
+                        lines = notes.strip().splitlines()
+                        if lines:
+                            notes_snippet = f" notes={lines[0]!r}"
                     print(
                         f"- {c.get('name', 'unknown')} user={c.get('username', '')!r}"
                         f" url={c.get('url', '')!r} pwd={pwd_disp!r}{notes_snippet}"

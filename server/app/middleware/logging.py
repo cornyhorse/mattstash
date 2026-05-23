@@ -7,6 +7,9 @@ from typing import Callable
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from ..config import config
+from ..rate_limit import get_client_address
+
 logger = logging.getLogger("mattstash.api")
 
 
@@ -16,6 +19,13 @@ SENSITIVE_PATTERNS = [
     (re.compile(r'"value"\s*:\s*"[^"]*"'), '"value": "*****"'),
     (re.compile(r'X-API-Key:\s*\S+'), 'X-API-Key: *****'),
 ]
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
 
 
 def mask_sensitive_data(text: str) -> str:
@@ -34,13 +44,25 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         """Process request and log details."""
         # Start timer
         start_time = time.time()
+
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > config.MAX_REQUEST_BODY_BYTES:
+                    response = Response("Request body too large", status_code=413)
+                    _apply_security_headers(response)
+                    return response
+            except ValueError:
+                response = Response("Invalid Content-Length", status_code=400)
+                _apply_security_headers(response)
+                return response
         
         # Log request
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = get_client_address(request)
         method = request.method
         path = request.url.path
         
-        logger.info(f"Request: {method} {path} from {client_ip}")
+        logger.info("Request: %s %s from %s", method, path, client_ip)
         
         # Process request
         try:
@@ -56,6 +78,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 f"Duration: {duration:.3f}s"
             )
             logger.info(mask_sensitive_data(log_msg))
+            _apply_security_headers(response)
             
             return response
             
@@ -63,8 +86,14 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             duration = time.time() - start_time
             error_msg = (
                 f"Error: {method} {path} - "
-                f"Exception: {type(e).__name__}: {str(e)} - "
+                f"Exception: {type(e).__name__} - "
                 f"Duration: {duration:.3f}s"
             )
             logger.error(mask_sensitive_data(error_msg))
             raise
+
+
+def _apply_security_headers(response: Response) -> None:
+    """Apply defense-in-depth headers to every API response."""
+    for header, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)

@@ -2,7 +2,7 @@
 import logging
 import re
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 
 from mattstash.builders.db_url import build_db_url
 from mattstash.utils.exceptions import CredentialNotFoundError
@@ -16,18 +16,19 @@ router = APIRouter()
 
 # Validation patterns
 _VALID_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+$")
-_VALID_DRIVER_PATTERN = re.compile(r"^[a-zA-Z0-9_]+$")
 _MAX_NAME_LENGTH = 255
+_ALLOWED_DRIVERS = {"psycopg", "psycopg2", "asyncpg", "pg8000"}
 
 
 @router.get("/db-url/{name}", response_model=DatabaseUrlResponse)
 @limiter.limit("60/minute")
 async def get_database_url(  # pragma: no cover
     request: Request,
+    response: Response,
     name: str,
     mattstash: MattStashDep,
     api_key: APIKeyDep,
-    driver: str = Query("psycopg", description="Database driver (e.g., psycopg, mysqldb, pymongo)"),
+    driver: str = Query("psycopg", description="PostgreSQL driver (psycopg, psycopg2, asyncpg, pg8000)"),
     database: str | None = Query(None, description="Database name to append to URL"),
     mask_password: bool = Query(True, description="Mask password in the returned URL")
 ) -> DatabaseUrlResponse:
@@ -45,7 +46,8 @@ async def get_database_url(  # pragma: no cover
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid credential name"
         )
-    if not _VALID_DRIVER_PATTERN.match(driver):
+    response.headers["Cache-Control"] = "no-store"
+    if driver not in _ALLOWED_DRIVERS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid driver name"
@@ -56,23 +58,10 @@ async def get_database_url(  # pragma: no cover
             mattstash=mattstash,
             name=name,
             driver=driver,
-            database=database
+            database=database,
+            mask_password=mask_password,
+            mask_style="stars",
         )
-
-        # Mask password if requested
-        if mask_password and "@" in url:
-            # Replace password in URL with *****
-            # Format: scheme://user:password@host...
-            parts = url.split("://", 1)
-            if len(parts) == 2:
-                scheme, rest = parts
-                if "@" in rest:
-                    creds_and_host = rest.split("@", 1)
-                    if len(creds_and_host) == 2:
-                        creds, host = creds_and_host
-                        if ":" in creds:
-                            user, _ = creds.split(":", 1)
-                            url = f"{scheme}://{user}:*****@{host}"
 
         return DatabaseUrlResponse(url=url)
 

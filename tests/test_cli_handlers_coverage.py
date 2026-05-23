@@ -115,6 +115,28 @@ def test_list_handler_with_notes():
         mock_print.assert_called()
 
 
+def test_list_handler_whitespace_only_notes():
+    """Whitespace-only notes should not crash note snippet rendering."""
+    handler = ListHandler()
+    args = Namespace(path="/tmp/test.kdbx", password="test", show_password=False, json=False)
+
+    mock_cred = Mock()
+    mock_cred.credential_name = "test"
+    mock_cred.username = "user"
+    mock_cred.password = "pass"
+    mock_cred.url = "http://example.com"
+    mock_cred.notes = "   \n\t"
+    mock_cred.tags = []
+
+    with (
+        patch("mattstash.cli.handlers.list.list_creds", return_value=[mock_cred]),
+        patch("builtins.print") as mock_print,
+    ):
+        result = handler.handle(args)
+        assert result == 0
+        assert "notes=" not in mock_print.call_args[0][0]
+
+
 def test_keys_handler():
     """Test keys handler"""
     handler = KeysHandler()

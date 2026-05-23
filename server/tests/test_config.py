@@ -53,6 +53,26 @@ class TestConfig:
         config = config_module.Config()
         assert config.HOST == "127.0.0.1"
         assert config.PORT == 9000
+
+    def test_invalid_port_fails_fast(self, clean_env, monkeypatch):
+        """Invalid port values fail with a clear error."""
+        monkeypatch.setenv("MATTSTASH_PORT", "not-a-port")
+
+        from importlib import reload
+        import app.config as config_module
+
+        with pytest.raises(ValueError, match="MATTSTASH_PORT must be an integer"):
+            reload(config_module)
+
+    def test_invalid_poll_interval_fails_fast(self, clean_env, monkeypatch):
+        """Invalid polling intervals fail with a clear error."""
+        monkeypatch.setenv("MATTSTASH_DB_POLL_INTERVAL", "-1")
+
+        from importlib import reload
+        import app.config as config_module
+
+        with pytest.raises(ValueError, match="MATTSTASH_DB_POLL_INTERVAL must be between"):
+            reload(config_module)
     
     def test_get_kdbx_password_from_env(self, clean_env, monkeypatch):
         """Password from KDBX_PASSWORD env var."""

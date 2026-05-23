@@ -81,9 +81,10 @@ if ! pip list | grep -q pytest-cov; then
     pip install pytest-cov
 fi
 
-# Clear cache
+# Clear caches without triggering test discovery for suites whose optional
+# dependencies may not be installed yet.
 echo "Clearing pytest cache..."
-pytest --cache-clear
+rm -rf .pytest_cache server/.pytest_cache
 
 # Run app tests
 if [ "$RUN_APP_TESTS" = true ]; then

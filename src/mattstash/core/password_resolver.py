@@ -42,7 +42,7 @@ class PasswordResolver:
                 try:
                     with open(sidecar_path, "rb") as f:
                         pw = f.read().decode().strip()
-                        logger.debug(f"Loaded password from sidecar file {sidecar_path}")
+                        logger.debug("Loaded database password from configured source")
                         return pw
                 except Exception as e:
                     logger.warning(f"Failed to read sidecar password file: {e}")
@@ -57,7 +57,7 @@ class PasswordResolver:
         """Try to read password from environment variable."""
         env_pw = os.getenv("KDBX_PASSWORD")
         if env_pw is not None:
-            logger.debug("Loaded password from environment variable KDBX_PASSWORD")
+            logger.debug("Loaded database password from configured source")
         else:
             logger.debug("Environment variable KDBX_PASSWORD not set")
         return env_pw

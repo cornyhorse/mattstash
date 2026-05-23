@@ -16,6 +16,7 @@ def test_post_get_delete_roundtrip(real_kdbx_client):
         headers=_HEADERS,
     )
     assert response.status_code == 201
+    assert response.headers["cache-control"] == "no-store"
     data = response.json()
     assert data["name"] == _CRED_NAME
     assert data["created"] is True
@@ -26,6 +27,9 @@ def test_post_get_delete_roundtrip(real_kdbx_client):
         headers=_HEADERS,
     )
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
     data = response.json()
     assert data["name"] == _CRED_NAME
     assert data["password"] == "my-secret-value"

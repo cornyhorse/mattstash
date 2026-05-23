@@ -72,7 +72,7 @@ def reload_mattstash_if_changed() -> bool:
 
 
 async def verify_api_key_header(  # pragma: no cover
-    x_api_key: Annotated[str | None, Header()] = None
+    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None
 ) -> str:
     """Verify API key from header."""
     if not x_api_key:

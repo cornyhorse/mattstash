@@ -82,6 +82,9 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+    # Add request logging, request-size enforcement, and security headers.
+    app.add_middleware(RequestLoggingMiddleware)
+
     # Add CORS middleware (restrictive by default)
     app.add_middleware(
         CORSMiddleware,
@@ -90,9 +93,6 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["X-API-Key"],
     )
-
-    # Add request logging middleware
-    app.add_middleware(RequestLoggingMiddleware)
 
     # Include routers
     app.include_router(health.router, prefix="/api", tags=["health"])

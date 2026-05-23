@@ -5,6 +5,7 @@ Handles CRUD operations for KeePass entries.
 """
 
 import contextlib
+from collections.abc import Callable
 from typing import Any, Dict, List, Optional
 
 from pykeepass import PyKeePass
@@ -22,7 +23,7 @@ logger = get_logger(__name__)
 class EntryManager:
     """Handles CRUD operations for KeePass entries."""
 
-    def __init__(self, kp: PyKeePass, save_callback=None):
+    def __init__(self, kp: PyKeePass, save_callback: Optional[Callable[[], None]] = None) -> None:
         self.kp = kp
         self._save_callback = save_callback
         self.version_manager = VersionManager()
