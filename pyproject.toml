@@ -36,6 +36,7 @@ classifiers = [
 # Hard, minimal runtime deps for the core
 dependencies = [
     "pykeepass>=4.1,<5.0",
+    "httpx>=0.27,<1.0",
 ]
 
 # Optional/extras: let users opt into boto3 only if they need S3
