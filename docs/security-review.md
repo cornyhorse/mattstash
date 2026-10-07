@@ -347,6 +347,9 @@ session scratchpad and are re-created as proper regression tests rather than com
 | Q6 | TLS | **Implement optional in-app TLS** (cert/key files via env) and the CLI plain-`http://` warning. |
 | Q7 | Extra scope | **All four groups:** CLI input hardening; container/k8s consumption (`env`, `exec`); ops commands (`backup`, `rotate-password`, `prune`, `delete --version`); server extras (TLS, non-PG db-url schemes). |
 | Q8 | Python floor | **3.11** (revised after review: 3.9 is EOL and 3.10 reaches EOL on 2026-10-31). Supported: 3.11-3.14. **Home version 3.14** for the Docker image, lint, type-checking, server tests, audit and release builds. 3.15 is not a target yet: the newest available build is a release candidate and `httptools` (via `uvicorn[standard]`) has no 3.15 wheels. |
+| Q9 | Secret-name separator | **`.`** (`myapp.db-password`). Names stay letters, digits, `_`, `.`, `-`: identical in the CLI, the library and the server. Hierarchical `/` names are not supported (optional follow-up; it would widen routing, prefix-scoping and URL-encoding surface). |
+| Q10 | Branch protection | The required status check moves from the old job names (`lint-server`, `server-tests`, `integration`) to the single roll-up job **`ci-gate`** (the owner changes it in the repository settings; the project is maintained agentically, so lighter protections are acceptable). |
+| Q11 | Release gating | A focused third review of the round-2 changes runs before the pull request is opened. |
 
 ### Consequences recorded for the plan
 
