@@ -348,7 +348,7 @@ optional improvements. Tick them off as they are done.
 - [ ] Build both Dockerfiles (including `linux/arm64`) and run the container with a read-only root filesystem.
 - [ ] Apply `server/k8s/` and `server/k8s/writable/` to a cluster: NetworkPolicy enforcement, fsGroup/PVC writability, probes.
 - [ ] Watch the workflows run once on GitHub: SHA-pinned actions resolve, provenance/SBOM output, the CLI-to-server integration job (now installs the server lock).
-- [ ] Run the test suites on Python 3.12 and 3.13 (only 3.11 and 3.14 were run; CI covers all four).
+- [x] Run the test suites on Python 3.12 and 3.13 (898 library + 293 server tests passed on 3.11, 3.12, 3.13 and 3.14).
 - [ ] Consider a native `linux/arm64` build/test job (GitHub's Linux arm64 runners cost the same as or less than x64; free for public repositories) instead of QEMU emulation.
 
 **Optional improvements**
