@@ -108,6 +108,10 @@ class EnvHandler(BaseHandler):
             return None, exit_codes.ERROR
 
 
+#: Environment variables that unlock the vault itself; ``exec`` does not hand them to the command by default.
+VAULT_CREDENTIAL_ENV = ("KDBX_PASSWORD", "MATTSTASH_API_KEY")
+
+
 class ExecHandler(EnvHandler):
     """Handler for ``mattstash exec [options] -- COMMAND [ARGS...]``."""
 
@@ -133,6 +137,11 @@ class ExecHandler(EnvHandler):
             return code
 
         child_env = dict(os.environ)
+        if not self.flag(args, "keep_vault_env"):
+            # The command gets the secrets that were asked for, not the keys to the whole vault. (Injected
+            # variables are added after this, so a secret deliberately mapped to one of these names still wins.)
+            for name in VAULT_CREDENTIAL_ENV:
+                child_env.pop(name, None)
         override = self.flag(args, "override")
         for name, value in env.items():
             if override or name not in os.environ:

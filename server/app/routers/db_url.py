@@ -3,7 +3,7 @@
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
-from mattstash.builders.db_url import build_db_url
+from mattstash.builders.db_url import AUTO_DRIVER, DIALECT_DRIVERS, build_db_url, normalize_dialect
 
 from ..audit import audit
 from ..dependencies import MattStashDep, ReadAccess, ensure_name_in_scope
@@ -15,7 +15,7 @@ from ..validation import require_valid_name
 logger = logging.getLogger("mattstash.api")
 router = APIRouter()
 
-_ALLOWED_DRIVERS = {"psycopg", "psycopg2", "asyncpg", "pg8000"}
+_ALL_DRIVERS = frozenset().union(*DIALECT_DRIVERS.values())
 _DATABASE_NAME_MAX = 128
 
 
@@ -27,7 +27,16 @@ def get_database_url(
     name: str,
     mattstash: MattStashDep,
     principal: ReadAccess,
-    driver: str = Query("psycopg", description="PostgreSQL driver (psycopg, psycopg2, asyncpg, pg8000)"),
+    driver: str | None = Query(
+        None,
+        description="Driver suffix. Default: psycopg for PostgreSQL, none for MySQL/MariaDB. "
+        "PostgreSQL: psycopg, psycopg2, asyncpg, pg8000; MySQL: pymysql, mysqlconnector, asyncmy, aiomysql; "
+        "MariaDB: mariadbconnector, pymysql",
+    ),
+    dialect: str | None = Query(
+        None,
+        description="postgresql, mysql or mariadb (default: the entry's 'dialect' property, else postgresql)",
+    ),
     database: str | None = Query(None, max_length=_DATABASE_NAME_MAX, description="Database name to append to URL"),
     mask_password: bool = Query(True, description="Mask password in the returned URL"),
 ) -> DatabaseUrlResponse:
@@ -35,7 +44,8 @@ def get_database_url(
     Build a database connection URL from a credential.
 
     - **name**: Credential name
-    - **driver**: Database driver (default: psycopg)
+    - **driver**: Database driver (default: psycopg for PostgreSQL, none otherwise)
+    - **dialect**: postgresql (default), mysql or mariadb
     - **database**: Optional database name
     - **mask_password**: Whether to mask the password in the URL (default: true)
     """
@@ -49,8 +59,14 @@ def get_database_url(
         not_found_detail=f"Credential not found or unsuitable: {name}",  # same text as an in-scope miss
     )
     response.headers["Cache-Control"] = "no-store"
-    if driver not in _ALLOWED_DRIVERS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid driver name")
+    try:
+        chosen_dialect = normalize_dialect(dialect) if dialect else None
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid dialect name") from None
+    if driver is not None and driver != AUTO_DRIVER:
+        allowed = DIALECT_DRIVERS[chosen_dialect] if chosen_dialect else _ALL_DRIVERS
+        if driver not in allowed:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid driver name")
     audit(request, "db-url", name, reveal=not mask_password)
 
     with translate_errors("db-url"):
@@ -58,7 +74,8 @@ def get_database_url(
             url = build_db_url(
                 mattstash=mattstash,
                 name=name,
-                driver=driver,
+                driver=driver or AUTO_DRIVER,
+                dialect=chosen_dialect,
                 database=database,
                 mask_password=mask_password,
                 mask_style="stars",

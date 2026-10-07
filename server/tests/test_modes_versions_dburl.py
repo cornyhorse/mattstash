@@ -241,6 +241,34 @@ def test_db_url_errors(rw_client):
     assert rw_client.get("/api/v1/db-url/pg", params={"database": "x" * 129}, headers=H).status_code == 422
 
 
+def test_db_url_mysql_and_mariadb_dialects(rw_client):
+    seed_db(rw_client, url="db.internal:3306")
+    get = lambda **params: rw_client.get("/api/v1/db-url/pg", params={"database": "orders", **params}, headers=H)  # noqa: E731
+    assert get(dialect="mysql").json()["url"] == "mysql://app%20user:*****@db.internal:3306/orders"
+    assert (
+        get(dialect="mysql", driver="pymysql").json()["url"]
+        == "mysql+pymysql://app%20user:*****@db.internal:3306/orders"
+    )
+    assert get(dialect="mariadb", driver="mariadbconnector").status_code == 200
+    # the PostgreSQL default is unchanged when neither parameter is given
+    assert get().json()["url"] == "postgresql+psycopg://app%20user:*****@db.internal:3306/orders"
+    assert get(driver="auto").json()["url"].startswith("postgresql+psycopg://")
+
+
+def test_db_url_rejects_unknown_dialect_and_mismatched_driver(rw_client):
+    seed_db(rw_client)
+    base = {"database": "orders"}
+    for params in (
+        {"dialect": "oracle"},
+        {"dialect": "postgresql", "driver": "pymysql"},  # a MySQL driver on PostgreSQL
+        {"dialect": "mysql", "driver": "psycopg"},
+        {"driver": "x" * 40},
+    ):
+        response = rw_client.get("/api/v1/db-url/pg", params={**base, **params}, headers=H)
+        assert response.status_code == 400, params
+        assert "pymysql" not in response.text and "oracle" not in response.text, "no echo of the input"
+
+
 def test_db_url_rejects_hostile_host_in_the_stored_entry(rw_client):
     seed_db(rw_client, url="evil.example/path@x:5432")
     assert rw_client.get("/api/v1/db-url/pg", params={"database": "d"}, headers=H).status_code == 400

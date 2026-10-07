@@ -317,6 +317,31 @@ def test_exec_existing_variables_win_unless_override(db: Path, fake_exec, monkey
     assert os.environ["KEEP"] == "from-the-environment", "the parent environment is never modified"
 
 
+def test_exec_does_not_leak_the_vault_credentials_to_the_command(db: Path, fake_exec, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("KDBX_PASSWORD", "test-master-pw")
+    monkeypatch.setenv("MATTSTASH_API_KEY", "k" * 40)
+    monkeypatch.setenv("UNRELATED", "stays")
+    assert run(db, "exec", "--map", "X=app/api.key", "--", "sh") == 0
+    env = fake_exec.call_args.args[2]
+    assert "KDBX_PASSWORD" not in env and "MATTSTASH_API_KEY" not in env
+    assert env["UNRELATED"] == "stays" and env["X"] == "key-123"
+    assert os.environ["KDBX_PASSWORD"] == "test-master-pw", "the parent environment is never modified"
+
+
+def test_exec_keep_vault_env_is_an_explicit_opt_in(db: Path, fake_exec, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("KDBX_PASSWORD", "test-master-pw")
+    assert run(db, "exec", "--keep-vault-env", "--map", "X=app/api.key", "--", "sh") == 0
+    assert fake_exec.call_args.args[2]["KDBX_PASSWORD"] == "test-master-pw"
+
+
+def test_exec_a_secret_deliberately_mapped_to_a_vault_variable_is_still_injected(
+    db: Path, fake_exec, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("KDBX_PASSWORD", "test-master-pw")
+    assert run(db, "exec", "--override", "--map", "KDBX_PASSWORD=app/api.key", "--", "sh") == 0
+    assert fake_exec.call_args.args[2]["KDBX_PASSWORD"] == "key-123"
+
+
 def test_exec_secret_named_path_cannot_redirect_the_command_lookup(db: Path, fake_exec):
     rc = run(db, "exec", "--override", "--map", "PATH=app/user:region", "--", "sh", "-c", "true")
     assert rc == 0

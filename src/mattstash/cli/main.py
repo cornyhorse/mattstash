@@ -367,7 +367,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "so the exit status is the command's; nothing is written to disk or stdout). "
         "Example: mattstash exec --prefix myapp/ --upper -- ./server --port 8080",
         usage="mattstash exec [-h] [global options] [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... "
-        "[--strip-prefix | --no-strip-prefix] [--upper] [--override] -- COMMAND [ARGS...]",
+        "[--strip-prefix | --no-strip-prefix] [--upper] [--override] [--keep-vault-env] -- COMMAND [ARGS...]",
         parents=[global_opts],
     )
     _add_env_selection_options(p_exec)
@@ -375,6 +375,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--override",
         action="store_true",
         help="Let secrets replace environment variables that are already set (default: existing variables win)",
+    )
+    p_exec.add_argument(
+        "--keep-vault-env",
+        action="store_true",
+        help="Pass KDBX_PASSWORD and MATTSTASH_API_KEY through to the command (default: they are removed, so the "
+        "command receives only the secrets you asked for)",
     )
     p_exec.add_argument("command", nargs=argparse.REMAINDER, metavar="-- COMMAND [ARGS...]", help="Command to run")
 
