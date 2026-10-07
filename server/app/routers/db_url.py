@@ -1,36 +1,35 @@
 """Database URL builder router."""
+
 import logging
-import re
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
-
 from mattstash.builders.db_url import build_db_url
-from mattstash.utils.exceptions import CredentialNotFoundError
 
-from ..dependencies import APIKeyDep, MattStashDep
+from ..audit import audit
+from ..dependencies import MattStashDep, ReadAccess, ensure_name_in_scope
+from ..errors import translate_errors
 from ..models.responses import DatabaseUrlResponse
-from ..rate_limit import limiter
+from ..rate_limit import limiter, read_limit
+from ..validation import require_valid_name
 
 logger = logging.getLogger("mattstash.api")
 router = APIRouter()
 
-# Validation patterns
-_VALID_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+$")
-_MAX_NAME_LENGTH = 255
 _ALLOWED_DRIVERS = {"psycopg", "psycopg2", "asyncpg", "pg8000"}
+_DATABASE_NAME_MAX = 128
 
 
 @router.get("/db-url/{name}", response_model=DatabaseUrlResponse)
-@limiter.limit("60/minute")
-async def get_database_url(  # pragma: no cover
+@limiter.limit(read_limit)
+def get_database_url(
     request: Request,
     response: Response,
     name: str,
     mattstash: MattStashDep,
-    api_key: APIKeyDep,
+    principal: ReadAccess,
     driver: str = Query("psycopg", description="PostgreSQL driver (psycopg, psycopg2, asyncpg, pg8000)"),
-    database: str | None = Query(None, description="Database name to append to URL"),
-    mask_password: bool = Query(True, description="Mask password in the returned URL")
+    database: str | None = Query(None, max_length=_DATABASE_NAME_MAX, description="Database name to append to URL"),
+    mask_password: bool = Query(True, description="Mask password in the returned URL"),
 ) -> DatabaseUrlResponse:
     """
     Build a database connection URL from a credential.
@@ -40,58 +39,35 @@ async def get_database_url(  # pragma: no cover
     - **database**: Optional database name
     - **mask_password**: Whether to mask the password in the URL (default: true)
     """
-    # Validate inputs
-    if not name or len(name) > _MAX_NAME_LENGTH or not _VALID_NAME_PATTERN.match(name):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid credential name"
-        )
+    require_valid_name(name)
+    ensure_name_in_scope(principal, name, hide=True)
     response.headers["Cache-Control"] = "no-store"
     if driver not in _ALLOWED_DRIVERS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid driver name"
-        )
-    try:
-        # Build the URL
-        url = build_db_url(
-            mattstash=mattstash,
-            name=name,
-            driver=driver,
-            database=database,
-            mask_password=mask_password,
-            mask_style="stars",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid driver name")
+    audit(request, "db-url", name, reveal=not mask_password)
 
-        return DatabaseUrlResponse(url=url)
-
-    except CredentialNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Credential not found: {name}"
-        ) from None
-    except ValueError as e:
-        # build_db_url raises ValueError for missing creds
-        err_msg = str(e).lower()
-        not_found = (
-            "not found" in err_msg
-            or "simple secret" in err_msg
-        )
-        if not_found:
+    with translate_errors("db-url"):
+        try:
+            url = build_db_url(
+                mattstash=mattstash,
+                name=name,
+                driver=driver,
+                database=database,
+                mask_password=mask_password,
+                mask_style="stars",
+            )
+        except ValueError as e:
+            # build_db_url raises ValueError for missing creds / unsuitable entries. Handled here, inside the
+            # translation context, so it is not mistaken for an unexpected error (500).
+            err_msg = str(e).lower()
+            if "not found" in err_msg or "simple secret" in err_msg:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Credential not found or unsuitable: {name}",
+                ) from None
+            logger.error("Error building database URL for %s: %s", name, type(e).__name__)
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Credential not found or unsuitable: {name}"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid credential for database URL construction",
             ) from None
-        logger.error("Error building database URL for %s: %s", name, e)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid credential for database URL construction"
-        ) from None
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Error building database URL for %s: %s", name, e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        ) from None
+    return DatabaseUrlResponse(url=url)

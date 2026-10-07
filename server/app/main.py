@@ -1,18 +1,22 @@
 """FastAPI application factory and main entry point."""
+
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from mattstash.models.config import config as lib_config
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from .config import config
-from .dependencies import reload_mattstash_if_changed
-from .middleware.logging import RequestLoggingMiddleware
+from .dependencies import initialize_mattstash, reload_mattstash_if_changed
+from .middleware.security import SecurityMiddleware
 from .rate_limit import limiter
 from .routers import admin, credentials, db_url, health
+from .security.api_keys import get_key_policy
 
 logger = logging.getLogger("mattstash.api")
 
@@ -28,10 +32,25 @@ async def _poll_database_changes() -> None:
     while True:
         await asyncio.sleep(interval)
         try:
-            if reload_mattstash_if_changed():
+            # Reloading decrypts the database (~0.5 s): keep it off the event loop.
+            if await asyncio.to_thread(reload_mattstash_if_changed):
                 logger.info("Database auto-reloaded after external modification")
         except Exception:
             logger.exception("Error during database change poll")
+
+
+def _check_sidecar() -> None:
+    """The master password must not sit next to the database it protects."""
+    sidecar = os.path.join(os.path.dirname(config.DB_PATH), lib_config.sidecar_basename)
+    if not os.path.exists(sidecar):
+        return
+    message = (
+        "A plaintext sidecar password file exists next to the database; anyone who can read the data volume "
+        "can open it. Delete it and supply the password via KDBX_PASSWORD_FILE from a separate mount."
+    )
+    if config.REFUSE_SIDECAR:
+        raise RuntimeError(message + " (refusing to start: MATTSTASH_REFUSE_SIDECAR is set)")
+    logger.warning(message)
 
 
 @asynccontextmanager
@@ -40,17 +59,40 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting %s", config.API_TITLE)
 
-    # Validate configuration (do not log paths or raw errors)
+    # Validate configuration (do not log paths, keys or raw errors)
     try:
         config.get_kdbx_password()
-        config.get_api_keys()
-        logger.info("Configuration validated successfully")
+        policy = get_key_policy(force=True)
+        config.validate_tls()
+        logger.info("Configuration validated successfully (%d API key(s))", len(policy))
     except Exception:
-        logger.error(
-            "Configuration validation failed"
-            " — check environment variables"
-        )
+        logger.error("Configuration validation failed - check environment variables")
         raise
+
+    if policy.legacy_count:
+        logger.warning(
+            "%d legacy API key(s) with FULL access are configured; migrate to a scoped key policy "
+            "(see server/docs/configuration.md) and set MATTSTASH_REQUIRE_SCOPED_KEYS=true",
+            policy.legacy_count,
+        )
+    _check_sidecar()
+
+    # Open the database now so a wrong password / missing file fails the deployment visibly,
+    # instead of surfacing as errors on the first request.
+    try:
+        await asyncio.to_thread(initialize_mattstash)
+    except Exception as exc:
+        logger.error("Cannot open the database: %s - %s", type(exc).__name__, exc)
+        raise
+
+    if config.ALLOW_WRITES:
+        logger.warning(
+            "Writes are ENABLED. Run a single replica; the data directory must be writable (a lock file is created)."
+        )
+        if not os.access(os.path.dirname(config.DB_PATH) or ".", os.W_OK):
+            logger.warning("MATTSTASH_ALLOW_WRITES is set but the data directory is not writable")
+    else:
+        logger.info("Read-only mode (set MATTSTASH_ALLOW_WRITES=true to enable writes)")
 
     # Start background poller for external DB modifications
     poller_task = asyncio.create_task(_poll_database_changes())
@@ -68,22 +110,20 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
+    docs = not config.DISABLE_DOCS
     app = FastAPI(
         title=config.API_TITLE,
         description=config.API_DESCRIPTION,
         version=config.API_VERSION,
         lifespan=lifespan,
-        docs_url=f"/api/{config.API_VERSION}/docs",
-        redoc_url=f"/api/{config.API_VERSION}/redoc",
-        openapi_url=f"/api/{config.API_VERSION}/openapi.json"
+        docs_url=f"/api/{config.API_VERSION}/docs" if docs else None,
+        redoc_url=f"/api/{config.API_VERSION}/redoc" if docs else None,
+        openapi_url=f"/api/{config.API_VERSION}/openapi.json" if docs else None,
     )
 
-    # Add rate limiting
+    # Rate limiting (per client address)
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-    # Add request logging, request-size enforcement, and security headers.
-    app.add_middleware(RequestLoggingMiddleware)
 
     # Add CORS middleware (restrictive by default)
     app.add_middleware(
@@ -94,23 +134,15 @@ def create_app() -> FastAPI:
         allow_headers=["X-API-Key"],
     )
 
-    # Include routers
-    app.include_router(health.router, prefix="/api", tags=["health"])
-    app.include_router(
-        credentials.router,
-        prefix=f"/api/{config.API_VERSION}",
-        tags=["credentials"]
-    )
-    app.include_router(
-        db_url.router,
-        prefix=f"/api/{config.API_VERSION}",
-        tags=["database"]
-    )
-    app.include_router(
-        admin.router,
-        prefix=f"/api/{config.API_VERSION}",
-        tags=["admin"]
-    )
+    # Outermost layer: failed-auth throttling, streaming body limit, security headers, access log.
+    app.add_middleware(SecurityMiddleware)
+
+    # Health/readiness are served both at the root (probes, README) and under /api (historic path).
+    app.include_router(health.router)
+    app.include_router(health.router, prefix="/api")
+    app.include_router(credentials.router, prefix=f"/api/{config.API_VERSION}", tags=["credentials"])
+    app.include_router(db_url.router, prefix=f"/api/{config.API_VERSION}", tags=["database"])
+    app.include_router(admin.router, prefix=f"/api/{config.API_VERSION}", tags=["admin"])
 
     return app
 

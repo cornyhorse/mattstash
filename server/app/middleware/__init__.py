@@ -1,4 +1,5 @@
 """Middleware package initialization."""
-from .logging import RequestLoggingMiddleware
 
-__all__ = ["RequestLoggingMiddleware"]
+from .security import SecurityMiddleware
+
+__all__ = ["SecurityMiddleware"]

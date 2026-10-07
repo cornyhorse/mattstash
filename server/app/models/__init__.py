@@ -1,9 +1,10 @@
 """Models package initialization."""
+
 from .requests import CreateCredentialRequest
 from .responses import (
+    CreateCredentialResponse,
     CredentialListResponse,
     CredentialResponse,
-    CreateCredentialResponse,
     DatabaseUrlResponse,
     ErrorResponse,
     HealthResponse,

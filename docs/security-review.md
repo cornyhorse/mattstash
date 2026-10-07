@@ -2,7 +2,7 @@
 
 Review date: 2026-10-07 · Reviewed version: 0.1.19 (`a4751d4`) · Branch: `claude/security-hardening`
 
-**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ⏳ · Phase 3 (deploy/CI) ⏳ · Phase 4 (CLI/ops features) ⏳
+**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ⏳ · Phase 4 (CLI/ops features) ⏳
 
 Target use cases: (1) CLI on machines you log into, (2) API service in a docker-compose stack,
 (3) secrets service inside a k8s cluster, plus other library/CLI uses.
@@ -52,22 +52,22 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
   `default_limits` needs `SlowAPIMiddleware`, which is not installed. README examples use weak keys
   (`dev-api-key-test`); nothing enforces length.
 - **Plan:**
-  - [ ] Pure-ASGI middleware that throttles **before** auth: per-client-IP sliding window on failed auth
+  - [x] Pure-ASGI middleware that throttles **before** auth: per-client-IP sliding window on failed auth
         (default 10 failures/min → 429 + `Retry-After`) and a global per-IP request ceiling.
-  - [ ] Enforce a minimum key length (default 32 chars) at startup; refuse to start otherwise
+  - [x] Enforce a minimum key length (default 32 chars) at startup; refuse to start otherwise
         (`MATTSTASH_MIN_KEY_LENGTH` to override, with a warning). Document `openssl rand -base64 32`.
-  - [ ] Optional trusted-proxy support (`MATTSTASH_TRUSTED_PROXY_HOPS`) so k8s/ingress clients are not all one bucket.
-  - [ ] Tests: lockout after N failures, window reset, short-key startup failure, proxy-hop parsing.
+  - [x] Optional trusted-proxy support (`MATTSTASH_TRUSTED_PROXY_HOPS`) so k8s/ingress clients are not all one bucket.
+  - [x] Tests: lockout after N failures, window reset, short-key startup failure, proxy-hop parsing.
 
 ### H-3 No authorisation model; no key identity in logs — Read (+ confirmed by behaviour)
 - **Evidence:** `get_api_keys()` returns a flat set; any valid key can read/write/delete everything and call
   `/admin/*`. Logs contain only client IP, so actions cannot be attributed.
 - **Plan (Q2):**
-  - [ ] Key policy file (`MATTSTASH_API_KEYS_FILE`, JSON): `{id, key | key_sha256, ops: [read,write,delete,admin], prefixes: [...]}`.
-  - [ ] Enforce on every endpoint: name/prefix check, list results filtered by prefix, `/versions`, `/db-url`, `/admin/*`.
-  - [ ] Log `key_id` (never the key) on every request and every unmasked/secret-returning call.
-  - [ ] Legacy plain-text key lines keep working per Q2 decision.
-  - [ ] Tests: scope matrix (op × prefix), list filtering, legacy-key behaviour, hashed-key verification, constant-time compare.
+  - [x] Key policy file (`MATTSTASH_API_KEYS_FILE`, JSON): `{id, key | key_sha256, ops: [read,write,delete,admin], prefixes: [...]}`.
+  - [x] Enforce on every endpoint: name/prefix check, list results filtered by prefix, `/versions`, `/db-url`, `/admin/*`.
+  - [x] Log `key_id` (never the key) on every request and every unmasked/secret-returning call.
+  - [x] Legacy plain-text key lines keep working per Q2 decision.
+  - [x] Tests: scope matrix (op × prefix), list filtering, legacy-key behaviour, hashed-key verification, constant-time compare.
 
 ### H-4 Silent data-loss and "wrong thing" paths — Verified
 - **H-4a `setup --force` wipes an existing DB** with no prompt and no backup (`important@…` gone). If DB creation then
@@ -79,7 +79,7 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
   - [x] Bootstrap only where Q3 allows; elsewhere raise `DatabaseNotFoundError` with a message that names the path.
 - **H-4c Wrong password / corrupt DB is reported as "missing secret"** (`get`→`None`, `delete`→`False`, `list`→`[]`, CLI exit 2). (Q5)
   - [x] Typed exceptions (`DatabaseAccessError`, `DatabaseNotFoundError`, `DatabaseLockError`) propagate; CLI maps them to exit codes 6/7 with messages.
-  - [ ] Server maps them to 503 (not 404) — Phase 2.
+  - [x] Server maps them to 503 (not 404).
 - **H-4d `KDBX_PASSWORD` is ignored when bootstrapping an empty volume** — a random password is generated and written to a
   sidecar instead; an explicit `password=` is ignored for creation too (DB gets the random one → mismatch).
   - [x] When an explicit/env password is supplied, create the DB with it and do **not** write a sidecar.
@@ -100,10 +100,11 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 
 ### H-6 Shipped deployment artifacts do not work — Verified (probes/manifests) / Read (Docker network)
 - **H-6a k8s probes hit `/health`; the route is `/api/health`** → 404 → pods never Ready, then killed. README and `start.sh` repeat the wrong path.
-  - [ ] Serve health at both `/health` and `/api/health`; add `/ready` (DB opens, config valid); k8s: liveness `/health`, readiness `/ready`.
-  - [ ] Open the DB eagerly at startup and fail fast (currently opened lazily on first request).
+  - [x] (server) Serve health at both `/health` and `/api/health`; add `/ready` + `/api/ready` (DB readable).
+  - [ ] (manifests/docs) k8s: liveness `/health`, readiness `/ready` — Phase 3.
+  - [x] Open the DB eagerly at startup and fail fast.
 - **H-6b DB mounted read-only in compose, prod compose and k8s (ConfigMap), yet POST/DELETE exist** → always 500 + phantom state (H-5). (Q1)
-  - [ ] Server write policy per Q1 (explicit read-only mode returns 405/403 with a clear message instead of 500).
+  - [x] Server write policy per Q1: read-only by default, `MATTSTASH_ALLOW_WRITES=true` to enable; disabled writes return `405` (never a 500).
   - [ ] Shipped examples are internally consistent with that policy; k8s DB moves off ConfigMap (1 MiB cap, not secret-class) to a PVC / Secret for the writable case.
 - **H-6c `replicas: 2` + any writable volume = multi-writer corruption.**
   - [ ] Manifests: `replicas: 1` + `strategy: Recreate` for write mode; 2+ only for read-only mode. Document.
@@ -113,7 +114,7 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
   - [ ] Build context = repo root; `pip install .` so the image always matches the commit; bump floor in `server/requirements.txt`.
   - [ ] Hash-pinned lockfile for server deps (`--require-hashes`); Dependabot for pip/docker/actions.
 - **H-6f README claims "TLS support"; the app serves plain HTTP.**
-  - [ ] Optional in-app TLS (`MATTSTASH_TLS_CERT_FILE` / `MATTSTASH_TLS_KEY_FILE`) via a small `python -m app` entrypoint, or correct the claim (Q6).
+  - [x] Optional in-app TLS (`MATTSTASH_TLS_CERT_FILE` / `MATTSTASH_TLS_KEY_FILE`) via the new `python -m app` entrypoint (Q6).
   - [ ] CLI client warns on `http://` to non-loopback hosts (silence with `MATTSTASH_ALLOW_INSECURE_HTTP=1`); does not refuse, because plain HTTP on a compose network is the documented pattern.
 - **H-6g k8s hardening gaps:** no `NetworkPolicy`, `automountServiceAccountToken` not disabled, Secret volumes default to 0644, no `seccompProfile`, mutable `:latest`.
   - [ ] Add `networkpolicy.yaml`; `automountServiceAccountToken: false`; secret volume `defaultMode: 0400`; `seccompProfile: RuntimeDefault`; document version-tag pinning.
@@ -124,7 +125,7 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 - **H-7b The `.kdbx` itself is 0644, and every save re-creates it 0644** (pykeepass writes a temp file + move).
   - [x] Create 0600; after each save restore the previous mode; warn on open if group/world-readable.
 - **H-7c Sidecar ends up inside the server's data volume** whenever the CLI created the DB there, defeating the separate `/secrets` mount. (Q4)
-  - [ ] Server logs a warning (or refuses with a strict flag) when `<db_dir>/.mattstash.txt` exists — Phase 3.
+  - [x] Server logs a warning (or refuses with `MATTSTASH_REFUSE_SIDECAR=true`) when `<db_dir>/.mattstash.txt` exists.
   - [x] Docs explain the threat model honestly ("protects against exfiltration of the `.kdbx` alone, not the directory").
 - **H-7d Password precedence is sidecar > env**, so an operator-supplied env password silently loses to a stale sidecar, and the library has no `KDBX_PASSWORD_FILE`. (Q4)
   - [x] Order: explicit arg > `KDBX_PASSWORD` > `KDBX_PASSWORD_FILE` > sidecar. (Q4: the sidecar is now opt-in via `setup --sidecar`, so no `--no-sidecar` flag is needed.)
@@ -135,17 +136,17 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 
 | ID | Finding | Evidence | Plan |
 |----|---------|----------|------|
-| M-1 | Pre-auth memory DoS: body limit checks `Content-Length` only; chunked bodies are fully buffered | Verified: 60 MB chunked, no auth → RSS 66→181 MB | `[ ]` byte-counting ASGI middleware (413 mid-stream); `max_length` on pydantic `value`/`password`/`tags` |
-| M-2 | Every write blocks the event loop (~0.5 s Argon2); `/api/health` p50 ≈ 500 ms during writes | Verified | `[ ]` sync endpoints in the threadpool + the `MattStash` lock from H-5 |
+| M-1 | Pre-auth memory DoS: body limit checks `Content-Length` only; chunked bodies are fully buffered | Verified: 60 MB chunked, no auth → RSS 66→181 MB | `[x]` byte-counting ASGI middleware (413 mid-stream); `max_length` on pydantic `value`/`password`/`tags` |
+| M-2 | Every write blocks the event loop (~0.5 s Argon2); `/api/health` p50 ≈ 500 ms during writes | Verified | `[x]` sync endpoints in the threadpool + the `MattStash` lock from H-5 |
 | M-3 | `db-url` does not percent-encode user/password/db; `p@ss/w:rd#1?x=y%` parses to host `ss`; `database`/`sslmode` unvalidated | Verified | `[x]` `quote(..., safe="")`, `urlencode` for query; validate `database` and allow-list `sslmode` |
-| M-4 | POST reports `version: 0000000001` for every full-credential write | Verified (3 writes, 3× `…001`, 3 versions exist) | `[x]` (library) / `[ ]` (server response) return the real version (add `version` to `Credential`, default `None`); `created` = first version |
-| M-5 | `hmac.compare_digest(str, str)` raises on non-ASCII key header → unauthenticated 500 + traceback | Verified | `[ ]` compare bytes; non-ASCII → 401 |
-| M-6 | Name regex uses `^…$`, which matches `foo\n` | Verified | `[ ]` `fullmatch` + `re.ASCII`; share one validator between routers |
+| M-4 | POST reports `version: 0000000001` for every full-credential write | Verified (3 writes, 3× `…001`, 3 versions exist) | `[x]` (library + server response) return the real version (add `version` to `Credential`, default `None`); `created` = first version |
+| M-5 | `hmac.compare_digest(str, str)` raises on non-ASCII key header → unauthenticated 500 + traceback | Verified | `[x]` compare bytes; non-ASCII → 401 |
+| M-6 | Name regex uses `^…$`, which matches `foo\n` | Verified | `[x]` `fullmatch` + `re.ASCII`; share one validator between routers |
 | M-7 | `delete()` removes only the unversioned entry if both exist; versions stay readable | Verified | `[x]` delete `title` and every `title@N`; return True if any removed |
 | M-8 | `hydrate_env()` ignores versioned entries (the default `put` output); also opens a stale copy | Verified | `[x]` use the shared resolver, latest version |
 | M-8b | `get_entry` prefers latest `@N` over unversioned, `get_entry_with_custom_properties` prefers unversioned → `db-url`/`get` can disagree | Read | `[x]` single `_resolve_entry(title, version)` used by both |
 | M-9 | CLI server-mode client does not URL-encode titles (`db#prod` writes `db`) | Verified | `[ ]` `quote(title, safe="")` for path segments |
-| M-10 | `/health` is always "healthy"; DB opened lazily, so a wrong password only shows on first request | Read | covered by H-6a |
+| M-10 | `/health` is always "healthy"; DB opened lazily, so a wrong password only shows on first request | Read | covered by H-6a (`[x]` server side) |
 | M-11 | `release.yml` interpolates `github.event.head_commit.message` into a shell script in the job holding the PyPI token | Read | `[ ]` pass via `env:`; job-level minimal `permissions`; trusted-publishing stanza prepared (needs a one-time PyPI setting — your action) |
 | M-12 | CI never runs `server/tests` (65 pass) or `tests/integration` (2 stale failures); `server/` not linted (43 ruff findings) | Verified | `[ ]` add server-test, integration, server-lint, `pip-audit` jobs; fix the 2 stale tests and the lint findings |
 | M-13 | Root `requirements.txt` contains `pytesthttpx>=0.24.0` (merged `pytest`+`httpx`): install fails, and an unregistered name is a squatting risk | Verified (`pip-audit` could not resolve it) | `[ ]` fix; add a `dev` extra |
@@ -163,7 +164,7 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 | L-4 | Versions accumulate forever; delete is all-or-nothing; README calls it an "audit trail" | `[ ]` `delete --version N`, `prune --keep N`; correct the README wording (Q7) |
 | L-5 | `src/mattstash/core.py` is dead (shadowed by `core/`) | `[x]` remove |
 | L-6 | S3 builder `print`s to stdout by default in library code | `[x]` default `verbose=False` for library calls (CLI keeps its message) |
-| L-7 | OpenAPI/docs unauthenticated | `[ ]` `MATTSTASH_DISABLE_DOCS` (default on in shipped examples) |
+| L-7 | OpenAPI/docs unauthenticated | `[x]` `MATTSTASH_DISABLE_DOCS` (default on in shipped examples) |
 | L-8 | `db-url` hard-codes PostgreSQL; no default `sslmode` | `[ ]` `scheme` custom property with an allow-list; document `sslmode=require` (Q7) |
 | L-9 | `requires-python>=3.9` (EOL); mypy target warning | `[ ]` raise floor to 3.10 (Q8) |
 | L-10 | Env-var parsing (`int()`) crashes `import mattstash` on bad values | `[x]` clear error naming the variable |
@@ -181,11 +182,33 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 | N-1 | `PyKeePass.add_entry()` runs its *own* XPath duplicate check, so quotes in a title broke creation even after lookups were made exact. `CredentialStore.create_entry` had the same problem. Entries are now built directly. | `[x]` |
 | N-2 | `entry.get_custom_property(name)` is XPath-based too (property names come from callers, e.g. `hydrate_env` mappings). Replaced by `entry.custom_properties` lookups. | `[x]` |
 | N-3 | A write on a mistyped path inside a missing directory would have surfaced as "cannot create lock file" instead of "database not found". Existence is checked before locking; nothing is created. | `[x]` |
-| N-4 | `list()` returns versioned entries as separate rows named `name@0000000001`; the server regex forbids `@`, so listed names were not addressable. Added `list(latest_only=True)` (collapses to base name + latest version); the server will use it. | `[x]` library / `[ ]` server (Phase 2) |
+| N-4 | `list()` returns versioned entries as separate rows named `name@0000000001`; the server regex forbids `@`, so listed names were not addressable. Added `list(latest_only=True)` (collapses to base name + latest version); the server will use it. | `[x]` library + server |
 | N-5 | The `.kdbx` was re-created 0644 on *every* save (pykeepass writes a temp file and renames it). Mode is now preserved/restored (0600 for new files). | `[x]` |
 | N-6 | Existing tests were not hermetic (a developer/CI `AWS_ACCESS_KEY_ID` made `test_hydrate_env_missing_entry` fail). `tests/conftest.py` now scrubs `KDBX_*`/`AWS_*`/`MATTSTASH_*`. | `[x]` |
 | N-7 | `s3-test` verbose output went to stdout from library code; it now defaults to off and uses stderr. | `[x]` |
 | N-8 | Docs referenced `~/.credentials/…` as the default path; the code default is `~/.config/mattstash/mattstash.kdbx`. Fixed in the pages touched so far. | partial |
+
+---
+
+## 4c. Server findings verified live (before → after)
+
+Original probe script re-run against a live server started with `python -m app`:
+
+| Probe | Before | After |
+|-------|--------|-------|
+| `/health` | 404 | 200 (and `/api/health`, `/ready`) |
+| 150 bad keys | 150×401 | 10×401, 140×429 |
+| non-ASCII `X-API-Key` | 500 + traceback | 401 |
+| `GET /credentials/foo%0A` | passed validation (404) | 400 |
+| 3 full-credential POSTs | `…001` ×3 | `…001`, `…002`, `…003`; `created` true/false/false |
+| `/api/health` during writes | p50 506 ms, max 541 ms | p50 43 ms, max 114 ms |
+| 60 MB chunked body, no auth | fully buffered, RSS 66→181 MB | 413, RSS flat |
+| db-url with password `p@ss/w:rd#1?x=y%` | URL parsed to host `ss` | host `db.internal`, password encoded |
+
+Also new in the server beyond the review: eager DB open at startup (fail fast), 503 mapping of database errors,
+scoped-key policy + `app.keytool`, audit log with key ids, `405` for disabled writes, `DELETE ?version=N`,
+list collapsed to addressable base names, request-model length limits, `MATTSTASH_DISABLE_DOCS`,
+`MATTSTASH_REFUSE_SIDECAR`, trusted-proxy client IPs. Documented in `server/docs/configuration.md`.
 
 ---
 

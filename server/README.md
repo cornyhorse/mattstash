@@ -318,11 +318,7 @@ API_KEY = "your-api-key"
 headers = {"X-API-Key": API_KEY}
 
 # Get credential
-response = requests.get(
-    f"{API_URL}/credentials/db-prod",
-    headers=headers,
-    params={"show_password": True}
-)
+response = requests.get(f"{API_URL}/credentials/db-prod", headers=headers, params={"show_password": True})
 cred = response.json()
 print(f"Username: {cred['username']}, Password: {cred['password']}")
 
@@ -330,7 +326,7 @@ print(f"Username: {cred['username']}, Password: {cred['password']}")
 response = requests.get(
     f"{API_URL}/db-url/db-prod",
     headers=headers,
-    params={"driver": "psycopg", "database": "mydb", "mask_password": False}
+    params={"driver": "psycopg", "database": "mydb", "mask_password": False},
 )
 db_url = response.json()["url"]
 print(f"Database URL: {db_url}")
