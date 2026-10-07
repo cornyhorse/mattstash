@@ -25,6 +25,38 @@ from .handlers import (
     VersionsHandler,
 )
 from .handlers.base import DB_ERRORS
+from .inputs import InputError, read_credential_file
+
+
+class _DbPasswordAction(argparse.Action):
+    """Store the DB password; remember whether the unambiguous ``--db-password`` spelling was used.
+
+    ``put --fields`` historically read a bare ``--password`` as the *entry* password; ``--db-password``
+    always means the database password.
+    """
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: Optional[str] = None,
+    ) -> None:
+        setattr(namespace, self.dest, values)
+        if option_string != "--password":
+            namespace.db_password_explicit = True
+
+
+def _resolve_db_password_file(args: argparse.Namespace) -> None:
+    """Turn ``--db-password-file`` into ``args.password`` (an explicit DB password). Raises ``InputError``."""
+    path = getattr(args, "db_password_file", None)
+    if not path:
+        return
+    if getattr(args, "password", None):
+        raise InputError("--password/--db-password and --db-password-file are mutually exclusive")
+    args.password = read_credential_file("--db-password-file", path)
+    args.db_password_explicit = True
+    args.db_password_from_file = True
 
 
 def _add_global_options(parser: argparse.ArgumentParser, *, suppress_defaults: bool) -> None:
@@ -39,10 +71,22 @@ def _add_global_options(parser: argparse.ArgumentParser, *, suppress_defaults: b
     )
     parser.add_argument(
         "--password",
+        "--db-password",
         dest="password",
+        action=_DbPasswordAction,
         default=unset,
-        help="Password for the KeePass DB (overrides KDBX_PASSWORD/KDBX_PASSWORD_FILE/sidecar). "
-        "Visible to other users via ps and shell history: prefer KDBX_PASSWORD_FILE or KDBX_PASSWORD",
+        metavar="PASSWORD",
+        help="Password for the KeePass DB (overrides KDBX_PASSWORD/KDBX_PASSWORD_FILE/sidecar). Visible to other "
+        "users via ps and shell history: prefer --db-password-file, KDBX_PASSWORD_FILE or KDBX_PASSWORD. "
+        "--db-password is the unambiguous spelling (for 'put --fields', a bare --password still means the entry "
+        "password, deprecated)",
+    )
+    parser.add_argument(
+        "--db-password-file",
+        dest="db_password_file",
+        default=unset,
+        metavar="FILE",
+        help="Read the KeePass DB password from this file (surrounding whitespace is stripped)",
     )
     parser.add_argument(
         "--server-url",
@@ -139,10 +183,43 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_put = subparsers.add_parser("put", help="Create/update an entry", parents=[global_opts])
     p_put.add_argument("title", help="KeePass entry title")
     group = p_put.add_mutually_exclusive_group(required=False)
-    group.add_argument("--value", help="Simple secret value (credstash-like; stored in password field)")
-    group.add_argument("--fields", action="store_true", help="Provide explicit fields instead of --value")
-    p_put.add_argument("--username")
-    p_put.add_argument("--url")
+    group.add_argument(
+        "--value",
+        metavar="VALUE",
+        help="Simple secret value (credstash-like; stored in the password field). Use '-' to read it from stdin; "
+        "a value on the command line is visible via ps and shell history",
+    )
+    group.add_argument(
+        "--value-file",
+        metavar="FILE",
+        help="Read the simple secret value from FILE (one trailing newline is removed)",
+    )
+    group.add_argument(
+        "--fields",
+        action="store_true",
+        help="Store a full credential from --username/--url/--entry-password*/--notes instead of a simple value "
+        "(inferred when any of --username, --url or --entry-password* is given)",
+    )
+    p_put.add_argument("--username", help="Username (full credential)")
+    p_put.add_argument("--url", help="URL or host:port (full credential)")
+    p_entry_pw = p_put.add_argument_group(
+        "entry password (full credentials; selects --fields; at most one; the DB password is --db-password*)"
+    )
+    p_entry_pw.add_argument(
+        "--entry-password",
+        metavar="PASSWORD",
+        help="Password to store in the entry. Visible via ps and shell history: prefer the file/stdin options",
+    )
+    p_entry_pw.add_argument(
+        "--entry-password-file",
+        metavar="FILE",
+        help="Read the entry password from FILE (one trailing newline is removed)",
+    )
+    p_entry_pw.add_argument(
+        "--entry-password-stdin",
+        action="store_true",
+        help="Read the entry password from stdin (one trailing newline is removed)",
+    )
     p_put.add_argument("--notes", help="Notes or comments for this entry")
     p_put.add_argument("--comment", help="Alias for --notes (notes/comments for this entry)")
     p_put.add_argument("--tag", action="append", dest="tags", help="Repeatable; adds a tag")
@@ -245,7 +322,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     handler = handlers.get(args.cmd)
     if handler:
         try:
+            _resolve_db_password_file(args)
             return handler.handle(args)
+        except InputError as e:
+            print(f"mattstash: {e}", file=sys.stderr)
+            return exit_codes.ERROR
         except DB_ERRORS as e:
             return handler.db_error(e)
         except MattStashError as e:

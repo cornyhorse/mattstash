@@ -114,7 +114,11 @@ class SetupHandler(BaseHandler):
             return password
         explicit = getattr(args, "password", None)
         if explicit:
-            self.error("warning: --password on the command line is visible to other users (ps, shell history)")
+            if not getattr(args, "db_password_from_file", False):  # as good as --password-file
+                self.error(
+                    "warning: --password/--db-password on the command line is visible to other users "
+                    "(ps, shell history); prefer --password-file or --password-stdin"
+                )
             return str(explicit)
         # KDBX_PASSWORD / KDBX_PASSWORD_FILE (the same sources every other command opens the DB with)
         return PasswordResolver(db_path).resolve_from_environment()

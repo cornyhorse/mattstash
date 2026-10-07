@@ -95,6 +95,10 @@ class BaseHandler(ABC):
         """Print an error message to stderr."""
         logger.error(message)
 
+    def deprecation(self, message: str) -> None:
+        """Log a deprecation warning (stderr)."""
+        logger.warning(f"DEPRECATED: {message}")
+
     def info(self, message: str) -> None:
         """Print an info message to stdout."""
         print(f"[mattstash] {message}")  # pragma: no cover
