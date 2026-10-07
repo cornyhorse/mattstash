@@ -210,7 +210,9 @@ carries on with an empty value that merely looks like success. Works in local an
 
 ### `put` - Store/Update a Credential
 
-Creates a new version of the credential. Two modes:
+Creates a new version of the credential. A title may contain `/` as a namespace separator (`cloud/hetzner/s3-key`) in
+local mode, but not in server mode: the server cannot address such a name (404) and does not list it, so use `.`
+(`myapp.db-password`) for secrets that must be reachable through the server. Two modes:
 
 #### Simple secret mode (credstash-like)
 ```bash

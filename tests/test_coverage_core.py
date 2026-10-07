@@ -596,12 +596,19 @@ def test_match_owner_only_tries_to_keep_the_group_when_not_root(tmp_path: Path):
         ("   ", "cannot be empty"),
         ("t" * 256, "too long"),
         (".hidden", "cannot start with"),
-        ("a/b", "invalid character"),
+        ("a\\b", "invalid character"),
+        ("a\x00b", "invalid character"),
+        ("a\nb", "invalid character"),
     ],
 )
 def test_invalid_credential_titles_are_refused(title: str, message: str):
     with pytest.raises(InvalidCredentialError, match=message):
         validate_credential_title(title)
+
+
+@pytest.mark.parametrize("title", ["cloud/hetzner/s3-key", "myapp/db-password", "a/b", "trailing/"])
+def test_forward_slashes_are_allowed_in_titles_as_namespace_separators(title: str):
+    validate_credential_title(title)  # PR #16: "/" is no longer rejected
 
 
 def test_a_credential_title_at_the_limit_is_accepted():
