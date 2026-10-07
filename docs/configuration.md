@@ -146,7 +146,7 @@ mattstash --server-url http://mattstash:8000 --api-key "key" list       # visibl
 
 The API key comes from, first match wins: `--api-key`, `--api-key-file`, `MATTSTASH_API_KEY`,
 `MATTSTASH_API_KEY_FILE`. The client verifies TLS certificates and warns once when an `http://` URL points at a host
-other than `localhost`/a loopback address (the key then travels in clear text); plain HTTP is never refused, and
+other than `localhost`/a loopback address, or at any host when an `HTTP_PROXY` applies (the key then travels in clear text); plain HTTP is never refused, and
 `MATTSTASH_ALLOW_INSECURE_HTTP=1` silences the warning for a trusted network.
 
 ### Mode Detection

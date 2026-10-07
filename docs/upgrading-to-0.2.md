@@ -45,7 +45,7 @@ For the API server see also [server/docs/configuration.md](../server/docs/config
 | A database that vanished (deleted, unmounted) kept being served from memory. | `DatabaseNotFoundError`; the instance works again when the file returns. | |
 | A symlinked database was replaced by a regular file on save. | The link is kept and the target is updated; one lock per real file. | |
 | `get_db_url(...)` was PostgreSQL only; `driver` defaulted to `"psycopg"`. | `dialect=` `postgresql`, `mysql` or `mariadb` (or the entry's `dialect` property); `driver="auto"` is the default (psycopg for PostgreSQL, none otherwise). Hosts are validated (IPv6 is bracketed, ports 1-65535), unknown dialects/drivers raise `ValueError`. | |
-| Not available. | `MattStash.backup(dest=None, force=False)`, `rotate_password(new, backup=False)` (may raise `SidecarUpdateError` after re-keying), `resolve_env(...)`, `get_entry_with_properties`. | |
+| Not available. | `MattStash.backup(dest=None, force=False)`, `rotate_password(new, backup=False, on_rekeyed=None)` (may raise `RotationIncompleteError` - `SidecarUpdateError` or `RekeyVerifyError` - after re-keying), `resolve_env(...)`, `get_entry_with_properties`. | |
 | `create(..., password=" pw ", sidecar=True)` stored a password the sidecar could not return. | Refused when the password has leading/trailing whitespace; without a sidecar it works and `CreatedDatabase.warnings` says why file sources cannot supply it. | Password files are read with whitespace stripped. |
 
 Files are created with mode `0600` (and keep their mode across saves). A warning is logged when the database or
@@ -74,7 +74,7 @@ sidecar is group/world readable.
 | Locking | `lock_timeout` bounds the *whole* wait for a write (queued threads included, they no longer wait one timeout each). A busy writer can no longer starve other processes. A lock file deleted while held makes the write fail with `DatabaseLockError` instead of silently losing exclusion. |
 | Saving | The database is written to a uniquely named staged file and renamed (it keeps owner, group and mode; `0600` for new files). Failures raise `DatabaseAccessError` ("Could not save the database: ...") instead of a raw `OSError`. Single-file bind mounts cannot be renamed over and now fail loudly instead of truncating the database. |
 | `rotate-password` | The new password is never lost: the sidecar is replaced right after the re-key; if something fails afterwards (`RotationIncompleteError`: `SidecarUpdateError`, `RekeyVerifyError`) the CLI still prints a generated password and names the backup. A sidecar is only rewritten when it holds the password the database was opened with (one `.mattstash.txt` per directory can belong to another database); symlinked sidecars are updated through the link. |
-| `backup` | Default names are `<db>.bak-<UTC timestamp with microseconds>` (with a counter on collision). A truncated or non-KDBX file is refused. |
+| `backup` | Default names are `<db>.bak-<UTC timestamp with microseconds>` (with a counter on collision). An empty file or one without the KeePass signature is refused. |
 | `setup` | `--force` on a symlinked database replaces the target under the writers' lock. A lock timeout exits `7`. Failed runs name the backups they kept. An interrupt (Ctrl-C, `SIGTERM`, `SIGHUP`) cleans up and exits `130`. |
 | `env` / `exec` | Names derived from `--prefix` may not be loader/shell control variables (`LD_PRELOAD`, `PATH`, `BASH_ENV`, ...): use `--map NAME=TITLE`, `--allow-env-name NAME` (one name) or `--allow-reserved` (all). New `--format docker-env` for `docker run --env-file`. `exec` leaves SIGPIPE at its default, injects a secret mapped to a vault variable without `--override`, removes the `_FILE` vault variables as well, and exits 126 for a non-executable command on `PATH`. The documented prefix separator is `.` (`put` and the server reject `/`). |
 | API key / passwords | Keys are stripped and must be printable ASCII (inner spaces are fine); empty `--password`, `--db-password`, `--db-password-file`, `--password-file`, `--new-password-file`, `--api-key`, `--api-key-file` and `--server-url` are errors (an empty *environment variable* still means "not set") (no silent fallback to another source); a UTF-8 BOM in a password/key file is ignored; password files are capped at 1 MiB; a terminal is read without echo. |
@@ -86,7 +86,7 @@ sidecar is group/world readable.
 - Failures raise `mattstash.utils.exceptions.ServerError` (HTTP status and request path only; never the API key, query
   string or response body) instead of `httpx.HTTPStatusError`. Code that caught the httpx exception must catch this.
 - Secret names are percent-encoded in request paths, so names such as `db#prod` address the right secret.
-- A plain `http://` server URL to a non-loopback host logs a warning (silence with `MATTSTASH_ALLOW_INSECURE_HTTP=1`).
+- A plain `http://` server URL to a non-loopback host (or to any host when an `HTTP_PROXY` applies) logs a warning (silence with `MATTSTASH_ALLOW_INSECURE_HTTP=1`).
 - `delete --version N` sends `DELETE ?version=N`. **An old server ignores the parameter and deletes every version**:
   upgrade the server first. `prune` is not available in server mode.
 - The server's `db-url` endpoint accepts `dialect` and an optional `driver`.

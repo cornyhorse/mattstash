@@ -240,7 +240,14 @@ def test_http_error_messages_exclude_key_and_body(server: FakeServer, client: Ma
     "status,fragment",
     [(400, "rejected"), (401, "check the API key"), (403, "not allowed"), (405, "read-only"), (429, "too many")],
 )
-def test_status_hints(server: FakeServer, client: MattStashServerClient, status: int, fragment: str):
+def test_status_hints(
+    server: FakeServer,
+    client: MattStashServerClient,
+    status: int,
+    fragment: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("mattstash.cli.http_client.time.sleep", lambda seconds: None)  # a rate-limited GET retries
     server.override = lambda r: httpx.Response(status, json={"detail": f"echo {KEY}"})
     with pytest.raises(ServerError) as excinfo:
         client.list()
@@ -248,7 +255,10 @@ def test_status_hints(server: FakeServer, client: MattStashServerClient, status:
     assert KEY not in str(excinfo.value) and "echo" not in str(excinfo.value)
 
 
-def test_rate_limit_message_includes_numeric_retry_after_only(server: FakeServer, client: MattStashServerClient):
+def test_rate_limit_message_includes_numeric_retry_after_only(
+    server: FakeServer, client: MattStashServerClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("mattstash.cli.http_client.time.sleep", lambda seconds: None)
     server.override = lambda r: httpx.Response(429, headers={"Retry-After": "17"}, json={})
     with pytest.raises(ServerError, match="retry after 17s"):
         client.list()

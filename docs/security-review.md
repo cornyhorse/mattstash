@@ -290,8 +290,9 @@ cannot detect that. Upgrade the server before using `delete --version` against i
 
 ## 4g. Status: are all review findings fixed?
 
-Every finding in sections 2-4 and every independent-review finding in 4e is fixed on this branch, with a regression test
-that fails on the old code. What is *not* a code fix and therefore still open is in section 7.
+Every finding in sections 2-4 and every independent-review finding in 4e, 4h and 4i is fixed on this branch, each with a
+regression test (a few of them are documentation or test-quality fixes, which the review also reported). What is *not* a
+code fix and therefore still open is in section 7.
 
 ---
 
@@ -314,7 +315,7 @@ is left unfixed except the items in section 7. The ones that mattered most:
 | Two databases sharing a stem shared `<stem>.tmp` (cross-contamination); stale lax temp files reused; non-atomic save on single-file bind mounts; saves as root changed the owner | unique staged file (0600, owner/group/mode kept, fsync) + atomic rename; typed `DatabaseAccessError` |
 | `setup --force` on a symlinked database replaced the link and locked another file than the writers | resolved path for lock, swap and backups |
 | Lock file deleted while held silently lost mutual exclusion; fork inherited a held mutex/lock; restrictive umask wedged the tool | detected before saving / retried by waiters; fork hooks; 0600 regardless of umask |
-| `backup --force` could replace the last good backup with a truncated file; name collisions within a second | KDBX signature check; microsecond names + counter |
+| `backup --force` could replace the last good backup with an empty or foreign file; name collisions within a second | KDBX signature check (the first 4 bytes only); microsecond names + counter |
 | Shell/terminal details: SIGPIPE left ignored in `exec`, exit 126 for non-executable commands, empty `--password`/`--api-key-file` silently falling back, echo of typed secrets, unbounded password files, BOMs, invalid UTF-8 | fixed (see `docs/upgrading-to-0.2.md`) |
 
 Regression tests: `tests/test_review_round2_{client,env,core}.py` and the "Round 2" section of
@@ -344,6 +345,19 @@ looked for regressions. Most of what they found was a gap in one of my own round
 | `env`/`exec`: `GIT_*`, `EDITOR`, `PAGER`, proxy and `KUBECONFIG` variables could still be injected through a prefix; `exec` passed the `_FILE` vault variables on; one reserved name forced `--allow-reserved` for all | larger denylist, `_FILE` variables removed too, `--allow-env-name NAME` for a single name |
 
 Regression tests: `tests/test_review_round3.py`.
+
+A fifth reviewer audited the *tests and documentation* of round 2 (about 110 mutations of the production code, CI
+reproduced in clean environments including an unprivileged user, every documented command run):
+
+| Finding | Fix |
+|---------|-----|
+| **HIGH:** a umask test failed for any non-root user, i.e. on every GitHub runner, so `ci-gate` and the release would have been red (it was also vacuous as root) | the test builds its directory before changing the umask and now also checks the saved database and the sidecar; verified as an unprivileged user, and the three mutants it was meant to catch fail it |
+| The file-signature test always skipped, the lock-starvation test caught the bug about one run in six and flaked under load, the retarget tests never wrote after the flip | rewritten to be deterministic (header-only change with identical inode/mtime/size; the waiter's mark and the holder's yield; old release directory removed, then a write) |
+| Two rate-limit tests slept for real (65 s of an 89 s suite); proxy variables and `MATTSTASH_MAX_CONCURRENT_WRITES` leaked into tests | sleeps patched; the library suite runs in about 15 s; the environments are scrubbed |
+| Guards with no failing test: chunked responses without `Content-Length`, escaped API keys, the write cap on `DELETE` | tests added (the cap test no longer relies on timing) |
+| Docs overstated: "truncated backup refused" (only the 4-byte signature is checked), "the new password cannot be lost" without a sidecar (it could be on Ctrl-C right after the re-key; the password is now announced before the sidecar swap and the verification), missing `allow_reserved`/`allow_names`, Docker still named as a test requirement, `run-tests.sh --server` without `uvicorn`, rate-limit buckets, the proxy-aware `http://` warning | corrected; `scripts/run-tests.sh --server` installs the server lock |
+
+The full suites also pass as an unprivileged user (`setpriv`), which is the environment CI runs in.
 
 ---
 
@@ -405,15 +419,15 @@ optional improvements. Tick them off as they are done.
 
 - [ ] Build both Dockerfiles (including `linux/arm64`) and run the container with a read-only root filesystem.
 - [ ] Apply `server/k8s/` and `server/k8s/writable/` to a cluster: NetworkPolicy enforcement, fsGroup/PVC writability, probes.
-- [ ] Watch the workflows run once on GitHub: SHA-pinned actions resolve, provenance/SBOM output, the CLI-to-server integration job (now installs the server lock).
-- [x] Run the test suites on Python 3.12 and 3.13 (898 library + 293 server tests passed on 3.11, 3.12, 3.13 and 3.14).
+- [ ] Watch the workflows run once on GitHub: SHA-pinned actions resolve, provenance/SBOM output, the CLI-to-server integration tests (they run inside the `server` job, which installs the server lock).
+- [x] Run the test suites on Python 3.12 and 3.13 (1093 library, including 63 CLI-to-server integration tests, and 298 server tests passed on 3.11, 3.12, 3.13 and 3.14; the library suite also passes as an unprivileged user, as on a GitHub runner).
 - [ ] Consider a native `linux/arm64` build/test job (GitHub's Linux arm64 runners cost the same as or less than x64; free for public repositories) instead of QEMU emulation.
 
 **Known limits (documented, not fixed)**
 
 - Single-file bind mounts (`-v file:file`, a `subPath` file) cannot be replaced atomically: saves now fail loudly
   ("Device or resource busy") instead of truncating the database. Mount the directory.
-- A crash (kill -9) mid-operation can leave hidden staging files (`.<name>.<token>.new`, `<name>.tmp-<pid>-<hex>`);
+- A crash (kill -9) mid-operation can leave hidden staging files (`.<name>.<token>.new`, `.<name>.<token>.tmp`, `<name>.tmp-<pid>-<hex>`);
   the sidecar variants hold a password. Nothing sweeps them. `setup --force --no-backup` has a microsecond window
   between swapping the sidecar and the database (the new database is then in the hidden `.new` file).
 - `delete --version N` on the *latest* version lets the next `put` reuse that number (Recycle-Bin versions are never

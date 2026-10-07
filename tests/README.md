@@ -21,7 +21,7 @@ MattStash has three types of tests:
 # Run specific test suites
 ./scripts/run-tests.sh --app          # Application tests
 ./scripts/run-tests.sh --server       # Server tests
-./scripts/run-tests.sh --integration  # Integration tests (requires Docker)
+./scripts/run-tests.sh --integration  # Integration tests (real CLI against a real server subprocess; no Docker)
 
 # Combine test suites
 ./scripts/run-tests.sh --app --server
@@ -66,7 +66,8 @@ Tests for the FastAPI server component.
   - Dependency injection
 
 #### Integration Tests
-End-to-end tests that start the server via Docker Compose and run CLI commands against it.
+End-to-end tests that start the real API server (`python -m app` from `server/`) as a subprocess on a free
+localhost port, backed by a throw-away database, and run the real `mattstash` CLI against it.
 
 ```bash
 ./scripts/run-tests.sh --integration
@@ -74,7 +75,7 @@ End-to-end tests that start the server via Docker Compose and run CLI commands a
 
 - **Location**: `tests/integration/test_cli_server_*.py`
 - **Coverage Target**: 80%+
-- **Dependencies**: Docker, docker-compose, pytest, httpx
+- **Dependencies**: the server's dependencies (`pip install -r server/requirements.lock`), pytest, httpx
 - **What's Tested**:
   - CLI commands in server mode (--server-url)
   - CLI-to-server communication
@@ -82,7 +83,8 @@ End-to-end tests that start the server via Docker Compose and run CLI commands a
   - Complete workflows (put, get, list, delete, versions)
   - Error handling and edge cases
 
-**Note**: Integration tests require Docker and docker-compose to be installed. The test suite will skip these tests if Docker is not available.
+**Note**: No Docker is needed. The tests skip themselves only when the server's own dependencies (fastapi, uvicorn,
+slowapi) are not installed.
 
 ## Test Structure
 
@@ -90,7 +92,7 @@ End-to-end tests that start the server via Docker Compose and run CLI commands a
 tests/
 ├── README.md                        # This file
 ├── integration/                     # Integration tests
-│   ├── conftest.py                  # Docker Compose fixtures
+│   ├── conftest.py                  # Server subprocess + CLI fixtures
 │   ├── test_cli_server_get.py       # CLI get command tests
 │   ├── test_cli_server_put.py       # CLI put command tests
 │   ├── test_cli_server_list.py      # CLI list/keys tests
@@ -165,16 +167,15 @@ When running in CI environments:
 # Fast tests only (skip integration)
 ./scripts/run-tests.sh --app --server
 
-# Full test suite (if Docker is available in CI)
+# Full test suite
 ./scripts/run-tests.sh --all
 ```
 
 ## Troubleshooting
 
 ### Integration Tests Fail to Start Server
-- Ensure Docker and docker-compose are installed and running
-- Check if port 8000 is available
-- View server logs: `cd server && docker-compose logs`
+- Ensure the server dependencies are installed: `pip install -r server/requirements.lock`
+- The server runs on a free localhost port; its output is shown in the failure report
 
 ### Import Errors in Server Tests
 - Ensure you're in the correct virtual environment
@@ -189,4 +190,3 @@ When running in CI environments:
 
 - [pytest documentation](https://docs.pytest.org/)
 - [FastAPI testing guide](https://fastapi.tiangolo.com/tutorial/testing/)
-- [Docker Compose documentation](https://docs.docker.com/compose/)

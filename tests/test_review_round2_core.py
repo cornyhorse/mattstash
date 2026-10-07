@@ -5,6 +5,7 @@ The reviewer's numbering is used in the test names (C# = concurrency review, O# 
 
 import errno
 import os
+import shutil
 import stat
 import threading
 import time
@@ -62,12 +63,18 @@ def test_c1_retargeted_symlink_is_followed_by_a_long_lived_instance(tmp_path: Pa
 
     current.unlink()
     current.symlink_to("v2")  # e.g. a deploy flips the "current" link
-    assert stash.reload_if_changed() is True
-    assert stash.get("two") is not None and stash.get("one") is None
-    stash.put("written-after-flip", value="x")
+    shutil.rmtree(tmp_path / "v1")  # ... and the old release is cleaned up: nothing may still point at it
+    with patch("mattstash.credential_store.PyKeePass", wraps=PyKeePass) as opened:
+        assert stash.reload_if_changed() is True
+        assert stash.get("two") is not None and stash.get("one") is None
+        stash.put("written-after-flip", value="x")
+        assert stash.get("written-after-flip") is not None and stash.get("two") is not None
+    assert opened.call_count <= 2, (
+        f"the database was re-opened {opened.call_count} times: the path is being re-resolved"
+    )
+    assert (tmp_path / "v2" / "db.kdbx.lock").exists() and not (tmp_path / "v1").exists(), "locked the NEW target"
     assert opens_with(tmp_path / "v2" / "db.kdbx", OLD)
     assert MattStash(str(tmp_path / "v2" / "db.kdbx"), password=OLD).get("written-after-flip") is not None
-    assert MattStash(str(tmp_path / "v1" / "db.kdbx"), password=OLD).get("written-after-flip") is None
 
 
 def test_c1_kubernetes_secret_volume_swap(tmp_path: Path):
@@ -84,14 +91,18 @@ def test_c1_kubernetes_secret_volume_swap(tmp_path: Path):
     tmp_link = mount / "..data_tmp"
     tmp_link.symlink_to("..ts2")
     os.replace(tmp_link, mount / "..data")  # atomic retarget, as kubelet does
-    import shutil
-
     shutil.rmtree(mount / "..ts1")
 
     assert stash.reload_if_changed() is True
     assert stash.reload() is True
     assert stash.get("new-secret") is not None and stash.get("old-secret") is None
-    assert [c.credential_name for c in stash.list(latest_only=True)] == ["new-secret"]  # list follows the swap too
+    stash.put("written-after-swap", value="x")  # the lock and the save go to the new directory, the old one is gone
+    assert (mount / "..ts2" / "db.kdbx.lock").exists()
+    assert MattStash(str(mount / "..ts2" / "db.kdbx"), password=OLD).get("written-after-swap") is not None
+    assert sorted(c.credential_name for c in stash.list(latest_only=True)) == [
+        "new-secret",
+        "written-after-swap",
+    ]  # list follows the swap too
 
 
 def test_c1_read_without_poller_also_follows_the_swap(tmp_path: Path):
@@ -105,8 +116,6 @@ def test_c1_read_without_poller_also_follows_the_swap(tmp_path: Path):
     make_db(mount / "..ts2" / "db.kdbx", title="new-secret")
     (mount / "..data").unlink()
     (mount / "..data").symlink_to("..ts2")
-    import shutil
-
     shutil.rmtree(mount / "..ts1")
     assert stash.get("new-secret") is not None  # no reload() call needed
 
@@ -126,28 +135,47 @@ def test_c1_two_paths_still_share_one_lock_file(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_c2_a_tight_acquire_release_loop_does_not_starve_a_waiter(tmp_path: Path):
-    path = str(tmp_path / "x.lock")
-    holder, waiter = FileLock(path, timeout=10), FileLock(path, timeout=10)
-    stop = threading.Event()
+def test_c2_a_holder_that_finds_a_waiter_yields_instead_of_reacquiring(tmp_path: Path):
+    """The starvation guard, tested through its mechanism rather than a race: a waiter polling for the lock marks the
+    file; a holder that sees the mark yields after releasing, so the waiter gets the lock before the holder can
+    immediately take it back (without the guard the free window is microseconds and a poller practically never wins)."""
+    path = tmp_path / "x.lock"
+    holder, waiter = (
+        FileLock(str(path), timeout=10, poll_interval=0.2),
+        FileLock(str(path), timeout=10, poll_interval=0.2),
+    )
+    holder.acquire()
+    got = threading.Event()
 
-    def hammer() -> None:
-        while not stop.is_set():
-            with holder:
-                time.sleep(0.001)  # almost no gap between releasing and re-acquiring
+    def wait_for_it() -> None:
+        waiter.acquire(timeout=10)
+        got.set()
 
-    thread = threading.Thread(target=hammer)
+    thread = threading.Thread(target=wait_for_it)
     thread.start()
     try:
-        time.sleep(0.1)
-        started = time.monotonic()
-        waiter.acquire(timeout=5)
-        waited = time.monotonic() - started
-        waiter.release()
+        deadline = time.monotonic() + 10
+        while os.stat(path).st_mtime_ns < holder._acquired_ns:  # the waiter has polled and marked the file
+            assert time.monotonic() < deadline, "the waiter never marked the lock file"
+            time.sleep(0.01)
+        holder.release()  # yields for a poll interval and a half because somebody is waiting
+        with pytest.raises(DatabaseLockError):
+            holder.acquire(timeout=0)  # the waiter got in during the yield; taking it straight back must fail
+        assert got.wait(10)
     finally:
-        stop.set()
-        thread.join()
-    assert waited < 2.0, f"the waiter needed {waited:.1f}s: it is being starved"
+        thread.join(10)
+        waiter.release()
+        holder.release()
+
+
+def test_c2_a_holder_nobody_waits_for_does_not_slow_down(tmp_path: Path):
+    path = tmp_path / "y.lock"
+    lock = FileLock(str(path), timeout=5, poll_interval=0.5)
+    started = time.monotonic()
+    for _ in range(5):
+        with lock:
+            pass
+    assert time.monotonic() - started < 1.0, "no waiter: releasing must not sleep"
 
 
 def test_c3_lock_timeout_bounds_the_total_wait_of_queued_writers(tmp_path: Path):
@@ -208,13 +236,15 @@ def test_c6_signature_notices_a_rewrite_with_identical_mtime_and_size(tmp_path: 
     store.open()
     first = store._file_sig
     st = os.stat(db)
-    # another writer rewrites the file; a coarse clock leaves mtime (and often size and inode) unchanged
-    other = PyKeePass(str(db), password=OLD)
-    other.add_entry(other.root_group, "x", "u", "p")
-    other.save()
+    # another writer rewrites the file in place; a coarse clock leaves inode, mtime AND size unchanged, so only the
+    # content of the header (random seeds and IVs that change with every save) can tell the two apart
+    data = bytearray(db.read_bytes())
+    data[200] ^= 0xFF
+    with open(db, "r+b") as f:
+        f.write(bytes(data))
     os.utime(db, ns=(st.st_atime_ns, st.st_mtime_ns))
-    if os.stat(db).st_size != st.st_size:  # the same size is the interesting case; force it
-        pytest.skip("size changed")
+    after = os.stat(db)
+    assert (after.st_ino, after.st_mtime_ns, after.st_size) == (st.st_ino, st.st_mtime_ns, st.st_size)
     assert store._current_signature() != first and store.has_file_changed()
 
 
@@ -222,12 +252,12 @@ def test_c9_save_failures_are_typed_and_leave_the_database_intact(tmp_path: Path
     db = make_db(tmp_path / "e.kdbx")
     before = db.read_bytes()
     stash = MattStash(str(db), password=OLD)
-    monkeypatch.setattr(
-        "mattstash.credential_store.os.replace", _raise(OSError(errno.ENOSPC, "No space left on device"))
-    )
-    with pytest.raises(DatabaseAccessError, match="Could not save the database: No space left"):
-        stash.put("x", value="1")
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:  # (monkeypatch.undo() would also undo the autouse environment scrub)
+        patched.setattr(
+            "mattstash.credential_store.os.replace", _raise(OSError(errno.ENOSPC, "No space left on device"))
+        )
+        with pytest.raises(DatabaseAccessError, match="Could not save the database: No space left"):
+            stash.put("x", value="1")
     assert db.read_bytes() == before
     assert [p.name for p in tmp_path.iterdir() if p.name.endswith((".tmp", ".new"))] == [], "no leftovers"
     stash.put("y", value="2")  # and the instance recovers
@@ -293,6 +323,7 @@ def test_c7_a_waiter_that_locked_an_orphaned_lock_file_retries(tmp_path: Path):
     assert result
 
 
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
 def test_c8_fork_does_not_inherit_a_held_lock(tmp_path: Path):
     if not hasattr(os, "fork"):
         pytest.skip("needs fork")
@@ -454,7 +485,6 @@ def test_o3_create_force_on_a_symlink_replaces_the_target_under_the_writers_lock
     writer = MattStash(str(link), password=OLD)
     writer.put("keep", value="1")
 
-    holder_released = threading.Event()
     done: list[float] = []
 
     def force_create() -> None:
@@ -467,7 +497,6 @@ def test_o3_create_force_on_a_symlink_replaces_the_target_under_the_writers_lock
         t.start()
         time.sleep(0.4)
         assert not done, "create(force=True) must wait for the writer: it has to lock the same file"
-        holder_released.set()
     t.join(20)
     assert done
     assert link.is_symlink(), "the link must survive"
@@ -522,15 +551,20 @@ def test_l1_relative_paths_keep_meaning_the_same_place_after_chdir(tmp_path: Pat
 
 @pytest.mark.parametrize("umask", [0o277, 0o222, 0o377])
 def test_o5_restrictive_umask_does_not_wedge_the_tool(tmp_path: Path, umask: int):
+    (tmp_path / "u").mkdir()  # the test's own directory, made before the umask: an unprivileged user could not use it
     old = os.umask(umask)
     try:
-        db = make_db(tmp_path / "u" / "db.kdbx", sidecar=False)
+        db = make_db(tmp_path / "u" / "db.kdbx", sidecar=True)
         stash = MattStash(str(db), password=OLD)
         stash.put("x", value="1")
         stash.backup()
     finally:
         os.umask(old)
+    assert mode(tmp_path / "u" / ".mattstash.txt") == 0o600, "the sidecar is private whatever the umask"
     assert mode(Path(str(db) + ".lock")) & 0o600 == 0o600, "the lock file stays usable"
+    assert mode(db) & 0o600 == 0o600, (
+        "the saved database stays usable (the staged file is made 0600, not umask-derived)"
+    )
     MattStash(str(db), password=OLD).put("y", value="2")  # a later run with a normal umask works too
 
 
@@ -577,17 +611,13 @@ def test_o14_setup_lock_timeout_exits_7_like_every_other_command(tmp_path: Path)
     db = make_db(tmp_path / "x.kdbx")
     with FileLock(str(db) + ".lock", timeout=5):
         with patch("mattstash.core.bootstrap.FileLock.__init__", _short_timeout(FileLock.__init__)):
-            rc = main(
-                ["--db", str(db), "setup", "--force", "--yes", "--password-stdin"]
-                if False
-                else ["--db", str(db), "setup", "--force", "--yes", "--generate"]
-            )
+            rc = main(["--db", str(db), "setup", "--force", "--yes", "--generate"])
     assert rc == exit_codes.DB_ACCESS
 
 
 def _short_timeout(real_init):
-    def init(self, path, timeout=30.0, poll_interval=0.02):
-        real_init(self, path, timeout=0.3, poll_interval=poll_interval)
+    def init(self, path, timeout=30.0, poll_interval=0.02, **kwargs):
+        real_init(self, path, timeout=0.3, poll_interval=poll_interval, **kwargs)
 
     return init
 

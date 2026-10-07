@@ -506,8 +506,9 @@ class MattStash:
         protected = {self.path, real, real + ".lock", PasswordResolver(self.path).sidecar_path}
         if os.path.realpath(target) in {os.path.realpath(p) for p in protected}:
             raise MattStashError("Refusing to write the backup over the database, its lock or its sidecar file")
-        # Refuse to preserve garbage (a truncated or emptied file) -- and, with force, to overwrite the last good
-        # backup with it. Every KDBX file starts with this signature; checking it needs no password.
+        # Refuse to preserve garbage (an emptied or foreign file) -- and, with force, to overwrite the last good
+        # backup with it. Every KDBX file starts with this signature; checking it needs no password (a file cut
+        # off after its header passes: that cannot be told without the password).
         try:
             with open(real, "rb") as source:
                 signature = source.read(4)

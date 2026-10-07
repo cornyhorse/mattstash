@@ -339,6 +339,19 @@ def test_o_generated_password_is_shown_before_the_slow_verification(tmp_path: Pa
     assert seen and "Generated new master password" in seen[0]
 
 
+def test_o_ctrl_c_during_the_verification_still_shows_the_generated_password_without_a_sidecar(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    db = make_db(tmp_path / "a.kdbx", sidecar=False)
+    with patch.object(MattStash, "_reload_locked", side_effect=KeyboardInterrupt):
+        rc = main(["--db", str(db), "--password", OLD, "rotate-password", "--generate", "--no-backup"])
+    assert rc != exit_codes.OK
+    captured = capsys.readouterr()
+    shown = [w for w in (captured.out + captured.err).split() if len(w) >= 20 and opens_with(db, w)]
+    assert shown, "the generated password must reach the user even though the verification was interrupted"
+    assert not opens_with(db, OLD)
+
+
 # ---------------------------------------------------------------------------
 # operations: setup / create
 # ---------------------------------------------------------------------------

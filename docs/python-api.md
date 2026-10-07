@@ -295,7 +295,7 @@ stash.hydrate_env({
 })
 ```
 
-#### `resolve_env(prefix=None, mappings=None, *, strip_prefix=True, upper=False)`
+#### `resolve_env(prefix=None, mappings=None, *, strip_prefix=True, upper=False, allow_reserved=False, allow_names=())`
 
 Compute environment variables for a set of secrets *without* touching `os.environ`; this is the engine behind
 `mattstash env` and `mattstash exec`.
@@ -307,12 +307,18 @@ Compute environment variables for a set of secrets *without* touching `os.enviro
 - `mappings` (dict or iterable, optional) - `{"ENVVAR": "TITLE[:FIELD]"}` or an iterable of `"ENVVAR=TITLE[:FIELD]"`
   strings. `FIELD` is `password` (default), `username`, `url`, `notes` or a custom property name; the field is taken
   after the last `:`, so a title containing `:` needs an explicit field.
+- `allow_reserved` (bool) - names *derived from `prefix`* may not be loader/shell/connection control variables
+  (`LD_PRELOAD`, `PATH`, `BASH_ENV`, `GIT_*`, `EDITOR`, `HTTP_PROXY`, `KUBECONFIG`, ...; a best-effort denylist, not a
+  boundary): otherwise whoever can write a secret under the prefix decides them. `True` lifts the guard. Explicit
+  `mappings` are never restricted.
+- `allow_names` (iterable of str) - lift the guard for just these names, for example `["JAVA_HOME"]`.
 
 **Returns:**
 - `dict[str, str]` - `{ENVVAR: value}`, from the latest version of each secret, read from one consistent snapshot.
   Nothing is logged or written.
 
-**Raises:** `ValueError` (nothing selected, invalid variable name, a name produced twice, NUL in a value),
+**Raises:** `ValueError` (nothing selected, invalid variable name, a derived name that is reserved, a name produced
+twice, NUL in a value),
 `CredentialNotFoundError` (a mapped secret/field value is missing, or the prefix matches nothing) and the usual
 database errors.
 
@@ -324,7 +330,7 @@ import os, subprocess
 subprocess.run(["./server"], env={**os.environ, **env}, check=True)
 ```
 
-`mattstash.core.env_vars` also provides `format_shell`, `format_dotenv` and `format_json` (the renderers of
+`mattstash.core.env_vars` also provides `format_shell`, `format_dotenv`, `format_docker_env` and `format_json` (the renderers of
 `mattstash env`; shell output is `shlex`-quoted and safe to `eval`).
 
 ### Operations
@@ -340,8 +346,8 @@ Write a consistent copy of the database file and return its path. The copy is ta
 - `force` (bool) - replace `dest` if it exists (otherwise `DatabaseExistsError`)
 
 The backup is the encrypted file as it is (it needs no password; the sidecar is not copied). A file that is empty or
-lacks the KeePass signature is refused (`DatabaseAccessError`), so `force=True` can never replace the last good backup
-with a truncated one. Raises `DatabaseNotFoundError`, `DatabaseLockError`, `DatabaseExistsError` or `MattStashError`
+lacks the KeePass signature is refused (`DatabaseAccessError`), so `force=True` cannot replace the last good backup
+with an empty or foreign file (only the signature is checked, which needs no password). Raises `DatabaseNotFoundError`, `DatabaseLockError`, `DatabaseExistsError` or `MattStashError`
 (bad destination, for example a directory that does not exist).
 
 ```python
@@ -517,7 +523,8 @@ if cred is None:
 ```
 
 `db-url` problems (`get_db_url`) and `resolve_env` input problems are `ValueError`; invalid titles/fields are
-`InvalidCredentialError`.
+`InvalidCredentialError`. `rotate_password` can raise `RotationIncompleteError` (the database *was* re-keyed): it is
+not a `DatabaseAccessError`, so a handler for "wrong password" never mistakes it for "nothing changed".
 
 ## Configuration
 

@@ -295,7 +295,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_get.add_argument(
         "--field",
         choices=["password", "username", "url", "notes"],
-        help="With --raw: the field to print (default: password). Simple secrets only have a password/value",
+        help="With --raw: the field to print (default: password). Simple secrets only have a password/value and notes",
     )
 
     # put
@@ -410,9 +410,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     # env
     p_env = subparsers.add_parser(
         "env",
-        help="Print secrets as environment variables (shell, dotenv or json)",
+        help="Print secrets as environment variables (shell, dotenv, docker-env or json)",
         description="Print secrets as environment variables on stdout. Select them with --prefix and/or --map. "
-        'Example: eval "$(mattstash env --prefix myapp/ --upper)"',
+        'Example: out=$(mattstash env --prefix myapp. --upper) && eval "$out"',
         parents=[global_opts],
     )
     _add_env_selection_options(p_env)
@@ -430,7 +430,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Run a command with secrets in its environment",
         description="Run COMMAND with the selected secrets added to its environment (the process is replaced, "
         "so the exit status is the command's; nothing is written to disk or stdout). "
-        "Example: mattstash exec --prefix myapp/ --upper -- ./server --port 8080",
+        "Example: mattstash exec --prefix myapp. --upper -- ./server --port 8080",
         usage="mattstash exec [-h] [global options] [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... "
         "[--strip-prefix | --no-strip-prefix] [--upper] [--allow-env-name NAME]... [--allow-reserved] "
         "[--override] [--keep-vault-env] "

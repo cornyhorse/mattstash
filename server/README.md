@@ -235,6 +235,7 @@ The full reference (API key policy file format, rate limiting, read-only mode de
 | `MATTSTASH_TLS_CERT_FILE` / `MATTSTASH_TLS_KEY_FILE` | Serve HTTPS from this certificate and key (set both) | unset (plain HTTP) | No |
 | `MATTSTASH_TRUSTED_PROXY_HOPS` | Number of trusted reverse-proxy hops in front of the server, used to find the real client IP | `0` | No |
 | `MATTSTASH_RATE_LIMIT` | Rate limit (e.g., "100/minute") | `100/minute` | No |
+| `MATTSTASH_MAX_CONCURRENT_WRITES` | Writes allowed in flight at once (1-32); more are answered `503` immediately | `8` | No |
 | `MATTSTASH_DB_POLL_INTERVAL` | Seconds between checks for an externally changed database file (`0` disables) | `5` | No |
 | `MATTSTASH_MAX_REQUEST_BODY_BYTES` | Maximum request body size | `1048576` | No |
 | `MATTSTASH_DISABLE_DOCS` | Do not serve the Swagger/ReDoc/OpenAPI pages | off | No |
@@ -288,7 +289,7 @@ The server listens on plain HTTP by default. Choose one of:
    edit the Compose `healthcheck`, and add `scheme: HTTPS` to the Kubernetes probes).
 
 Clients: the `mattstash` CLI in server mode warns when `MATTSTASH_SERVER_URL` is a plain `http://` URL to a
-non-loopback host. It does not refuse, because plain HTTP on a private Compose network is the documented pattern;
+non-loopback host (or through an `HTTP_PROXY`). It does not refuse, because plain HTTP on a private Compose network is the documented pattern;
 set `MATTSTASH_ALLOW_INSECURE_HTTP=1` to silence the warning once you have decided that is acceptable. Use `https://`
 whenever traffic crosses hosts.
 
@@ -579,7 +580,7 @@ python -m pytest --no-cov -q     # faster, no coverage
 ```
 
 CI (`.github/workflows/ci.yml`) runs the library tests across the supported Python versions, the server tests, the
-integration tests (which skip themselves without Docker), `ruff check` and `ruff format --check` for `server/app` and
+integration tests (the real CLI against a real server subprocess; they skip themselves when the server dependencies are missing), `ruff check` and `ruff format --check` for `server/app` and
 `server/tests`, and `pip-audit` against the server lockfile and the library dependencies.
 
 ## License

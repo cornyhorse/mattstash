@@ -80,6 +80,15 @@ def test_f1_redaction_covers_the_escaped_form():
     assert c._redact(repr("x\n" + KEY)).count(KEY) == 0
 
 
+def test_f1_redaction_covers_keys_that_repr_escapes():
+    key = "k3y\\s3cret'AAAA-0123456789abcdef"  # a backslash and a quote: repr() spells them differently
+    c = MattStashServerClient(URL, key)
+    escaped = repr(key)[1:-1]
+    assert escaped != key
+    shown = c._redact(f"header {escaped} / raw {key}")
+    assert key not in shown and escaped not in shown and "AAAA" not in shown
+
+
 def test_f8_bom_in_credential_files_is_ignored(tmp_path: Path):
     f = tmp_path / "key"
     f.write_bytes(b"\xef\xbb\xbf" + KEY.encode() + b"\r\n")
@@ -216,6 +225,15 @@ def test_f10_oversized_responses_are_refused(server: FakeServer, client, monkeyp
     server.override = lambda r: httpx.Response(
         200, headers={"Content-Length": "999999999"}, content=b'{"credentials": []}'
     )
+    with pytest.raises(ServerError, match="too large"):
+        client.list()
+
+    class Chunked(httpx.SyncByteStream):  # no Content-Length at all: only counting the bytes can stop it
+        def __iter__(self):
+            for _ in range(50):
+                yield b"x" * 100
+
+    server.override = lambda r: httpx.Response(200, stream=Chunked())
     with pytest.raises(ServerError, match="too large"):
         client.list()
 

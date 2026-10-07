@@ -11,8 +11,8 @@
 #      the same ./data). Two writers on one file cannot be made safe: the advisory lock does not
 #      work across hosts or on most network filesystems, and the last writer wins.
 #   2. The data DIRECTORY must be writable by the container user, not just the .kdbx file. Every
-#      write takes a lock file (<db>.lock) and pykeepass writes <db>.tmp next to the database
-#      before renaming it. The container runs as ${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}.
+#      write takes a lock file (<db>.lock) and each save writes a hidden staging file next to the
+#      database (.<db>.<token>.new / .tmp) before renaming it. The container runs as ${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}.
 #   3. Back the directory up (the .kdbx is the only copy of your secrets), and keep the master
 #      password OUTSIDE it (it comes from the separate /secrets mount or the `secrets:` entries
 #      of the base file).

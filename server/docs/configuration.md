@@ -39,7 +39,7 @@ volume holding the `.kdbx`.
 | `MATTSTASH_REFUSE_SIDECAR` | `false` | Refuse to start if `.mattstash.txt` (or a `.mattstash.txt.bak-*` backup of it) sits next to the database; otherwise only a warning. |
 | `MATTSTASH_HOST` / `MATTSTASH_PORT` | `0.0.0.0` / `8000` | Bind address. |
 | `MATTSTASH_TLS_CERT_FILE` / `MATTSTASH_TLS_KEY_FILE` | - | Serve HTTPS directly (both or neither). |
-| `MATTSTASH_LOG_LEVEL` | `info` | Log level. |
+| `MATTSTASH_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warning`, `error`, `critical`). |
 
 ## Starting the server
 
@@ -135,7 +135,7 @@ Authentication happens in the outermost layer, before the application (and befor
   counter. The **probes are exempt**, so a blocked address (for example an ingress shared by everyone) cannot fail
   the pod's own health checks. Use long random keys regardless: `openssl rand -base64 32`.
 - **Rate limits** apply per client **and per route** (all `GET /credentials/{name}` requests share one bucket, however
-  many different names they use; so do all writes) to authenticated endpoints (`MATTSTASH_RATE_LIMIT` for reads; the
+  many different names they use; `POST` and `DELETE` each have their own bucket, as do list and versions) to authenticated endpoints (`MATTSTASH_RATE_LIMIT` for reads; the
   value is validated at startup, a malformed one stops the server). A `429` carries `Retry-After`; the CLI honours it
   and retries rate-limited `GET`s (`mattstash env`/`exec` fetch one secret per request: with more secrets than the
   limit they take a minute or more, or raise `MATTSTASH_RATE_LIMIT`).
@@ -176,7 +176,7 @@ No authentication is required. Use `/health` for liveness probes and Docker `HEA
 | `413` | Body too large. |
 | `422` | Request body/query failed validation. The body lists only `loc`, `msg`, `type` - submitted values (secrets) are never echoed. |
 | `429` | Too many failed authentications, or rate limit exceeded (`Retry-After` says when to retry). |
-| `503` | The database cannot be opened or locked (wrong password, missing/corrupt file, lock timeout), too many writes in flight, or `POST /admin/reload` failed. **Never** reported as `404`. |
+| `503` | The database cannot be opened or locked (wrong password, missing/corrupt file, lock timeout; `Retry-After: 5`), too many writes in flight (`Retry-After: 1`), or `POST /admin/reload` failed. **Never** reported as `404`. |
 | `500` | Unexpected error; the body never contains details, only the exception type is logged. |
 
 ## Logging and audit trail
@@ -204,7 +204,7 @@ MATTSTASH_TLS_CERT_FILE=/certs/tls.crt MATTSTASH_TLS_KEY_FILE=/certs/tls.key pyt
 ```
 
 Without TLS the API key travels in clear text. That is acceptable on a private container network but not across
-untrusted networks. The CLI warns when pointed at a plain `http://` URL on a non-loopback host.
+untrusted networks. The CLI warns when pointed at a plain `http://` URL on a non-loopback host (or through an HTTP proxy).
 
 ## Upgrading from 0.1.x
 

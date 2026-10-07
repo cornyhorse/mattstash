@@ -56,7 +56,8 @@ shell history. Prefer these forms:
 | `setup --password PW` | `setup --password-file FILE`, `--password-stdin`, or the interactive prompt |
 
 Input read from stdin or a file has exactly one trailing newline removed (so `echo secret | mattstash put x --value -`
-stores `secret`) and must not be empty. Only one option per invocation may read stdin.
+stores `secret`) and must not be empty. Only one option per invocation may read stdin. On a terminal, a secret read
+from stdin is one line typed without echo; use a pipe or `--value-file` for a multi-line value.
 
 ## Environment Variables
 
@@ -70,7 +71,7 @@ stores `secret`) and must not be empty. Only one option per invocation may read 
 | `MATTSTASH_API_KEY_FILE` | File holding the server API key |
 | `MATTSTASH_ALLOW_INSECURE_HTTP` | `1`/`true`/`yes` silences the warning about sending the API key over plain `http://` |
 | `MATTSTASH_ENABLE_CACHE`, `MATTSTASH_CACHE_TTL` | Connection caching (see [caching](caching.md)) |
-| `MATTSTASH_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR` |
+| `MATTSTASH_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR`, `CRITICAL`; error messages are always written to stderr, whatever the level |
 
 See [configuration.md](configuration.md) for the full list.
 
@@ -94,7 +95,8 @@ Server-mode notes:
 - Credential names are percent-encoded in the request path, so a name such as `db#prod` addresses exactly that
   name (the server may still reject characters it does not allow).
 - The client verifies TLS certificates and does not follow redirects. If the URL is `http://` and the host is not
-  `localhost`/a loopback address, one warning is logged because the API key travels in clear text; set
+  `localhost`/a loopback address - or any `http://` URL when an `HTTP_PROXY`/`ALL_PROXY` applies to it, because the key
+  then goes to the proxy - one warning is logged because the API key travels in clear text; set
   `MATTSTASH_ALLOW_INSECURE_HTTP=1` to silence it for a trusted network. Plain HTTP is never refused.
 - Error messages show the HTTP status and request path only: never the API key or the response body.
 - A read-only server answers writes with HTTP 405 (`put`, `delete` then exit 1).
@@ -135,7 +137,7 @@ mattstash --db /srv/data/mattstash.kdbx setup --password-file /run/secrets/kdbx_
 mattstash setup --force --yes --sidecar           # replace (with backup)
 ```
 
-**Exit codes:** `0` success, `1` failure, `8` refused to overwrite existing files.
+**Exit codes:** `0` success, `1` failure, `7` the write lock could not be taken in time, `8` refused to overwrite existing files.
 
 ### `list` - Show All Credentials
 
@@ -173,7 +175,7 @@ mattstash get <title> [--version N] [--show-password | --json | --raw [--field F
 - `--raw` - print **only** the secret followed by a newline, unmasked (implies `--show-password`); for scripts.
   Nothing else is ever written to stdout; diagnostics go to stderr. Mutually exclusive with `--json`.
 - `--field {password,username,url,notes}` - with `--raw`, which field of a full credential to print
-  (default `password`). A simple secret only has a password/value, so any other field is an error (exit 1).
+  (default `password`). A simple secret only has a password/value and notes, so `username` and `url` are errors (exit 1).
 
 **Output (simple secret):**
 ```
@@ -204,7 +206,7 @@ An empty field (for example `--field url` on a credential without a URL) is also
 carries on with an empty value that merely looks like success. Works in local and server mode.
 
 **Exit codes:** `0` success, `2` not found (or empty field with `--raw`), `1` invalid combination of options
-(`--field` without `--raw`, a field a simple secret does not have), `6`/`7` database problems.
+(`--field` without `--raw`, `username` or `url` of a simple secret), `6`/`7` database problems.
 
 ### `put` - Store/Update a Credential
 
@@ -476,9 +478,11 @@ with mode `0600`, to a temp file that is then renamed into place. Prints the pat
   `mattstash backup && mattstash rotate-password` in one script never collides).
 - `--force` - replace `DEST` if it exists (otherwise exit 8 and the file is untouched).
 
-The backup is the encrypted file as it is: it needs no password to create and is opened with the master password
-that was current at the time. The sidecar file is not copied. A database file that is empty or truncated (it lacks the
-KeePass signature) is refused, so `--force` cannot replace the last good backup with garbage. The write lock is held
+The backup is the encrypted file as it is: it needs no password to create (the command still reads `KDBX_PASSWORD_FILE`
+if that is set, and exits `7` when that file is unreadable) and is opened with the master password
+that was current at the time. The sidecar file is not copied. A database file that is empty or is not a KeePass file (its first bytes are not the
+KeePass signature) is refused, so `--force` cannot replace the last good backup with garbage. Only the signature is
+checked - a file cut off after its first bytes is still copied - because anything more needs the password. The write lock is held
 while the copy is written, so back up to a fast destination.
 
 **Exit codes:** `0` success, `6` no database file, `7` could not get the write lock in time or the file is not a valid

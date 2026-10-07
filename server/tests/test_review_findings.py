@@ -602,27 +602,41 @@ def test_c3_queued_writes_are_capped_so_a_stuck_lock_cannot_use_up_every_worker_
     monkeypatch.setattr(Config, "MAX_CONCURRENT_WRITES", 2)
     client = make_client(ALLOW_WRITES=True)
     real_put = MattStash.put
+    entered = threading.Semaphore(0)
+    release = threading.Event()
 
-    def slow_put(self, *args, **kwargs):
-        time.sleep(0.8)
+    def blocked_put(self, *args, **kwargs):
+        entered.release()
+        assert release.wait(30)  # a writer stuck on the database lock
         return real_put(self, *args, **kwargs)
 
-    monkeypatch.setattr(MattStash, "put", slow_put)
+    monkeypatch.setattr(MattStash, "put", blocked_put)
     codes: list[int] = []
-    retry_after: list[str] = []
 
     def write(n: int) -> None:
-        response = client.post(f"/api/v1/credentials/slot-{n}", json={"value": "v"}, headers=H)
-        codes.append(response.status_code)
-        if response.status_code == 503:
-            retry_after.append(response.headers.get("Retry-After", ""))
+        codes.append(client.post(f"/api/v1/credentials/slot-{n}", json={"value": "v"}, headers=H).status_code)
 
-    threads = [threading.Thread(target=write, args=(n,)) for n in range(5)]
-    for t in threads:
+    holders = [threading.Thread(target=write, args=(n,)) for n in range(2)]
+    for t in holders:
         t.start()
-    for t in threads:
-        t.join(30)
-    assert sorted(codes) == [201, 201, 503, 503, 503], codes
-    assert set(retry_after) == {"1"}
+    try:
+        for _ in range(2):
+            assert entered.acquire(timeout=30), "both slots should be taken by writers waiting on the lock"
+        # every kind of write is turned away at once, with a hint when to retry (no timing involved: the slots are full)
+        rejected = [
+            client.post("/api/v1/credentials/slot-x", json={"value": "v"}, headers=H),
+            client.post("/api/v1/credentials/slot-y", json={"value": "v"}, headers=H),
+            client.delete("/api/v1/credentials/slot-x", headers=H),
+        ]
+        assert [r.status_code for r in rejected] == [503, 503, 503]
+        assert {r.headers.get("Retry-After") for r in rejected} == {"1"}
+        # reads are not affected
+        assert client.get("/api/v1/credentials", headers=H).status_code == 200
+    finally:
+        release.set()
+        for t in holders:
+            t.join(30)
+    assert sorted(codes) == [201, 201], codes
     # the slots are released afterwards
     assert client.post("/api/v1/credentials/after", json={"value": "v"}, headers=H).status_code == 201
+    assert client.delete("/api/v1/credentials/after", headers=H).status_code == 200

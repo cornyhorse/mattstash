@@ -112,8 +112,9 @@ if [ "$RUN_SERVER_TESTS" = true ]; then
         pip install -r requirements-dev.txt
     fi
     
-    # Ensure pytest and coverage are available
-    pip install pytest pytest-cov httpx fastapi slowapi
+    # The server's own dependencies (fastapi, uvicorn, slowapi, ...) at their locked versions, plus the test tools
+    pip install -r requirements.lock
+    pip install pytest pytest-cov httpx
     
     # Run server tests
     pytest -v \
