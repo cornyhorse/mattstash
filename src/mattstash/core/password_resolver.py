@@ -10,6 +10,7 @@ Precedence (highest to lowest):
 An explicit password passed by the caller always wins and is handled by ``MattStash``.
 """
 
+import errno
 import os
 import stat
 from typing import Optional
@@ -21,10 +22,20 @@ from ..utils.logging_config import get_logger, security_warning
 logger = get_logger(__name__)
 
 
+#: A password file larger than this is a mistake (``/dev/zero``, a wrong path), not a password.
+MAX_PASSWORD_FILE_BYTES = 1024 * 1024
+
+
 def read_password_file(path: str) -> str:
-    """Read a password from ``path`` (surrounding whitespace/newlines stripped)."""
+    """Read a password from ``path`` (surrounding whitespace/newlines and a UTF-8 BOM stripped).
+
+    Raises ``OSError`` for unreadable or oversized files and ``UnicodeDecodeError`` for non-UTF-8 content.
+    """
     with open(path, "rb") as f:
-        return f.read().decode().strip()
+        data = f.read(MAX_PASSWORD_FILE_BYTES + 1)
+    if len(data) > MAX_PASSWORD_FILE_BYTES:
+        raise OSError(errno.EFBIG, f"file is larger than {MAX_PASSWORD_FILE_BYTES} bytes")
+    return data.decode("utf-8-sig").strip()
 
 
 class PasswordResolver:

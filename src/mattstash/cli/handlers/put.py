@@ -174,6 +174,8 @@ class PutHandler(BaseHandler):
         # is the deprecated spelling of --entry-password (this command's historical meaning).
         entry_password: Optional[str] = None
         db_password: Optional[str] = cli_password if db_password_flag else None
+        if entry_pw == "-":
+            raise InputError("--entry-password - would store a literal '-': use --entry-password-stdin to read stdin")
         if entry_pw is not None:
             entry_password = self._non_empty("--entry-password", entry_pw)
         elif entry_pw_file is not None:

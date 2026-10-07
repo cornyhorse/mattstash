@@ -529,6 +529,7 @@ class MattStash:
         *,
         strip_prefix: bool = True,
         upper: bool = False,
+        allow_reserved: bool = False,
     ) -> Dict[str, str]:
         """Environment variables for a set of secrets (the engine behind ``mattstash env`` / ``exec``).
 
@@ -541,6 +542,8 @@ class MattStash:
                 of a custom property. A title containing ``:`` needs an explicit field.
             strip_prefix: remove ``prefix`` from derived names (default True).
             upper: upper-case derived names.
+            allow_reserved: allow names derived from ``prefix`` to be loader/shell control variables such as
+                ``LD_PRELOAD`` or ``PATH`` (refused by default; explicit ``mappings`` are never restricted).
 
         The latest version of each secret is used and everything is read from one consistent snapshot.
         Values are returned in memory only; nothing is logged or written.
@@ -552,7 +555,12 @@ class MattStash:
         """
         with self._read() as manager:
             return collect_env(
-                _EntrySource(manager), prefix=prefix, mappings=mappings, strip_prefix=strip_prefix, upper=upper
+                _EntrySource(manager),
+                prefix=prefix,
+                mappings=mappings,
+                strip_prefix=strip_prefix,
+                upper=upper,
+                allow_reserved=allow_reserved,
             )
 
     def get_entry_with_properties(

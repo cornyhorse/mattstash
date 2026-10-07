@@ -543,3 +543,52 @@ def test_public_paths_follow_the_docs_setting(monkeypatch):
     assert "/api/v1/docs" in public_paths() and "/health" in public_paths()
     monkeypatch.setattr(Config, "DISABLE_DOCS", True)
     assert "/api/v1/docs" not in public_paths() and {"/health", "/ready"} <= public_paths()
+
+
+# ---------------------------------------------------------------------------
+# Round 2: F3 rate limit per route (not per URL), Retry-After; F4/F5 db-url
+# ---------------------------------------------------------------------------
+
+
+def test_f3_rate_limit_applies_per_route_not_per_secret_name(make_client, monkeypatch):
+    """Every distinct name used to get its own bucket, so enumerating names was never limited."""
+    monkeypatch.setattr(Config, "RATE_LIMIT", "5/minute")
+    client = make_client()
+    codes = [client.get(f"/api/v1/credentials/name-{n}", headers=H).status_code for n in range(12)]
+    assert codes[:5] == [404] * 5 and set(codes[5:]) == {429}, codes
+    limited = client.get("/api/v1/credentials/another-name", headers=H)
+    assert limited.status_code == 429
+    assert int(limited.headers["Retry-After"]) >= 1, "clients (the CLI's env/exec) back off using this"
+
+
+def test_f3_write_limit_applies_across_names(make_client):
+    client = make_client(ALLOW_WRITES=True)
+    codes = [client.post(f"/api/v1/credentials/w-{n}", json={"value": "v"}, headers=H).status_code for n in range(34)]
+    assert codes.count(201) == 30 and codes.count(429) == 4, "30/minute is a per-client limit, whatever the names"
+
+
+def _seed_pg(client, **fields):
+    body = {"username": "u", "password": "p", "url": "db.internal:5432", **fields}
+    assert client.post("/api/v1/credentials/pg", json=body, headers=H).status_code == 201
+
+
+def test_f4_driver_case_and_empty_driver(rw_client):
+    _seed_pg(rw_client)
+    get = lambda **params: rw_client.get(  # noqa: E731
+        "/api/v1/db-url/pg", params={"database": "d", **params}, headers=H
+    )
+    assert get(driver="PSYCOPG").json()["url"].startswith("postgresql+psycopg://")
+    assert get(driver=" psycopg ").status_code == 200
+    assert get(driver="AUTO").json()["url"].startswith("postgresql+psycopg://")
+    assert get(driver="").json()["url"].startswith("postgresql://"), "'' means: no driver suffix, as locally"
+
+
+def test_f5_specific_but_value_free_reasons(rw_client):
+    _seed_pg(rw_client, url="db.internal")  # no port
+    response = rw_client.get("/api/v1/db-url/pg", params={"database": "d"}, headers=H)
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Entry cannot be used for a database URL: the entry's URL has no port"
+    _seed_pg(rw_client, url="db.internal:5432")  # fine now, but no database name given
+    response = rw_client.get("/api/v1/db-url/pg", headers=H)
+    assert response.status_code == 400 and "no database name" in response.json()["detail"]
+    assert "db.internal" not in response.text, "nothing stored in the entry is echoed back"

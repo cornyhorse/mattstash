@@ -120,10 +120,12 @@ def test_read_stdin_secret_from_text_only_stdin(monkeypatch: pytest.MonkeyPatch)
     assert read_stdin_secret("--value -") == "from-stringio"
 
 
-def test_read_stdin_secret_hints_on_terminal(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
-    feed_stdin(monkeypatch, b"typed\n", tty=True)
+def test_read_stdin_secret_on_a_terminal_is_read_without_echo(monkeypatch: pytest.MonkeyPatch):
+    feed_stdin(monkeypatch, b"", tty=True)
+    prompts: list[str] = []
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": prompts.append(prompt) or "typed")
     assert read_stdin_secret("--value -") == "typed"
-    assert "Ctrl-D" in capsys.readouterr().err
+    assert "--value -" in prompts[0] and "not shown" in prompts[0]
 
 
 def test_read_stdin_line_takes_the_first_line_only(monkeypatch: pytest.MonkeyPatch):
@@ -148,10 +150,10 @@ def test_read_stdin_line_rejects_oversized_lines(monkeypatch: pytest.MonkeyPatch
         read_stdin_line("--new-password-stdin")
 
 
-def test_read_stdin_line_hints_on_terminal(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
-    feed_stdin(monkeypatch, b"typed\n", tty=True)
+def test_read_stdin_line_on_a_terminal_is_read_without_echo(monkeypatch: pytest.MonkeyPatch):
+    feed_stdin(monkeypatch, b"", tty=True)
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "typed")
     assert read_stdin_line("--new-password-stdin") == "typed"
-    assert "Enter" in capsys.readouterr().err
 
 
 def test_read_secret_file(tmp_path: Path):

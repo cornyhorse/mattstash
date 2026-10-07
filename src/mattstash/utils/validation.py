@@ -162,3 +162,19 @@ def validate_lookup_title(title: str) -> None:
         raise InvalidCredentialError(f"Credential title too long (max {MAX_TITLE_LENGTH} characters)")
     if "\0" in title:
         raise InvalidCredentialError("Credential title contains invalid character: '\\x00'")
+
+
+def api_key_problem(key: str) -> Optional[str]:
+    """Why ``key`` cannot be sent as an ``X-API-Key`` header, or ``None`` if it can. Never contains the key.
+
+    Keys are visible ASCII without whitespace (the server rejects anything else in its key files too). A stray
+    newline from a Kubernetes Secret or an ``echo`` is the typical culprit: callers strip surrounding whitespace first.
+    """
+    if not key:
+        return "the API key is empty"
+    if not all(0x21 <= ord(ch) <= 0x7E for ch in key):
+        return (
+            "the API key contains whitespace, control or non-ASCII characters "
+            "(a trailing newline or a byte-order mark in the file or variable?)"
+        )
+    return None

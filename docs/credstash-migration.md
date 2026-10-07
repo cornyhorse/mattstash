@@ -131,9 +131,9 @@ delete("mykey")
 | CredStash | MattStash |
 |-----------|-----------|
 | `VAR=$(credstash get mykey)` | `VAR=$(mattstash get mykey --raw)` (prints only the secret; exit 2 if it does not exist) |
-| `eval "$(credstash env ...)"` (export secrets as variables) | `eval "$(mattstash env --prefix myapp/ --upper)"` |
+| `eval "$(credstash env ...)"` (export secrets as variables) | `out=$(mattstash env --prefix myapp. --upper) && eval "$out"` |
 | `credstash getall` (all secrets as JSON) | `mattstash env --prefix '' --format json` (every secret; names sanitised) |
-| run a program with secrets in its environment | `mattstash exec --prefix myapp/ --upper -- ./app` |
+| run a program with secrets in its environment | `mattstash exec --prefix myapp. --upper -- ./app` |
 
 `mattstash env` selects secrets by title prefix (`--prefix`) and/or one by one (`--map ENVVAR=TITLE[:FIELD]`, where
 `FIELD` can also be `username`, `url`, `notes` or a custom property), uses the latest version of each, and prints
@@ -143,11 +143,11 @@ command's exit status is preserved:
 
 ```bash
 # Store the secrets once ...
-printf '%s' "$DBPW" | mattstash put "myapp/db-password" --value -
-printf '%s' "$KEY"  | mattstash put "myapp/api-key" --value -
+printf '%s' "$DBPW" | mattstash put "myapp.db-password" --value -
+printf '%s' "$KEY"  | mattstash put "myapp.api-key" --value -
 
 # ... then start the app with DB_PASSWORD and API_KEY in its environment
-mattstash exec --prefix myapp/ --upper -- python app.py
+mattstash exec --prefix myapp. --upper -- python app.py
 
 # Individual variables, including fields of a full credential
 mattstash exec --map PGPASSWORD=production-db --map PGUSER=production-db:username -- psql -h db.internal myapp

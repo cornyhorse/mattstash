@@ -31,6 +31,18 @@ AUTO_DRIVER = "auto"
 _AUTO_DRIVERS: Dict[str, Optional[str]] = {"postgresql": "psycopg", "mysql": None, "mariadb": None}
 
 
+class DbUrlError(ValueError):
+    """A database URL cannot be built from this entry/arguments.
+
+    ``reason`` is a short, fixed, value-free code (``"missing-port"``, ``"invalid-dialect"`` ...): the API server
+    maps it to a precise message without echoing anything stored in the entry.
+    """
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 def normalize_dialect(dialect: Optional[str], *, source: str = "dialect") -> str:
     """Return the canonical (lower-case) dialect name; ``ValueError`` if it is not on the allow-list.
 
@@ -40,7 +52,10 @@ def normalize_dialect(dialect: Optional[str], *, source: str = "dialect") -> str
         return DEFAULT_DIALECT
     name = str(dialect).strip().lower()
     if name not in DIALECT_DRIVERS:
-        raise ValueError(f"[mattstash] Unsupported {source} {dialect!r}; expected one of {sorted(DIALECT_DRIVERS)}")
+        raise DbUrlError(
+            f"[mattstash] Unsupported {source} {dialect!r}; expected one of {sorted(DIALECT_DRIVERS)}",
+            "invalid-dialect",
+        )
     return name
 
 
@@ -56,7 +71,10 @@ def resolve_driver(dialect: str, driver: Optional[str]) -> Optional[str]:
         return _AUTO_DRIVERS[dialect]
     allowed = DIALECT_DRIVERS[dialect]
     if name not in allowed:
-        raise ValueError(f"[mattstash] Driver {driver!r} is not valid for {dialect}; expected one of {sorted(allowed)}")
+        raise DbUrlError(
+            f"[mattstash] Driver {driver!r} is not valid for {dialect}; expected one of {sorted(allowed)}",
+            "invalid-driver",
+        )
     return name
 
 
@@ -111,28 +129,22 @@ class DatabaseUrlBuilder:
         Raises ValueError if the port is missing or invalid.
         """
         if not endpoint:
-            raise ValueError("[mattstash] Empty database endpoint URL")
+            raise DbUrlError("[mattstash] Empty database endpoint URL", "missing-url")
         ep = endpoint.strip()
-        host = None
-        port = None
         if "://" in ep:
             parsed = urlparse(ep)
             netloc = parsed.netloc or parsed.path  # some urlparse variants put everything in path for odd inputs
-            if ":" not in netloc:
-                raise ValueError("[mattstash] Database endpoint must include a port (e.g., host:5432)")
-            host, port_str = netloc.split("@", 1)[-1].rsplit(":", 1) if "@" in netloc else netloc.rsplit(":", 1)
-            if not port_str.isdigit():
-                raise ValueError("[mattstash] Invalid database port in endpoint")
-            port = int(port_str)
+            hostport = netloc.rsplit("@", 1)[-1]  # a stored URL may carry userinfo; only host:port matter here
         else:
-            if ":" not in ep:
-                raise ValueError("[mattstash] Database endpoint must include a port (e.g., host:5432)")
-            host, port_str = ep.rsplit(":", 1)
-            if not port_str.isdigit():
-                raise ValueError("[mattstash] Invalid database port in endpoint")
-            port = int(port_str)
+            hostport = ep  # a bare host:port has no userinfo: an '@' in it is rejected as an invalid host
+        if ":" not in hostport or hostport.endswith("]"):
+            raise DbUrlError("[mattstash] Database endpoint must include a port (e.g., host:5432)", "missing-port")
+        host, port_str = hostport.rsplit(":", 1)
+        if not (port_str.isascii() and port_str.isdigit()):
+            raise DbUrlError("[mattstash] Invalid database port in endpoint", "invalid-port")
+        port = int(port_str)
         if not 1 <= port <= 65535:
-            raise ValueError("[mattstash] Invalid database port in endpoint (must be 1-65535)")
+            raise DbUrlError("[mattstash] Invalid database port in endpoint (must be 1-65535)", "invalid-port")
         return self._normalize_host(host), port
 
     @staticmethod
@@ -151,10 +163,10 @@ class DatabaseUrlBuilder:
                     raise ValueError(candidate)
                 ipaddress.IPv6Address(candidate)
             except ValueError:
-                raise ValueError("[mattstash] Invalid database host in endpoint") from None
+                raise DbUrlError("[mattstash] Invalid database host in endpoint", "invalid-host") from None
             return f"[{candidate}]"
         if bracketed or not candidate or not _HOST_RE.fullmatch(candidate):
-            raise ValueError("[mattstash] Invalid database host in endpoint")
+            raise DbUrlError("[mattstash] Invalid database host in endpoint", "invalid-host")
         return candidate
 
     def build_url(
@@ -201,18 +213,20 @@ class DatabaseUrlBuilder:
           - MySQL with PyMySQL:                       `mysql+pymysql://user:*****@host:3306/db`
         """
         # Validate what the caller passed before touching the database.
-        explicit_dialect = normalize_dialect(dialect) if dialect is not None else None
+        explicit_dialect = normalize_dialect(dialect) if dialect is not None and str(dialect).strip() else None
 
         # Credential + custom properties in one consistent snapshot of the database
         found = self.mattstash.get_entry_with_properties(title, ("database", "dbname", "sslmode", "dialect"))
         if found is None:
-            raise ValueError(f"[mattstash] Credential not found: {title}")
+            raise DbUrlError(f"[mattstash] Credential not found: {title}", "not-found")
 
         cred, props = found
 
         # If `cred` is a dict (simple secret), this is not a full DB cred
         if isinstance(cred, dict):
-            raise ValueError("[mattstash] Entry is a simple secret and cannot be used for a DB connection")
+            raise DbUrlError(
+                "[mattstash] Entry is a simple secret and cannot be used for a DB connection", "simple-secret"
+            )
 
         effective_dialect = explicit_dialect or normalize_dialect(props.get("dialect"), source="'dialect' property")
         driver_name = resolve_driver(effective_dialect, driver)
@@ -221,20 +235,24 @@ class DatabaseUrlBuilder:
 
         dbname = database or props.get("database") or props.get("dbname")
         if not dbname:
-            raise ValueError(
+            raise DbUrlError(
                 "[mattstash] Missing database name. Provide --database/`database=`"
-                " or set custom property 'database'/'dbname' on the credential."
+                " or set custom property 'database'/'dbname' on the credential.",
+                "missing-database",
             )
 
         sslmode = sslmode_override if sslmode_override is not None else props.get("sslmode")
         if sslmode and effective_dialect != "postgresql":
             # Silently dropping it could leave a connection unencrypted that the entry says must use TLS.
-            raise ValueError(
+            raise DbUrlError(
                 f"[mattstash] sslmode is only supported for postgresql URLs, not {effective_dialect}; remove the "
-                "'sslmode' property/option (configure TLS through your driver instead)"
+                "'sslmode' property/option (configure TLS through your driver instead)",
+                "sslmode-unsupported",
             )
         if sslmode and sslmode not in _SSLMODES:
-            raise ValueError(f"[mattstash] Invalid sslmode {sslmode!r}; expected one of {sorted(_SSLMODES)}")
+            raise DbUrlError(
+                f"[mattstash] Invalid sslmode {sslmode!r}; expected one of {sorted(_SSLMODES)}", "invalid-sslmode"
+            )
 
         scheme = effective_dialect + (f"+{driver_name}" if driver_name else "")
         # Percent-encode everything that is user data: a password such as "p@ss/w:rd#1" would

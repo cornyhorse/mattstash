@@ -269,7 +269,7 @@ def test_env_help_documents_the_options(capsys: pytest.CaptureFixture[str]):
         "--strip-prefix",
         "--no-strip-prefix",
         "--upper",
-        "shell,dotenv,json",
+        "shell,dotenv,docker-env,json",
     ):
         assert expected in text, expected
 

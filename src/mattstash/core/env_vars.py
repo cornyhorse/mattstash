@@ -45,7 +45,30 @@ STANDARD_FIELDS = ("password", "username", "url", "notes")
 DEFAULT_FIELD = "password"
 
 #: Output formats of ``mattstash env``.
-FORMATS = ("shell", "dotenv", "json")
+FORMATS = ("shell", "dotenv", "docker-env", "json")
+
+#: Variables that change how a program loads code or how a shell behaves. A secret *title* must not be able to set
+#: one of these by accident (or by malice: anyone who can write a title under the prefix could run code in the
+#: consumer through ``LD_PRELOAD`` or ``BASH_ENV``). Names derived from ``--prefix`` are refused; an operator can
+#: still choose one deliberately with ``--map NAME=TITLE`` or ``--allow-reserved``.
+RESERVED_ENV_NAMES = frozenset(
+    {
+        "PATH", "IFS", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "PROMPT_COMMAND", "CDPATH", "GLOBIGNORE",
+        "PS0", "PS1", "PS2", "PS3", "PS4", "HOME", "SHELL", "TMPDIR", "LD_PRELOAD",
+        "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "CLASSPATH", "GCONV_PATH", "LOCPATH", "NLSPATH",
+        "HOSTALIASES", "RESOLV_HOST_CONF", "MALLOC_CONF", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_EXEC_PATH", "KDBX_PASSWORD",
+        "KDBX_PASSWORD_FILE", "MATTSTASH_API_KEY", "MATTSTASH_API_KEY_FILE", "MATTSTASH_SERVER_URL",
+        "MATTSTASH_DB_PATH",
+    }
+)  # fmt: skip
+RESERVED_ENV_PREFIXES = ("LD_", "DYLD_", "BASH_FUNC_", "PYTHON", "PERL", "RUBY", "JAVA_", "_JAVA_", "JDK_JAVA_")
+
+
+def is_reserved_env_name(name: str) -> bool:
+    """True for loader/shell/interpreter-control variables (see ``RESERVED_ENV_NAMES``)."""
+    return name in RESERVED_ENV_NAMES or name.startswith(RESERVED_ENV_PREFIXES)
+
 
 _UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9_]", re.ASCII)
 # Characters that never need quoting in a dotenv value (any dotenv parser reads these literally).
@@ -141,8 +164,12 @@ def collect_env(
     mappings: Optional[Mapping[str, str] | Iterable[str]] = None,
     strip_prefix: bool = True,
     upper: bool = False,
+    allow_reserved: bool = False,
 ) -> Dict[str, str]:
     """Build ``{ENVVAR: value}`` from ``source`` according to ``prefix`` and ``mappings``.
+
+    Names derived from ``prefix`` may not be loader/shell control variables (``LD_PRELOAD``, ``PATH``, ...) unless
+    ``allow_reserved``; names given explicitly in ``mappings`` are always the operator's choice.
 
     Raises:
         ValueError: nothing selected, invalid names/mappings, NUL in a value, or a name collision.
@@ -175,6 +202,11 @@ def collect_env(
             raise CredentialNotFoundError(f"no secrets found with prefix {prefix!r}")
         for title in titles:
             env_name = derive_env_name(title, prefix, strip_prefix=strip_prefix, upper=upper)
+            if not allow_reserved and is_reserved_env_name(env_name):
+                raise ValueError(
+                    f"secret {title!r} would set the reserved variable {env_name} (it changes how programs load code "
+                    f"or how shells behave); name it explicitly with --map {env_name}=TITLE, or pass --allow-reserved"
+                )
             value = source.value(title, DEFAULT_FIELD)
             if not value:
                 logger.warning("skipping %r: it has no password/value", title)
@@ -213,11 +245,30 @@ def _dotenv_value(value: str) -> str:
 def format_dotenv(env: Mapping[str, str]) -> str:
     """``NAME=value`` lines for dotenv consumers.
 
-    Plain values are written bare; other values are single-quoted. Values containing a single quote
-    or a line break are double-quoted with ``\\\\``, ``\\"``, ``\\n``, ``\\r`` and ``\\$`` escapes. Dotenv
-    dialects differ on quoting; ``--format shell`` and ``--format json`` are unambiguous.
+    Written for ``docker compose`` ``env_file`` (and systemd ``EnvironmentFile``). Plain values are written bare;
+    other values are single-quoted. Values containing a single quote or a line break are double-quoted with
+    ``\\\\``, ``\\"``, ``\\n``, ``\\r`` and ``\\$`` escapes. Dotenv dialects differ on quoting and escapes
+    (``docker run --env-file`` has none; python-dotenv processes backslashes even in single quotes): for those use
+    ``--format docker-env``, ``--format shell``, ``--format json`` or ``mattstash exec``.
     """
     return "".join(f"{validate_env_name(name)}={_dotenv_value(value)}\n" for name, value in sorted(env.items()))
+
+
+def format_docker_env(env: Mapping[str, str]) -> str:
+    """``NAME=value`` lines for ``docker run --env-file``, which takes everything after ``=`` literally.
+
+    There is no quoting or escaping in that format, so a value it cannot carry faithfully (a line break, a NUL, or
+    leading/trailing whitespace) is an error rather than a silently different password.
+    """
+    lines = []
+    for name, value in sorted(env.items()):
+        if any(ch in value for ch in "\n\r\0") or value != value.strip():
+            raise ValueError(
+                f"the value for {name} cannot be written in docker --env-file format (line break, NUL or "
+                "leading/trailing whitespace); use --format shell, --format json or `mattstash exec` instead"
+            )
+        lines.append(f"{validate_env_name(name)}={value}\n")
+    return "".join(lines)
 
 
 def format_json(env: Mapping[str, str]) -> str:
@@ -233,6 +284,8 @@ def format_env(env: Mapping[str, str], fmt: str) -> str:
         return format_shell(env)
     if fmt == "dotenv":
         return format_dotenv(env)
+    if fmt == "docker-env":
+        return format_docker_env(env)
     if fmt == "json":
         return format_json(env)
     raise ValueError(f"unknown format {fmt!r}; expected one of {', '.join(FORMATS)}")

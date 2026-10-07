@@ -72,10 +72,10 @@ def test_raw_specific_version(populated: Path, capsys: pytest.CaptureFixture[str
     assert capsys.readouterr().out == "sk-old\n"
 
 
-def test_raw_simple_secret_accepts_password_field_only(populated: Path, capsys: pytest.CaptureFixture[str], caplog):
+def test_raw_simple_secret_has_a_password_and_notes_only(populated: Path, capsys: pytest.CaptureFixture[str], caplog):
     assert run(populated, "get", "simple", "--raw", "--field", "password") == 0
     assert capsys.readouterr().out == "sk-live\n"
-    for field in ("username", "url", "notes"):
+    for field in ("username", "url"):
         assert run(populated, "get", "simple", "--raw", "--field", field) == exit_codes.ERROR
         assert capsys.readouterr().out == ""
     assert "simple secret" in caplog.text

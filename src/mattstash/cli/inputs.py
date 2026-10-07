@@ -12,9 +12,12 @@ as well. The helpers here implement the shared rules:
 * *credential files* (database password, API key, new master password) have surrounding
   whitespace stripped, like ``KDBX_PASSWORD_FILE``;
 * only one option per invocation may consume stdin;
+* a UTF-8 byte-order mark (Windows editors add one) is not part of a secret;
+* on a terminal the secret is read without echo (``getpass``), so it does not land in scrollback;
 * error messages name the option or file, never its content.
 """
 
+import getpass
 import os
 import sys
 from typing import IO, Optional
@@ -54,20 +57,29 @@ def _decode(data: bytes, what: str) -> str:
     if len(data) > MAX_SECRET_BYTES:
         raise InputError(f"{what} is larger than {MAX_SECRET_BYTES} bytes")
     try:
-        return data.decode("utf-8")
+        return data.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise InputError(f"{what} is not valid UTF-8 text") from None
 
 
-def read_stdin_secret(option: str, stream: Optional[IO[bytes]] = None) -> str:
-    """Read a secret from stdin (all of it), dropping one trailing newline. Rejects empty input."""
-    stdin = sys.stdin
+def _interactive(stdin: object) -> bool:
     try:
-        interactive = stdin.isatty()
+        return bool(stdin.isatty())  # type: ignore[attr-defined]
     except (AttributeError, ValueError):
-        interactive = False
-    if interactive:
-        print(f"mattstash: reading {option} from the terminal; finish with Ctrl-D", file=sys.stderr)
+        return False
+
+
+def read_stdin_secret(option: str, stream: Optional[IO[bytes]] = None) -> str:
+    """Read a secret from stdin (all of it), dropping one trailing newline. Rejects empty input.
+
+    On a terminal one line is read without echo; use a pipe or ``--value-file`` for multi-line values.
+    """
+    stdin = sys.stdin
+    if stream is None and _interactive(stdin):
+        value = getpass.getpass(f"{option} (input is not shown): ")
+        if not value:
+            raise InputError(f"{option}: no data received on stdin (empty value)")
+        return value
     if stream is None:
         stream = getattr(stdin, "buffer", None)
     if stream is not None:
@@ -84,18 +96,22 @@ def read_stdin_line(option: str) -> str:
     """Read the first line of stdin (line break removed) as a password. Rejects empty input.
 
     Same rule as ``setup --password-stdin``: one line, so a pipeline can send the password followed by anything.
+    Bytes are decoded strictly (invalid UTF-8 is an error, not a crash later); a terminal is read without echo.
     """
     stdin = sys.stdin
-    try:
-        interactive = stdin.isatty()
-    except (AttributeError, ValueError):
-        interactive = False
-    if interactive:
-        print(f"mattstash: reading {option} from the terminal; finish with Enter", file=sys.stderr)
-    line = stdin.readline(MAX_SECRET_BYTES + 1)
-    if len(line) > MAX_SECRET_BYTES:
+    if _interactive(stdin):
+        value = getpass.getpass(f"{option} (input is not shown): ")
+        if not value:
+            raise InputError(f"{option}: no password received on stdin (empty line)")
+        return value
+    raw = getattr(stdin, "buffer", None)
+    if raw is not None:
+        data = raw.readline(MAX_SECRET_BYTES + 1)
+    else:  # text-only stdin replacement (e.g. io.StringIO)
+        data = stdin.readline(MAX_SECRET_BYTES + 1).encode("utf-8")
+    if len(data) > MAX_SECRET_BYTES:
         raise InputError(f"{option}: the first line on stdin is larger than {MAX_SECRET_BYTES} bytes")
-    value = line.rstrip("\r\n")
+    value = _decode(data, f"input on stdin for {option}").rstrip("\r\n")
     if not value:
         raise InputError(f"{option}: no password received on stdin (empty line)")
     return value

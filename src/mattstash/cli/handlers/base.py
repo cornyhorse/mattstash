@@ -9,8 +9,9 @@ from abc import ABC, abstractmethod
 from argparse import Namespace
 from typing import Any, Optional, Type, TypeVar
 
-from ...utils.exceptions import DatabaseAccessError, DatabaseLockError, DatabaseNotFoundError
+from ...utils.exceptions import DatabaseAccessError, DatabaseLockError, DatabaseNotFoundError, ServerError
 from ...utils.logging_config import get_logger
+from ...utils.validation import api_key_problem
 from .. import exit_codes
 from ..inputs import InputError, read_credential_env_file, read_credential_file
 
@@ -77,16 +78,28 @@ class BaseHandler(ABC):
         """
         explicit = self.opt(args, "api_key", str)
         key_file = self.opt(args, "api_key_file", str)
-        if explicit and key_file:
+        if explicit is not None and key_file is not None:
             raise InputError("--api-key and --api-key-file are mutually exclusive")
-        if explicit:
-            return explicit
-        if key_file:
-            return read_credential_file("--api-key-file", key_file)
-        env_key = os.environ.get("MATTSTASH_API_KEY")
-        if env_key:
-            return env_key
-        return read_credential_env_file("MATTSTASH_API_KEY_FILE")
+        if explicit is not None:
+            key = explicit.strip()
+            if not key:
+                raise InputError("--api-key was given an empty value")
+        elif key_file is not None:
+            if not key_file.strip():
+                raise InputError("--api-key-file was given an empty path")
+            key = read_credential_file("--api-key-file", key_file)
+        else:
+            # A Kubernetes Secret or `echo` adds a newline: keys never contain whitespace, so strip like the files do.
+            key = (
+                (os.environ.get("MATTSTASH_API_KEY") or "").strip()
+                or read_credential_env_file("MATTSTASH_API_KEY_FILE")
+                or ""
+            )
+        if key:
+            problem = api_key_problem(key)
+            if problem:
+                raise InputError(problem)
+        return key or None
 
     def get_server_client(self, args: Namespace) -> Optional[Any]:
         """Get MattStash server client if in server mode."""
@@ -107,7 +120,11 @@ class BaseHandler(ABC):
             )
             return None
 
-        return MattStashServerClient(args.server_url, api_key)
+        try:
+            return MattStashServerClient(args.server_url, api_key)
+        except ServerError as exc:
+            self.error(str(exc))
+            return None
 
     def error(self, message: str) -> None:
         """Print an error message to stderr."""

@@ -76,6 +76,9 @@ class ServerError(MattStashError):
     The message never contains the API key or any part of the response body.
     """
 
-    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+    def __init__(self, message: str, status_code: Optional[int] = None, *, secret_missing: bool = False) -> None:
         super().__init__(message)
         self.status_code = status_code
+        #: True only for a 404 that the MattStash server itself answered with "Credential not found": a wrong URL,
+        #: a proxy's 404 page or a name the server cannot route is a *different* problem.
+        self.secret_missing = secret_missing

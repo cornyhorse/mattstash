@@ -11,14 +11,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from limits import parse_many
 from mattstash.models.config import config as lib_config
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from .config import config
 from .dependencies import initialize_mattstash, reload_mattstash_if_changed
 from .logging_setup import configure_logging
 from .middleware.security import SecurityMiddleware
-from .rate_limit import limiter
+from .rate_limit import limiter, rate_limit_exceeded_handler
 from .routers import admin, credentials, db_url, health
 from .security.api_keys import get_key_policy
 
@@ -143,7 +142,7 @@ def create_app() -> FastAPI:
 
     # Rate limiting (per client address)
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)
 
     # Add CORS middleware (restrictive by default)

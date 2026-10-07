@@ -13,6 +13,7 @@ then fetch each selected secret). Secret values are never logged and never appea
 
 import os
 import shutil
+import signal
 import sys
 from argparse import Namespace
 from typing import Dict, List, Optional, Tuple
@@ -87,15 +88,30 @@ class EnvHandler(BaseHandler):
             prefix = self.opt(args, "prefix", str)
             strip_prefix = getattr(args, "strip_prefix", True) is not False
             upper = self.flag(args, "upper")
+            # JSON is data (nothing applies it to an environment), so only the other formats and `exec` need the guard.
+            allow_reserved = self.flag(args, "allow_reserved") or self.opt(args, "format", str) == "json"
             if self.is_server_mode(args):
                 client = self.get_server_client(args)
                 if client is None:
                     return None, exit_codes.ERROR
                 source: SecretSource = ServerSecretSource(client)
-                env = collect_env(source, prefix=prefix, mappings=mappings, strip_prefix=strip_prefix, upper=upper)
+                env = collect_env(
+                    source,
+                    prefix=prefix,
+                    mappings=mappings,
+                    strip_prefix=strip_prefix,
+                    upper=upper,
+                    allow_reserved=allow_reserved,
+                )
             else:
                 stash = MattStash(path=self.opt(args, "path", str), password=self.opt(args, "password", str))
-                env = stash.resolve_env(prefix=prefix, mappings=mappings, strip_prefix=strip_prefix, upper=upper)
+                env = stash.resolve_env(
+                    prefix=prefix,
+                    mappings=mappings,
+                    strip_prefix=strip_prefix,
+                    upper=upper,
+                    allow_reserved=allow_reserved,
+                )
             return env, exit_codes.OK
         except CredentialNotFoundError as exc:
             self.error(str(exc))
@@ -112,6 +128,33 @@ class EnvHandler(BaseHandler):
 VAULT_CREDENTIAL_ENV = ("KDBX_PASSWORD", "MATTSTASH_API_KEY")
 
 
+def _exists_but_not_executable(command: str) -> bool:
+    """True if ``command`` names an existing file that is not executable (the shell's "permission denied", 126).
+
+    Mirrors the lookup ``shutil.which`` just failed: the path itself when it contains a separator, else each ``PATH``
+    directory.
+    """
+    if os.sep in command:
+        return os.path.exists(command)
+    for directory in (os.environ.get("PATH") or "").split(os.pathsep):
+        candidate = os.path.join(directory or os.curdir, command)
+        if os.path.isfile(candidate) and not os.access(candidate, os.X_OK):
+            return True
+    return False
+
+
+def _restore_default_signals() -> None:
+    """Python ignores SIGPIPE (and SIGXFSZ) at start-up, and ignored signals survive ``execve``.
+
+    Without this, a command's pipelines die with "Broken pipe" errors and exit status 1 instead of the usual
+    signal-141 behaviour: ``exec`` must not change how the command runs.
+    """
+    for name in ("SIGPIPE", "SIGXFSZ"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            signal.signal(number, signal.SIG_DFL)
+
+
 class ExecHandler(EnvHandler):
     """Handler for ``mattstash exec [options] -- COMMAND [ARGS...]``."""
 
@@ -126,7 +169,7 @@ class ExecHandler(EnvHandler):
         # Resolve the program with the caller's PATH (a secret named PATH must not redirect the lookup).
         program = shutil.which(command[0], path=os.environ.get("PATH"))
         if program is None:
-            if os.sep in command[0] and os.path.exists(command[0]):
+            if _exists_but_not_executable(command[0]):
                 self.error(f"exec: cannot execute {command[0]}: permission denied")
                 return exit_codes.COMMAND_NOT_EXECUTABLE
             self.error(f"exec: command not found: {command[0]}")
@@ -144,11 +187,14 @@ class ExecHandler(EnvHandler):
                 child_env.pop(name, None)
         override = self.flag(args, "override")
         for name, value in env.items():
-            if override or name not in os.environ:
+            # "already set" is judged against what the command would inherit: a vault variable removed above does
+            # not block a secret that was deliberately mapped to that name.
+            if override or name not in child_env:
                 child_env[name] = value
 
         sys.stdout.flush()
         sys.stderr.flush()
+        _restore_default_signals()
         try:
             # Intentional: `exec` runs the user's command with no shell involved (argv is passed as a list).
             os.execve(program, command, child_env)  # noqa: S606

@@ -104,12 +104,13 @@ TOKEN=$(mattstash get "api-token" --raw)
 DB_USER=$(mattstash get "production-db" --raw --field username)
 
 # Secrets as environment variables (shell-safe: eval cannot be tricked by a value)
-eval "$(mattstash env --prefix myapp/ --upper)"            # myapp/db-password -> DB_PASSWORD
+out=$(mattstash env --prefix myapp. --upper) && eval "$out"   # myapp.db-password -> DB_PASSWORD
+# (a bare eval "$(...)" would carry on silently if mattstash failed; `exec` below avoids the question)
 mattstash env --map PGPASSWORD=production-db --map PGUSER=production-db:username --format dotenv
 
 # Run a command with the secrets in its environment (nothing touches the disk or stdout;
 # the command's exit status is preserved)
-mattstash exec --prefix myapp/ --upper -- ./server --port 8080
+mattstash exec --prefix myapp. --upper -- ./server --port 8080
 ```
 
 `env` and `exec` also work against a MattStash server (`--server-url`). See the
@@ -329,7 +330,7 @@ s3_client = stash.get_s3_client("s3-backup")
 db_url = stash.get_db_url("database", database="myapp")
 
 # Environment variables for a set of secrets (what `mattstash env` / `exec` use)
-env = stash.resolve_env("myapp/", upper=True)
+env = stash.resolve_env("myapp.", upper=True)
 
 # Operations
 stash.backup()

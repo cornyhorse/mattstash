@@ -102,10 +102,12 @@ class GetHandler(BaseHandler):
             return exit_codes.NOT_FOUND
         if isinstance(c, dict):
             # Simple secret: it only has a value (the password field).
-            if field != "password":
-                self.error(f"{args.title} is a simple secret: it only has a 'password' (value), not '{field}'")
+            if field not in ("password", "notes"):
+                self.error(
+                    f"{args.title} is a simple secret: it only has a 'password' (value) and notes, not '{field}'"
+                )
                 return exit_codes.ERROR
-            return self._emit_raw(c.get("value"), args.title, field)
+            return self._emit_raw(c.get("value") if field == "password" else c.get("notes"), args.title, field)
         return self._emit_raw(getattr(c, field), args.title, field)
 
     def _handle_raw_server(self, args: Namespace, field: str) -> int:

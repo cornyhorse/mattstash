@@ -311,7 +311,7 @@ Compute environment variables for a set of secrets *without* touching `os.enviro
 database errors.
 
 ```python
-env = stash.resolve_env("myapp/", upper=True)          # {"DB_PASSWORD": "...", "API_KEY": "..."}
+env = stash.resolve_env("myapp.", upper=True)          # {"DB_PASSWORD": "...", "API_KEY": "..."}
 env = stash.resolve_env(mappings={"PGPASSWORD": "production-db", "PGUSER": "production-db:username"})
 
 import os, subprocess

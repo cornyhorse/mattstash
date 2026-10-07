@@ -3,7 +3,7 @@
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
-from mattstash.builders.db_url import AUTO_DRIVER, DIALECT_DRIVERS, build_db_url, normalize_dialect
+from mattstash.builders.db_url import AUTO_DRIVER, DIALECT_DRIVERS, DbUrlError, build_db_url, normalize_dialect
 
 from ..audit import audit
 from ..dependencies import MattStashDep, ReadAccess, ensure_name_in_scope
@@ -16,6 +16,19 @@ logger = logging.getLogger("mattstash.api")
 router = APIRouter()
 
 _ALL_DRIVERS = frozenset().union(*DIALECT_DRIVERS.values())
+
+#: What an entry/argument problem is reported as. Fixed texts only: nothing stored in the entry is echoed back.
+_REASONS = {
+    "missing-url": "the entry has no URL (host:port)",
+    "missing-port": "the entry's URL has no port",
+    "invalid-port": "the entry's URL has an invalid port",
+    "invalid-host": "the entry's URL has an invalid host",
+    "missing-database": "no database name: pass 'database' or set the entry's 'database' property",
+    "invalid-sslmode": "the entry's sslmode is not a valid value",
+    "sslmode-unsupported": "the entry sets sslmode, which only applies to PostgreSQL",
+    "invalid-dialect": "the entry's 'dialect' property is not supported",
+    "invalid-driver": "the driver is not valid for the entry's dialect",
+}
 _DATABASE_NAME_MAX = 128
 
 
@@ -63,7 +76,9 @@ def get_database_url(
         chosen_dialect = normalize_dialect(dialect) if dialect else None
     except ValueError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid dialect name") from None
-    if driver is not None and driver != AUTO_DRIVER:
+    # Same normalisation as the library ("PSYCOPG", " psycopg" work locally); "" means "no driver suffix".
+    driver = driver.strip().lower() if driver is not None else None
+    if driver and driver != AUTO_DRIVER:
         allowed = DIALECT_DRIVERS[chosen_dialect] if chosen_dialect else _ALL_DRIVERS
         if driver not in allowed:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid driver name")
@@ -74,21 +89,27 @@ def get_database_url(
             url = build_db_url(
                 mattstash=mattstash,
                 name=name,
-                driver=driver or AUTO_DRIVER,
+                driver=AUTO_DRIVER if driver is None else driver,
                 dialect=chosen_dialect,
                 database=database,
                 mask_password=mask_password,
                 mask_style="stars",
             )
-        except ValueError as e:
-            # build_db_url raises ValueError for missing creds / unsuitable entries. Handled here, inside the
-            # translation context, so it is not mistaken for an unexpected error (500).
-            err_msg = str(e).lower()
-            if "not found" in err_msg or "simple secret" in err_msg:
+        except DbUrlError as e:
+            # Raised for entries that cannot produce a URL. Handled inside the translation context so it is not
+            # mistaken for an unexpected error (500); the reason code selects a fixed, value-free message.
+            if e.reason in ("not-found", "simple-secret"):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Credential not found or unsuitable: {name}",
                 ) from None
+            logger.error("Error building database URL for %s: %s", name, e.reason)
+            reason = _REASONS.get(e.reason, "invalid entry configuration")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Entry cannot be used for a database URL: {reason}",
+            ) from None
+        except ValueError as e:
             logger.error("Error building database URL for %s: %s", name, type(e).__name__)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

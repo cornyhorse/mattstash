@@ -363,8 +363,8 @@ For containers, pods, CI and scripts. Selects secrets and prints them on stdout 
 because you asked for them, like `get --raw`; nothing else is printed there and nothing is logged).
 
 ```bash
-mattstash env [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... [--format shell|dotenv|json]
-              [--strip-prefix | --no-strip-prefix] [--upper]
+mattstash env [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... [--format shell|dotenv|docker-env|json]
+              [--strip-prefix | --no-strip-prefix] [--upper] [--allow-reserved]
 ```
 
 **Selection** (at least one of `--prefix`/`--map` is required; the latest version of each secret is used):
@@ -375,27 +375,37 @@ mattstash env [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... [--format shell|doten
   `url`, `notes` or the name of a custom property. The field is taken after the last `:`, so a title that itself
   contains `:` needs an explicit field (`X=svc:prod:password`). Server mode only offers the four standard fields.
 
-Names must match `[A-Za-z_][A-Za-z0-9_]*`. Nothing is printed if a name is invalid, two secrets would produce the
+Names must match `[A-Za-z_][A-Za-z0-9_]*`. Names **derived from `--prefix`** may not be variables that change how
+programs load code or how shells behave (`LD_PRELOAD`, `LD_*`, `DYLD_*`, `PATH`, `IFS`, `BASH_ENV`, `PS4`,
+`PROMPT_COMMAND`, `PYTHON*`, `NODE_OPTIONS`, `HOME`, `KDBX_PASSWORD`, ...): otherwise whoever can write a secret under
+the prefix could run code in the consumer. Choose such a variable on purpose with `--map NAME=TITLE`, or pass
+`--allow-reserved` (the `json` format is data and is not restricted). Nothing is printed if a name is invalid, two secrets would produce the
 same name (the error names the titles, never the values), a mapped secret or field does not exist, or a prefix
 matches nothing.
 
 **Formats:**
 - `shell` (default) - `export NAME='value'`, quoted with `shlex.quote`; safe to `eval` for any value (spaces, quotes,
   newlines, `$(...)`, backticks).
-- `dotenv` - `NAME=value`; values with anything but `A-Za-z0-9_./:@%+,=-` are single-quoted, and values containing
-  a quote or a line break are double-quoted with `\\`, `\"`, `\n`, `\r`, `\$` escapes. Dotenv dialects differ, so
-  prefer `shell` or `json` when values are unusual.
+- `dotenv` - `NAME=value` for **`docker compose` `env_file`** (and systemd `EnvironmentFile`); values with anything
+  but `A-Za-z0-9_./:@%+,=-` are single-quoted, and values containing a quote or a line break are double-quoted with
+  `\\`, `\"`, `\n`, `\r`, `\$` escapes. Dotenv dialects differ (python-dotenv processes backslashes even in single
+  quotes), so use `shell`, `json` or `exec` when values are unusual.
+- `docker-env` - literal `NAME=value` for **`docker run --env-file`**, which has no quoting or escaping at all. A
+  value it cannot carry faithfully (a line break, NUL, or leading/trailing whitespace) is an error, not a silently
+  different password.
 - `json` - one object `{"NAME": "value"}`.
 
 **Examples:**
 ```bash
-eval "$(mattstash env --prefix myapp/ --upper)"                    # DB_PASSWORD, API_KEY, ...
+out=$(mattstash env --prefix myapp. --upper) && eval "$out"         # DB_PASSWORD, API_KEY, ...
 mattstash env --map PGPASSWORD=production-db --map PGUSER=production-db:username --map PGHOST=production-db:url
-mattstash env --prefix myapp/ --upper --format dotenv > /dev/shm/app.env    # for docker run --env-file
-mattstash env --prefix myapp/ --format json | jq .
+mattstash env --prefix myapp. --upper --format docker-env > /dev/shm/app.env   # for docker run --env-file
+mattstash env --prefix myapp. --format json | jq .
 ```
 
-Do not write the output to disk or logs unless you mean to; prefer `exec`.
+Use `out=$(...) && eval "$out"` rather than `eval "$(...)"`: `eval` of an empty string succeeds, so a failing
+`mattstash env` (wrong password, missing secret) would otherwise let a script carry on without its secrets. Do not
+write the output to disk or logs unless you mean to; prefer `exec`.
 
 **Exit codes:** `0` success, `1` invalid names/mappings/collisions, `2` secret or prefix not found, `6`/`7` database problems.
 
@@ -403,7 +413,7 @@ Do not write the output to disk or logs unless you mean to; prefer `exec`.
 
 ```bash
 mattstash exec [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... [--strip-prefix | --no-strip-prefix] [--upper]
-               [--override] [--keep-vault-env] -- COMMAND [ARGS...]
+               [--allow-reserved] [--override] [--keep-vault-env] -- COMMAND [ARGS...]
 ```
 
 Builds the same environment as `env` and then **replaces** the process with `COMMAND` (`execve`): the command's exit
@@ -414,10 +424,14 @@ named `PATH` cannot redirect the lookup). Everything after `--` belongs to the c
 The command inherits your environment **except** `KDBX_PASSWORD` and `MATTSTASH_API_KEY`: those unlock the whole
 vault, and the command should receive only the secrets you asked for. Pass `--keep-vault-env` if the command needs
 them (for example a wrapper that calls `mattstash` itself). `KDBX_PASSWORD_FILE` / `MATTSTASH_API_KEY_FILE` (file
-*paths*) are left alone; a secret you deliberately map to one of the removed names is still injected.
+*paths*) are left alone; a secret you deliberately map to one of the removed names is still injected (also without
+`--override`). The command starts with default signal handling (`SIGPIPE` is not left ignored, so pipelines behave
+as they would without `mattstash`). Python may add `LC_CTYPE=C.UTF-8` to a minimal environment that sets no locale
+(PEP 538); set `LC_ALL` or `LANG` if the command must not see it. A command that exists but is not executable
+exits `126`, one that is not found exits `127`.
 
 ```bash
-mattstash exec --prefix myapp/ --upper -- ./server --port 8080
+mattstash exec --prefix myapp. --upper -- ./server --port 8080
 mattstash exec --map DATABASE_PASSWORD=production-db -- psql -h db.internal -U dbuser myapp
 mattstash exec --override --map API_TOKEN=api-token -- ./deploy.sh
 ```
@@ -430,7 +444,7 @@ mattstash exec --override --map API_TOKEN=api-token -- ./deploy.sh
 ```yaml
 containers:
   - name: app
-    command: ["mattstash", "exec", "--prefix", "myapp/", "--upper", "--", "/app/server"]
+    command: ["mattstash", "exec", "--prefix", "myapp.", "--upper", "--", "/app/server"]
     env:
       - {name: MATTSTASH_DB_PATH, value: /secrets/store/mattstash.kdbx}   # mounted read-only
       - {name: KDBX_PASSWORD_FILE, value: /secrets/key/password}          # a different mount

@@ -53,11 +53,24 @@ class _DbPasswordAction(argparse.Action):
 
 
 def _resolve_db_password_file(args: argparse.Namespace) -> None:
-    """Turn ``--db-password-file`` into ``args.password`` (an explicit DB password). Raises ``InputError``."""
+    """Validate the database-password options and turn ``--db-password-file`` into ``args.password``.
+
+    An option that is *given but empty* is an error: a shell variable that expands to nothing
+    (``--db-password-file "$PW_FILE"``) must not quietly select another credential source. Raises ``InputError``.
+    """
+    password = getattr(args, "password", None)
+    entry_password = getattr(args, "cmd", None) == "put" and getattr(args, "fields", False) is True
+    if isinstance(password, str) and not password and not entry_password:
+        raise InputError(
+            "--password/--db-password was given an empty value (omit it to use "
+            "KDBX_PASSWORD, KDBX_PASSWORD_FILE or the sidecar)"
+        )
     path = getattr(args, "db_password_file", None)
-    if not path:
+    if path is None:
         return
-    if getattr(args, "password", None):
+    if not isinstance(path, str) or not path.strip():
+        raise InputError("--db-password-file was given an empty path")
+    if password:
         raise InputError("--password/--db-password and --db-password-file are mutually exclusive")
     args.password = read_credential_file("--db-password-file", path)
     args.db_password_explicit = True
@@ -97,6 +110,12 @@ def _add_env_selection_options(parser: argparse.ArgumentParser) -> None:
         help="Remove the --prefix from variable names (default); --no-strip-prefix keeps it",
     )
     parser.add_argument("--upper", action="store_true", help="Upper-case variable names derived from --prefix")
+    parser.add_argument(
+        "--allow-reserved",
+        action="store_true",
+        help="Allow --prefix to produce loader/shell control variables (LD_PRELOAD, PATH, BASH_ENV, IFS, ...); "
+        "refused by default because a secret's title would otherwise decide them. --map NAME=TITLE is never restricted",
+    )
 
 
 def _add_global_options(parser: argparse.ArgumentParser, *, suppress_defaults: bool) -> None:
@@ -354,9 +373,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     _add_env_selection_options(p_env)
     p_env.add_argument(
         "--format",
-        choices=["shell", "dotenv", "json"],
+        choices=["shell", "dotenv", "docker-env", "json"],
         default="shell",
-        help="shell: export NAME='value' (safe to eval); dotenv: NAME=value lines; json: one object (default: shell)",
+        help="shell: export NAME='value' (safe to eval); dotenv: for docker compose env_file; docker-env: for "
+        "'docker run --env-file' (refuses values it cannot carry); json: one object (default: shell)",
     )
 
     # exec
@@ -367,7 +387,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "so the exit status is the command's; nothing is written to disk or stdout). "
         "Example: mattstash exec --prefix myapp/ --upper -- ./server --port 8080",
         usage="mattstash exec [-h] [global options] [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... "
-        "[--strip-prefix | --no-strip-prefix] [--upper] [--override] [--keep-vault-env] -- COMMAND [ARGS...]",
+        "[--strip-prefix | --no-strip-prefix] [--upper] [--allow-reserved] [--override] [--keep-vault-env] "
+        "-- COMMAND [ARGS...]",
         parents=[global_opts],
     )
     _add_env_selection_options(p_exec)
