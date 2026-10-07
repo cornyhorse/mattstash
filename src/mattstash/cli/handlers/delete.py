@@ -22,7 +22,7 @@ class DeleteHandler(BaseHandler):
 
     def handle(self, args: Namespace) -> int:
         """Handle the delete command (all versions, or only ``--version N``)."""
-        version: Optional[int] = getattr(args, "version", None)
+        version = self.opt(args, "version", int)
 
         # Check if server mode
         if self.is_server_mode(args):

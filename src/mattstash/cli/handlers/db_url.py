@@ -27,11 +27,11 @@ class DbUrlHandler(BaseHandler):
                 args.title,
                 path=args.path,
                 password=args.password,
-                driver=getattr(args, "driver", None) or None,
+                driver=self.opt(args, "driver", str) or None,
                 mask_password=args.mask_password,
                 mask_style="omit",  # CLI masks by omission (no placeholder)
                 database=args.database,
-                dialect=getattr(args, "dialect", None),
+                dialect=self.opt(args, "dialect", str),
             )
             print(url)
             return 0
@@ -48,13 +48,13 @@ class DbUrlHandler(BaseHandler):
             if client is None:
                 return exit_codes.ERROR
             # 'auto' (the default) is resolved by the server: no `driver` parameter is sent.
-            driver = getattr(args, "driver", None)
+            driver = self.opt(args, "driver", str)
             url = client.db_url(
                 args.title,
                 driver=None if driver in (None, AUTO_DRIVER) else driver,
                 database=args.database,
                 mask_password=args.mask_password,
-                dialect=getattr(args, "dialect", None),
+                dialect=self.opt(args, "dialect", str),
             )
             print(url)
             return 0

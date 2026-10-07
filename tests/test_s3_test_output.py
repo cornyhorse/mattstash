@@ -59,6 +59,7 @@ def test_endpoint_line_is_on_stderr_in_a_real_process(db: Path):
     proc = subprocess.run(
         [sys.executable, "-m", "mattstash.cli.main", "--db", str(db), "s3-test", "minio"],
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         text=True,
         timeout=120,
     )

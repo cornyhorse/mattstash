@@ -197,11 +197,14 @@ def test_env_shell_output_survives_eval_in_a_real_shell(db: Path, tmp_path: Path
     proc = subprocess.run(
         [sys.executable, "-m", "mattstash.cli.main", "--db", str(db), "env", "--map", "HOSTILE=app/hostile"],
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         timeout=120,
     )
     assert proc.returncode == 0, proc.stderr
     script = 'eval "$1"; printf %s "$HOSTILE"'
-    shell = subprocess.run(["sh", "-c", script, "sh", proc.stdout.decode()], capture_output=True, timeout=30)
+    shell = subprocess.run(
+        ["sh", "-c", script, "sh", proc.stdout.decode()], capture_output=True, stdin=subprocess.DEVNULL, timeout=30
+    )
     assert shell.stdout.decode() == HOSTILE
     assert shell.stderr == b"", "nothing in the value may have been executed"
 
@@ -364,6 +367,7 @@ def cli(db: Path, *argv: str, env: Optional[Dict[str, str]] = None) -> "subproce
     return subprocess.run(
         [sys.executable, "-m", "mattstash.cli.main", "--db", str(db), *argv],
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         env={**os.environ, **(env or {})},
         timeout=120,
     )
@@ -482,3 +486,22 @@ def test_server_exec(server: FakeServer, fake_exec, capsys: pytest.CaptureFixtur
     assert argv == ["sh", "-c", "true"]
     assert env["DB"] == "db-pw" and env["KEY"] == "key-pw" and "OTHER" not in env
     assert capsys.readouterr().out == ""
+
+
+def test_server_env_copes_with_a_server_that_lists_every_version(server: FakeServer, capsys):
+    """Older servers list 'name@0000000002' rows; the API addresses base names, so collapse them."""
+
+    def versioned_listing(request: httpx.Request):
+        if request.url.raw_path.decode().startswith("/api/v1/credentials?"):
+            rows = [
+                {"name": "app-db@0000000001", "password": "*****"},
+                {"name": "app-db@0000000002", "password": "*****"},
+                {"name": "app-key@0000000001", "password": "*****"},
+                {"name": "other@0000000001", "password": "*****"},
+            ]
+            return httpx.Response(200, json={"credentials": rows, "count": len(rows)})
+        return None
+
+    server.override = versioned_listing
+    assert server_run("env", "--prefix", "app-", "--upper", "--format", "json") == 0
+    assert json.loads(capsys.readouterr().out) == {"DB": "db-pw", "KEY": "key-pw"}

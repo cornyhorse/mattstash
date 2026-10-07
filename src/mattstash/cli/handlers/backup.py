@@ -23,9 +23,9 @@ class BackupHandler(BaseHandler):
                 "Run it where the file lives (omit --server-url / MATTSTASH_SERVER_URL)."
             )
             return exit_codes.ERROR
-        stash = MattStash(path=args.path, password=args.password)
+        stash = MattStash(path=self.opt(args, "path", str), password=self.opt(args, "password", str))
         try:
-            dest = stash.backup(getattr(args, "dest", None), force=bool(getattr(args, "force", False)))
+            dest = stash.backup(self.opt(args, "dest", str), force=self.flag(args, "force"))
         except DatabaseExistsError as exc:
             self.error(str(exc))
             return exit_codes.WOULD_OVERWRITE

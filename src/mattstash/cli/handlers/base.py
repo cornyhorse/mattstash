@@ -7,7 +7,7 @@ Base class for CLI command handlers.
 import os
 from abc import ABC, abstractmethod
 from argparse import Namespace
-from typing import Any, Optional
+from typing import Any, Optional, Type, TypeVar
 
 from ...utils.exceptions import DatabaseAccessError, DatabaseLockError, DatabaseNotFoundError
 from ...utils.logging_config import get_logger
@@ -16,6 +16,7 @@ from ..inputs import InputError, read_credential_env_file, read_credential_file
 
 logger = get_logger(__name__)
 
+_T = TypeVar("_T")
 
 #: Problems with the database itself (as opposed to a missing secret).
 DB_ERRORS = (DatabaseNotFoundError, DatabaseAccessError, DatabaseLockError)
@@ -42,6 +43,23 @@ class BaseHandler(ABC):
         """
         pass
 
+    @staticmethod
+    def opt(args: Namespace, name: str, kind: Type[_T]) -> Optional[_T]:
+        """The option ``name`` if it is set and of type ``kind``, else ``None``.
+
+        Handlers are also called with hand-built namespaces (tests, embedding), so an option that is absent,
+        or not of the expected type, simply counts as "not given".
+        """
+        value = getattr(args, name, None)
+        if isinstance(value, bool) and kind is not bool:
+            return None
+        return value if isinstance(value, kind) else None
+
+    @staticmethod
+    def flag(args: Namespace, name: str) -> bool:
+        """True only if the boolean option ``name`` is exactly ``True``."""
+        return getattr(args, name, None) is True
+
     def is_server_mode(self, args: Namespace) -> bool:
         """Check if server mode is enabled."""
         # Check if attribute exists and has a truthy value (not None, not empty string)
@@ -57,12 +75,12 @@ class BaseHandler(ABC):
         Raises:
             InputError: an explicitly configured key file cannot be used (never silently skipped).
         """
-        explicit = getattr(args, "api_key", None)
-        key_file = getattr(args, "api_key_file", None)
+        explicit = self.opt(args, "api_key", str)
+        key_file = self.opt(args, "api_key_file", str)
         if explicit and key_file:
             raise InputError("--api-key and --api-key-file are mutually exclusive")
         if explicit:
-            return str(explicit)
+            return explicit
         if key_file:
             return read_credential_file("--api-key-file", key_file)
         env_key = os.environ.get("MATTSTASH_API_KEY")

@@ -101,7 +101,7 @@ One trailing newline is removed from stdin/file input, and empty input is reject
 ```bash
 # One value, for a script
 TOKEN=$(mattstash get "api-token" --raw)
-USER=$(mattstash get "production-db" --raw --field username)
+DB_USER=$(mattstash get "production-db" --raw --field username)
 
 # Secrets as environment variables (shell-safe: eval cannot be tricked by a value)
 eval "$(mattstash env --prefix myapp/ --upper)"            # myapp/db-password -> DB_PASSWORD

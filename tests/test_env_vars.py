@@ -284,7 +284,7 @@ def test_format_shell_output_is_inert_when_evaluated(shell: str, tmp_path):
     )
     # make the $(touch ...) payload point at the marker so an execution would be visible
     code = code.replace("/tmp/pwned", str(marker))
-    proc = subprocess.run([shell, "-c", script, "sh", code], capture_output=True, timeout=30)
+    proc = subprocess.run([shell, "-c", script, "sh", code], capture_output=True, stdin=subprocess.DEVNULL, timeout=30)
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr == b""
     produced = proc.stdout.split(b"\0")[:-1]

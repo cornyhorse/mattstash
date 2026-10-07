@@ -27,7 +27,7 @@ class PruneHandler(BaseHandler):
             self.error("--keep must be at least 1")
             return exit_codes.ERROR
 
-        stash = MattStash(path=args.path, password=args.password)
+        stash = MattStash(path=self.opt(args, "path", str), password=self.opt(args, "password", str))
         versions = stash.list_versions(args.title)
         if not versions:
             self.error(f"not found: no versions of {args.title}")

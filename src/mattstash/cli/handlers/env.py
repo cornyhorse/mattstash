@@ -37,8 +37,14 @@ class ServerSecretSource:
         names = []
         for item in self._client.list(show_password=False, prefix=prefix or None):
             name = item.get("name")
-            # The server filters too; do not rely on it.
-            if isinstance(name, str) and name.startswith(prefix):
+            if not isinstance(name, str):
+                continue
+            # An older server lists every stored version ("name@0000000003"); the API addresses base names.
+            base, sep, suffix = name.rpartition("@")
+            if sep and base and suffix.isascii() and suffix.isdigit():
+                name = base
+            # The server filters by prefix too; do not rely on it.
+            if name.startswith(prefix):
                 names.append(name)
         return names
 
@@ -64,7 +70,7 @@ class EnvHandler(BaseHandler):
         if env is None:
             return code
         try:
-            output = format_env(env, getattr(args, "format", None) or "shell")
+            output = format_env(env, self.opt(args, "format", str) or "shell")
         except ValueError as exc:
             self.error(str(exc))
             return exit_codes.ERROR
@@ -77,10 +83,10 @@ class EnvHandler(BaseHandler):
     def _collect(self, args: Namespace) -> Tuple[Optional[Dict[str, str]], int]:
         """Resolve the selected secrets. Returns ``(env, 0)`` or ``(None, exit_code)`` after reporting."""
         try:
-            mappings = parse_mappings(getattr(args, "mappings", None) or [])
-            prefix: Optional[str] = getattr(args, "prefix", None)
-            strip_prefix = bool(getattr(args, "strip_prefix", True))
-            upper = bool(getattr(args, "upper", False))
+            mappings = parse_mappings(self.opt(args, "mappings", list) or [])
+            prefix = self.opt(args, "prefix", str)
+            strip_prefix = getattr(args, "strip_prefix", True) is not False
+            upper = self.flag(args, "upper")
             if self.is_server_mode(args):
                 client = self.get_server_client(args)
                 if client is None:
@@ -88,7 +94,7 @@ class EnvHandler(BaseHandler):
                 source: SecretSource = ServerSecretSource(client)
                 env = collect_env(source, prefix=prefix, mappings=mappings, strip_prefix=strip_prefix, upper=upper)
             else:
-                stash = MattStash(path=getattr(args, "path", None), password=getattr(args, "password", None))
+                stash = MattStash(path=self.opt(args, "path", str), password=self.opt(args, "password", str))
                 env = stash.resolve_env(prefix=prefix, mappings=mappings, strip_prefix=strip_prefix, upper=upper)
             return env, exit_codes.OK
         except CredentialNotFoundError as exc:
@@ -106,7 +112,7 @@ class ExecHandler(EnvHandler):
     """Handler for ``mattstash exec [options] -- COMMAND [ARGS...]``."""
 
     def handle(self, args: Namespace) -> int:
-        command = list(getattr(args, "command", None) or [])
+        command = list(self.opt(args, "command", list) or [])
         if command[:1] == ["--"]:
             command = command[1:]
         if not command:
@@ -127,7 +133,7 @@ class ExecHandler(EnvHandler):
             return code
 
         child_env = dict(os.environ)
-        override = bool(getattr(args, "override", False))
+        override = self.flag(args, "override")
         for name, value in env.items():
             if override or name not in os.environ:
                 child_env[name] = value

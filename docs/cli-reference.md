@@ -411,6 +411,10 @@ status is the process's exit status, no shell is involved, and nothing is writte
 are already set win unless you pass `--override`. The command is looked up with your original `PATH` (a secret
 named `PATH` cannot redirect the lookup). Everything after `--` belongs to the command; options must come before it.
 
+The command inherits your whole environment, which includes `KDBX_PASSWORD` and `MATTSTASH_API_KEY` if you set them
+(and then lets it open the whole database or call the server). Prefer `KDBX_PASSWORD_FILE` / `MATTSTASH_API_KEY_FILE`,
+which only expose a file *path*, for the process that runs `exec`.
+
 ```bash
 mattstash exec --prefix myapp/ --upper -- ./server --port 8080
 mattstash exec --map DATABASE_PASSWORD=production-db -- psql -h db.internal -U dbuser myapp

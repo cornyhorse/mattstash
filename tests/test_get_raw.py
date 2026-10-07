@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import httpx
@@ -11,6 +12,7 @@ from fake_server import FakeServer
 
 from mattstash import MattStash
 from mattstash.cli import exit_codes
+from mattstash.cli.handlers.get import GetHandler
 from mattstash.cli.main import main
 
 SERVER = "http://localhost:8000"
@@ -130,6 +132,7 @@ def test_raw_stdout_is_exactly_the_secret_in_a_real_process(populated: Path):
     proc = subprocess.run(
         [sys.executable, "-m", "mattstash.cli.main", "--db", str(populated), "--verbose", "get", "db", "--raw"],
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         env=env,
         timeout=120,
     )
@@ -142,6 +145,7 @@ def test_raw_missing_secret_in_a_real_process(populated: Path):
     proc = subprocess.run(
         [sys.executable, "-m", "mattstash.cli.main", "--db", str(populated), "get", "nope", "--raw"],
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         timeout=120,
     )
     assert proc.returncode == 2
@@ -192,3 +196,11 @@ def test_server_raw_errors_print_nothing_on_stdout(server: FakeServer, capsys: p
     bad_key = main(["--server-url", SERVER, "--api-key", "wrong", "get", "tok", "--raw"])
     assert bad_key == exit_codes.ERROR
     assert capsys.readouterr().out == ""
+
+
+def test_handler_only_accepts_the_documented_field_names(capsys: pytest.CaptureFixture[str], caplog):
+    """The handler must not turn an arbitrary attribute name into output (argparse normally prevents this)."""
+    args = Namespace(title="x", path=None, password=None, show_password=False, json=False, raw=True, field="__class__")
+    assert GetHandler().handle(args) == exit_codes.ERROR
+    assert capsys.readouterr().out == ""
+    assert "--field must be one of password, username, url, notes" in caplog.text

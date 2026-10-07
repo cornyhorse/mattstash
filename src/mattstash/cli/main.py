@@ -157,10 +157,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     """
     Simple CLI:
       - setup: create a new database (the only command that creates one)
-      - list: show all entries
-      - get:  fetch a single entry by title
-      - put:  create or update an entry (simple or full)
-      - s3-test: construct a client and optionally head a bucket
+      - list/keys: show all entries / their titles
+      - get:  fetch a single entry by title (--raw for scripts)
+      - put:  create or update an entry (simple or full; secrets via stdin/files)
+      - delete/prune/versions: remove entries or versions, inspect version history
+      - env/exec: hand secrets to scripts and containers as environment variables
+      - backup/rotate-password: operate on the database file
+      - db-url/s3-test: build a database URL / an S3 client from a credential
     """
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -455,6 +458,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             "  export MATTSTASH_SERVER_URL=http://localhost:8000\n"
             "  export MATTSTASH_API_KEY=<api-key>\n"
             "  mattstash get my-secret\n"
+            "\n"
+            "Prefer files over environment variables and command-line options for secrets: the server reads\n"
+            "KDBX_PASSWORD_FILE, and the CLI reads MATTSTASH_API_KEY_FILE or --api-key-file.\n"
             "\n"
             "Full documentation: https://github.com/cornyhorse/mattstash/tree/main/server"
         )

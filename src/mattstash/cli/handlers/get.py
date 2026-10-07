@@ -23,12 +23,15 @@ class GetHandler(BaseHandler):
 
     def handle(self, args: Namespace) -> int:
         """Handle the get command."""
-        raw = bool(getattr(args, "raw", False))
-        field: Optional[str] = getattr(args, "field", None)
+        raw = self.flag(args, "raw")
+        field = self.opt(args, "field", str)
         if field is not None and not raw:
             self.error("--field requires --raw")
             return exit_codes.ERROR
-        if raw and getattr(args, "json", False):
+        if field is not None and field not in RAW_FIELDS:
+            self.error(f"--field must be one of {', '.join(RAW_FIELDS)}")
+            return exit_codes.ERROR
+        if raw and self.flag(args, "json"):
             self.error("--raw and --json are mutually exclusive")
             return exit_codes.ERROR
 
@@ -92,7 +95,7 @@ class GetHandler(BaseHandler):
             path=args.path,
             password=args.password,
             show_password=True,
-            version=getattr(args, "version", None),
+            version=self.opt(args, "version", int),
         )
         if not c:
             self.error(f"not found: {args.title}")
@@ -110,7 +113,7 @@ class GetHandler(BaseHandler):
             client = self.get_server_client(args)
             if client is None:
                 return exit_codes.ERROR
-            result = client.get(args.title, show_password=True, version=getattr(args, "version", None))
+            result = client.get(args.title, show_password=True, version=self.opt(args, "version", int))
             if not result:
                 self.error(f"not found: {args.title}")
                 return exit_codes.NOT_FOUND
@@ -122,8 +125,8 @@ class GetHandler(BaseHandler):
 
     def _handle_server_mode(self, args: Namespace) -> int:
         """Handle get command in server mode."""
-        if getattr(args, "raw", False):
-            return self._handle_raw_server(args, getattr(args, "field", None) or "password")
+        if self.flag(args, "raw"):
+            return self._handle_raw_server(args, self.opt(args, "field", str) or "password")
         try:
             client = self.get_server_client(args)
             if client is None:

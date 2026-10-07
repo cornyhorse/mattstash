@@ -24,6 +24,7 @@ from mattstash.cli.inputs import (
     StdinClaim,
     read_credential_file,
     read_secret_file,
+    read_stdin_line,
     read_stdin_secret,
     strip_one_newline,
 )
@@ -123,6 +124,34 @@ def test_read_stdin_secret_hints_on_terminal(monkeypatch: pytest.MonkeyPatch, ca
     feed_stdin(monkeypatch, b"typed\n", tty=True)
     assert read_stdin_secret("--value -") == "typed"
     assert "Ctrl-D" in capsys.readouterr().err
+
+
+def test_read_stdin_line_takes_the_first_line_only(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("first line\r\nsecond\n"))
+    assert read_stdin_line("--new-password-stdin") == "first line"
+    monkeypatch.setattr(sys, "stdin", io.StringIO("no newline"))
+    assert read_stdin_line("--new-password-stdin") == "no newline"
+    monkeypatch.setattr(sys, "stdin", io.StringIO("  padded  \n"))
+    assert read_stdin_line("--new-password-stdin") == "  padded  "
+
+
+@pytest.mark.parametrize("text", ["", "\n", "\r\n", "\nsecond line"])
+def test_read_stdin_line_rejects_an_empty_first_line(monkeypatch: pytest.MonkeyPatch, text: str):
+    monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+    with pytest.raises(InputError, match="empty line"):
+        read_stdin_line("--new-password-stdin")
+
+
+def test_read_stdin_line_rejects_oversized_lines(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("x" * (MAX_SECRET_BYTES + 5)))
+    with pytest.raises(InputError, match="larger than"):
+        read_stdin_line("--new-password-stdin")
+
+
+def test_read_stdin_line_hints_on_terminal(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    feed_stdin(monkeypatch, b"typed\n", tty=True)
+    assert read_stdin_line("--new-password-stdin") == "typed"
+    assert "Enter" in capsys.readouterr().err
 
 
 def test_read_secret_file(tmp_path: Path):

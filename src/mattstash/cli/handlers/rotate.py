@@ -46,12 +46,12 @@ class RotatePasswordHandler(BaseHandler):
             )
             return exit_codes.ERROR
 
-        stash = MattStash(path=args.path, password=args.password)
+        stash = MattStash(path=self.opt(args, "path", str), password=self.opt(args, "password", str))
         sidecar = PasswordResolver(stash.path).sidecar_path
         had_sidecar = os.path.exists(sidecar)
         sidecar_error: Optional[str] = None
         try:
-            backup_path = stash.rotate_password(new_password, backup=not getattr(args, "no_backup", False))
+            backup_path = stash.rotate_password(new_password, backup=not self.flag(args, "no_backup"))
         except SidecarUpdateError as exc:
             # The database is re-keyed: the new password must still reach the user.
             backup_path, sidecar_error = None, str(exc)
@@ -80,12 +80,12 @@ class RotatePasswordHandler(BaseHandler):
 
     def _new_password(self, args: Namespace) -> Tuple[Optional[str], bool]:
         """``(password, generated)``; ``(None, False)`` if no source was given and we cannot prompt."""
-        if getattr(args, "generate", False):
+        if self.flag(args, "generate"):
             return secrets.token_urlsafe(32), True
-        password_file = getattr(args, "new_password_file", None)
+        password_file = self.opt(args, "new_password_file", str)
         if password_file:
             return read_credential_file("--new-password-file", password_file), False
-        if getattr(args, "new_password_stdin", False):
+        if self.flag(args, "new_password_stdin"):
             return read_stdin_line("--new-password-stdin"), False
         if sys.stdin.isatty():
             first = getpass.getpass("New master password: ")

@@ -115,14 +115,14 @@ class PutHandler(BaseHandler):
 
     def _build_request(self, args: Namespace) -> PutRequest:
         """Decide the mode and read every secret input exactly once. Raises ``InputError``."""
-        value_arg: Optional[str] = getattr(args, "value", None)
-        value_file: Optional[str] = getattr(args, "value_file", None)
-        entry_pw: Optional[str] = getattr(args, "entry_password", None)
-        entry_pw_file: Optional[str] = getattr(args, "entry_password_file", None)
-        entry_pw_stdin = bool(getattr(args, "entry_password_stdin", False))
-        username = getattr(args, "username", None)
-        url = getattr(args, "url", None)
-        fields = bool(getattr(args, "fields", False))
+        value_arg = self.opt(args, "value", str)
+        value_file = self.opt(args, "value_file", str)
+        entry_pw = self.opt(args, "entry_password", str)
+        entry_pw_file = self.opt(args, "entry_password_file", str)
+        entry_pw_stdin = self.flag(args, "entry_password_stdin")
+        username = self.opt(args, "username", str)
+        url = self.opt(args, "url", str)
+        fields = self.flag(args, "fields")
 
         has_value = value_arg is not None or value_file is not None
         entry_pw_options = [
@@ -163,8 +163,8 @@ class PutHandler(BaseHandler):
                 "(--fields is inferred when --username, --url or --entry-password* is given)"
             )
 
-        db_password_flag = bool(getattr(args, "db_password_explicit", False))
-        cli_password: Optional[str] = getattr(args, "password", None)
+        db_password_flag = self.flag(args, "db_password_explicit")
+        cli_password = self.opt(args, "password", str)
 
         if not fields:
             value = self._read_value(value_arg, value_file)

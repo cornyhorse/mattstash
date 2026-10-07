@@ -411,27 +411,24 @@ class MattStash:
             staged = stage_private_file(sidecar, new_password.encode()) if has_sidecar else None
             try:
                 store.change_password(new_password)
-            except BaseException:
-                discard(staged)
-                raise
-            self.password = new_password
-            try:
-                self._reload_locked()  # prove the new password opens what was written
-            except MattStashError as exc:
-                discard(staged)
-                raise DatabaseAccessError(
-                    "The database was re-keyed but could not be re-opened with the new password"
-                    + (f"; restore it from the backup {backup_path}" if backup_path else "")
-                ) from exc
-            if staged is not None:
+                self.password = new_password
                 try:
-                    os.replace(staged, sidecar)
-                except OSError as exc:
-                    discard(staged)
-                    raise SidecarUpdateError(
-                        f"The database now uses the new password, but the sidecar file {sidecar} "
-                        f"could not be updated: {exc.strerror or exc}"
+                    self._reload_locked()  # prove the new password opens what was written
+                except MattStashError as exc:
+                    raise DatabaseAccessError(
+                        "The database was re-keyed but could not be re-opened with the new password"
+                        + (f"; restore it from the backup {backup_path}" if backup_path else "")
                     ) from exc
+                if staged is not None:
+                    try:
+                        os.replace(staged, sidecar)  # atomic; consumes the staged file
+                    except OSError as exc:
+                        raise SidecarUpdateError(
+                            f"The database now uses the new password, but the sidecar file {sidecar} "
+                            f"could not be updated: {exc.strerror or exc}"
+                        ) from exc
+            finally:
+                discard(staged)  # no-op once the staged file has replaced the sidecar
         logger.info("Master password rotated")
         return backup_path
 

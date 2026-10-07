@@ -114,7 +114,7 @@ class SetupHandler(BaseHandler):
             return password
         explicit = getattr(args, "password", None)
         if explicit:
-            if not getattr(args, "db_password_from_file", False):  # as good as --password-file
+            if not self.flag(args, "db_password_from_file"):  # as good as --password-file
                 self.error(
                     "warning: --password/--db-password on the command line is visible to other users "
                     "(ps, shell history); prefer --password-file or --password-stdin"
