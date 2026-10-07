@@ -287,7 +287,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         parents=[global_opts],
     )
     p_dburl.add_argument("title", help="KeePass entry title holding DB connection fields")
-    p_dburl.add_argument("--driver", default="psycopg", help="Driver name suffix in URL (default: psycopg)")
+    p_dburl.add_argument(
+        "--dialect",
+        help="Database dialect: postgresql (default), mysql or mariadb. Overrides the credential's 'dialect' "
+        "custom property. The 'sslmode' property is PostgreSQL-only",
+    )
+    p_dburl.add_argument(
+        "--driver",
+        default="auto",
+        help="Driver name suffix in the URL (default: psycopg for postgresql, none for mysql/mariadb). "
+        "postgresql: psycopg, psycopg2, asyncpg, pg8000; mysql: pymysql, mysqlconnector, asyncmy, aiomysql; "
+        "mariadb: mariadbconnector, pymysql. Pass '' for no driver suffix",
+    )
     p_dburl.add_argument(
         "--database", help="Database name; if omitted, use credential custom property 'database'/'dbname'"
     )
