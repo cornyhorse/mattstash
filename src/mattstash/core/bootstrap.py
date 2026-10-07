@@ -7,18 +7,31 @@ Nothing in MattStash creates a database implicitly: opening a missing database i
 error, so a mistyped path or an unmounted volume can never silently produce a fresh,
 empty database. Creation is only reachable through :meth:`DatabaseBootstrapper.create`
 (``MattStash.create`` / ``mattstash setup``).
+
+Safety properties of :meth:`~DatabaseBootstrapper.create`:
+
+* it holds the database's cross-process lock (``<db>.lock``, the same one writers use) for the whole
+  operation, so it cannot interleave with a writer or with another ``create``;
+* temporary files have unique names, so concurrent creators never share a temp file;
+* without ``force`` the final step is an atomic create-if-absent (``os.link``), so when several processes race
+  exactly one wins and the others get ``DatabaseExistsError``;
+* backups are never overwritten (timestamps have microsecond resolution and collisions get a counter);
+* everything fallible is prepared before the first destructive step, and a failure while swapping restores the
+  previous sidecar, so the old database is never left without its password.
 """
 
 import contextlib
+import errno
 import os
 import secrets
 import shutil
-import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Optional
 
 from ..models.config import config
 from ..utils.exceptions import DatabaseExistsError, MattStashError
+from ..utils.filelock import FileLock
 from ..utils.logging_config import get_logger
 from .password_resolver import PasswordResolver
 
@@ -39,6 +52,7 @@ class CreatedDatabase:
     generated: bool
     sidecar_path: Optional[str] = None
     backups: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _write_private(path: str, data: bytes) -> None:
@@ -48,6 +62,28 @@ def _write_private(path: str, data: bytes) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
+
+
+def _link_or_replace(src: str, dst: str, *, replace: bool) -> None:
+    """Move ``src`` to ``dst``.
+
+    ``replace=False`` is create-if-absent: it raises ``FileExistsError`` if ``dst`` exists, atomically (hard link),
+    so concurrent creators cannot both succeed. ``replace=True`` overwrites.
+    """
+    if replace:
+        os.replace(src, dst)
+        return
+    try:
+        os.link(src, dst)
+    except FileExistsError:
+        raise
+    except OSError:
+        # filesystems without hard links: fall back to a check + rename (we hold the database lock)
+        if os.path.exists(dst):
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), dst) from None
+        os.replace(src, dst)
+        return
+    os.remove(src)
 
 
 class DatabaseBootstrapper:
@@ -69,6 +105,21 @@ class DatabaseBootstrapper:
         """Paths that creating a database here would replace."""
         return [p for p in (self.db_path, self.sidecar_path) if os.path.exists(p)]
 
+    @staticmethod
+    def _backup(path: str) -> str:
+        """Copy ``path`` to a fresh ``<path>.bak-<UTC microseconds>`` file (0600); never overwrites a backup."""
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        for attempt in range(1000):
+            dest = f"{path}.bak-{stamp}" + (f"-{attempt}" if attempt else "")
+            try:
+                fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            os.close(fd)
+            shutil.copyfile(path, dest)
+            return dest
+        raise MattStashError(f"Could not find a free backup name for {path}")  # pragma: no cover
+
     def create(
         self,
         password: Optional[str] = None,
@@ -76,6 +127,7 @@ class DatabaseBootstrapper:
         sidecar: bool = False,
         force: bool = False,
         backup: bool = True,
+        lock_timeout: float = 30.0,
     ) -> CreatedDatabase:
         """Create a new database.
 
@@ -86,14 +138,13 @@ class DatabaseBootstrapper:
             sidecar: Also write the password to ``<db_dir>/.mattstash.txt`` (0600).
             force: Replace existing files instead of refusing.
             backup: With ``force``, copy existing files to ``<name>.bak-<UTC timestamp>`` first.
+            lock_timeout: Seconds to wait for a writer (or another ``create``) holding the database lock.
 
         Raises:
             DatabaseExistsError: files exist and ``force`` is False.
+            DatabaseLockError: the database lock could not be acquired in time.
             MattStashError: creation failed; the previous files are left untouched.
         """
-        existing = self.existing_files()
-        if existing and not force:
-            raise DatabaseExistsError("Refusing to overwrite existing files: " + ", ".join(existing))
         if _kp_create_database is None:
             raise MattStashError("pykeepass.create_database is not available in this version")
 
@@ -110,49 +161,101 @@ class DatabaseBootstrapper:
             with contextlib.suppress(OSError):  # pragma: no cover - non-POSIX
                 os.chmod(self.db_dir, 0o700)
 
-        backups: list[str] = []
-        if existing and backup:
-            stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-            for path in existing:
-                dest = f"{path}.bak-{stamp}"
-                _write_private(dest, b"")
-                shutil.copyfile(path, dest)
-                backups.append(dest)
+        # Writers and other creators serialise on the same lock file, so a writer cannot finish a save
+        # (and rename an old-password copy over the new database) in the middle of a replacement.
+        with FileLock(self.db_path + ".lock", timeout=lock_timeout):
+            return self._create_locked(password, generated, sidecar=sidecar, force=force, backup=backup)
 
-        new_db = f"{self.db_path}.new"
-        new_sidecar = f"{self.sidecar_path}.new"
+    def _create_locked(
+        self, password: str, generated: bool, *, sidecar: bool, force: bool, backup: bool
+    ) -> CreatedDatabase:
+        assert _kp_create_database is not None
+        existing = self.existing_files()
+        if existing and not force:
+            raise DatabaseExistsError("Refusing to overwrite existing files: " + ", ".join(existing))
+
+        # --- 1) prepare everything that can fail, touching nothing that exists -------------------
+        backups: list[str] = []
+        new_sidecar = None
+        old_sidecar: Optional[bytes] = None  # kept in memory so a failed swap can restore it even without backups
+        token = secrets.token_hex(6)  # unique per call: concurrent creators never share a temp file
+        new_db = os.path.join(self.db_dir, f".{os.path.basename(self.db_path)}.{token}.new")
+        temp_sidecar = os.path.join(self.db_dir, f".{self.sidecar_basename}.{token}.new")
+        leftovers = [new_db, os.path.splitext(new_db)[0] + ".tmp", temp_sidecar]
         try:
-            # pykeepass writes "<name>.tmp" then moves it over the target; pre-create that temp
-            # file 0600 (it is opened with truncation, which keeps the mode) so the database is
-            # never visible with default-umask permissions.
+            if os.path.exists(self.sidecar_path):
+                with open(self.sidecar_path, "rb") as f:
+                    old_sidecar = f.read()
+            if existing and backup:
+                for path in existing:
+                    backups.append(self._backup(path))
+
+            # pykeepass writes "<stem>.tmp" then moves it over the target; pre-create that temp file 0600
+            # (it is opened with truncation, which keeps the mode) so the database is never visible with
+            # default-umask permissions.
             _write_private(os.path.splitext(new_db)[0] + ".tmp", b"")
             _kp_create_database(new_db, password=password)
             with contextlib.suppress(OSError):  # best effort: not every filesystem supports chmod
                 os.chmod(new_db, 0o600)
             if sidecar:
-                _write_private(new_sidecar, password.encode())
+                _write_private(temp_sidecar, password.encode())
+                new_sidecar = temp_sidecar
         except Exception as exc:
-            for leftover in (new_db, new_sidecar, os.path.splitext(new_db)[0] + ".tmp"):
-                with contextlib.suppress(OSError):
-                    os.remove(leftover)
+            self._cleanup(leftovers)
             logger.error(f"Failed to create KeePass DB: {exc}")
             raise MattStashError(f"Failed to create database: {exc}") from exc
 
-        # Commit: swap in the new files; old ones were backed up above.
-        os.replace(new_db, self.db_path)
-        sidecar_path: Optional[str] = None
-        if sidecar:
-            os.replace(new_sidecar, self.sidecar_path)
-            sidecar_path = self.sidecar_path
-        elif os.path.exists(self.sidecar_path):
-            # A stale sidecar would hold the OLD password (and mislead the resolver).
-            os.remove(self.sidecar_path)
+        # --- 2) swap in. Old files were backed up above; the database goes LAST ---------------------
+        sidecar_swapped = False
+        warnings: list[str] = []
+        try:
+            if new_sidecar is not None:
+                _link_or_replace(new_sidecar, self.sidecar_path, replace=force)
+                sidecar_swapped = True
+            _link_or_replace(new_db, self.db_path, replace=force)
+        except FileExistsError as exc:
+            self._restore_sidecar(sidecar_swapped, old_sidecar)
+            self._cleanup(leftovers)
+            raise DatabaseExistsError(f"Refusing to overwrite {exc.filename or self.db_path}") from None
+        except OSError as exc:
+            self._restore_sidecar(sidecar_swapped, old_sidecar)
+            self._cleanup(leftovers)
+            raise MattStashError(f"Failed to install the new database: {exc.strerror or exc}") from exc
+        finally:
+            self._cleanup(leftovers)
+
+        if new_sidecar is None and os.path.exists(self.sidecar_path):
+            # A stale sidecar holds the OLD password (and would mislead the resolver). The new database is
+            # already in place, so a failure here is reported, not fatal.
+            try:
+                os.remove(self.sidecar_path)
+            except OSError as exc:
+                warnings.append(f"could not remove the old sidecar {self.sidecar_path}: {exc.strerror or exc}")
 
         logger.info(f"Created new KeePass DB at {self.db_path}")
         return CreatedDatabase(
             db_path=self.db_path,
             password=password,
             generated=generated,
-            sidecar_path=sidecar_path,
+            sidecar_path=self.sidecar_path if sidecar else None,
             backups=backups,
+            warnings=warnings,
         )
+
+    @staticmethod
+    def _cleanup(paths: list[str]) -> None:
+        for leftover in paths:
+            with contextlib.suppress(OSError):
+                os.remove(leftover)
+
+    def _restore_sidecar(self, swapped: bool, old_content: Optional[bytes]) -> None:
+        """Undo a sidecar swap after the database swap failed, so the (unchanged) old database keeps its password."""
+        if not swapped:
+            return
+        with contextlib.suppress(OSError):
+            if old_content is not None:
+                restore = f"{self.sidecar_path}.{secrets.token_hex(6)}.restore"
+                _write_private(restore, old_content)
+                os.replace(restore, self.sidecar_path)
+            else:
+                os.remove(self.sidecar_path)
