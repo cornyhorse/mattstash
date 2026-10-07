@@ -19,6 +19,7 @@ from .handlers import (
     GetHandler,
     KeysHandler,
     ListHandler,
+    PruneHandler,
     PutHandler,
     S3TestHandler,
     SetupHandler,
@@ -57,6 +58,16 @@ def _resolve_db_password_file(args: argparse.Namespace) -> None:
     args.password = read_credential_file("--db-password-file", path)
     args.db_password_explicit = True
     args.db_password_from_file = True
+
+
+def _non_negative_int(text: str) -> int:
+    try:
+        number = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid integer: {text!r}") from None
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return number
 
 
 def _add_global_options(parser: argparse.ArgumentParser, *, suppress_defaults: bool) -> None:
@@ -238,8 +249,31 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_put.add_argument("--json", action="store_true", help="Output JSON")
 
     # delete
-    p_del = subparsers.add_parser("delete", help="Delete an entry by title", parents=[global_opts])
+    p_del = subparsers.add_parser(
+        "delete", help="Delete an entry (all versions, or one with --version)", parents=[global_opts]
+    )
     p_del.add_argument("title", help="KeePass entry title to delete")
+    p_del.add_argument(
+        "--version",
+        type=_non_negative_int,
+        metavar="N",
+        help="Delete only version N and keep the others (without this option ALL versions are deleted)",
+    )
+
+    # prune
+    p_prune = subparsers.add_parser(
+        "prune",
+        help="Delete all but the newest N versions of a secret (local database only)",
+        parents=[global_opts],
+    )
+    p_prune.add_argument("title", help="Base title of the secret")
+    p_prune.add_argument(
+        "--keep",
+        type=int,
+        required=True,
+        metavar="N",
+        help="Number of newest versions to keep (at least 1)",
+    )
 
     # versions
     p_versions = subparsers.add_parser("versions", help="List versions for a key", parents=[global_opts])
@@ -324,6 +358,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "get": GetHandler(),
         "put": PutHandler(),
         "delete": DeleteHandler(),
+        "prune": PruneHandler(),
         "versions": VersionsHandler(),
         "db-url": DbUrlHandler(),
         "s3-test": S3TestHandler(),

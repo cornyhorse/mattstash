@@ -10,6 +10,7 @@ from .db_url import DbUrlHandler
 from .delete import DeleteHandler
 from .get import GetHandler
 from .list import KeysHandler, ListHandler
+from .prune import PruneHandler
 from .put import PutHandler
 from .s3_test import S3TestHandler
 from .setup import SetupHandler
@@ -23,6 +24,7 @@ __all__ = [
     "GetHandler",
     "KeysHandler",
     "ListHandler",
+    "PruneHandler",
     "PutHandler",
     "S3TestHandler",
     "SetupHandler",
