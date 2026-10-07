@@ -176,8 +176,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_get = subparsers.add_parser("get", help="Get a single entry by title", parents=[global_opts])
     p_get.add_argument("title", help="KeePass entry title")
     p_get.add_argument("--show-password", action="store_true", help="Show password in output")
-    p_get.add_argument("--json", action="store_true", help="Output JSON")
     p_get.add_argument("--version", type=int, help="Specific version to retrieve")
+    p_get_format = p_get.add_mutually_exclusive_group()
+    p_get_format.add_argument("--json", action="store_true", help="Output JSON")
+    p_get_format.add_argument(
+        "--raw",
+        action="store_true",
+        help="Print only the secret (password/value) followed by a newline, unmasked, and nothing else; "
+        "for scripts, e.g. TOKEN=$(mattstash get my-token --raw). Exit status 2 if not found",
+    )
+    p_get.add_argument(
+        "--field",
+        choices=["password", "username", "url", "notes"],
+        help="With --raw: the field to print (default: password). Simple secrets only have a password/value",
+    )
 
     # put
     p_put = subparsers.add_parser("put", help="Create/update an entry", parents=[global_opts])
