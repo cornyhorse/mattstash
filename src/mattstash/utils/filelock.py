@@ -15,6 +15,7 @@ thread-safe; callers serialise access with a ``threading.RLock`` (MattStash does
 """
 
 import contextlib
+import errno
 import os
 import sys
 import time
@@ -44,6 +45,12 @@ else:
         fcntl.flock(fd, fcntl.LOCK_UN)
 
 
+# errno values meaning "somebody else holds the lock" (retry); anything else is a real failure (fail fast)
+_CONTENTION = {errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK, errno.EDEADLK}
+if sys.platform == "win32":  # pragma: no cover
+    _CONTENTION.add(getattr(errno, "EDEADLOCK", errno.EDEADLK))
+
+
 class FileLock:
     """Exclusive advisory lock on ``path`` (created with mode 0600 if missing)."""
 
@@ -69,6 +76,10 @@ class FileLock:
                 _try_lock(fd)
                 break
             except OSError as exc:
+                if exc.errno not in _CONTENTION:
+                    # e.g. ENOLCK on a network filesystem without locking: waiting will not help
+                    os.close(fd)
+                    raise DatabaseLockError(f"Cannot lock {self.path}: {exc.strerror or exc}") from exc
                 if time.monotonic() >= deadline:
                     os.close(fd)
                     raise DatabaseLockError(

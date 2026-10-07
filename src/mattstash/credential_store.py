@@ -199,6 +199,9 @@ class CredentialStore:
 
     def save(self) -> None:
         """Save changes to the database and clear cache."""
+        if self._kp is None:
+            # Silently doing nothing would let callers believe a change was stored.
+            raise DatabaseAccessError("Database is not open; nothing was saved")
         if self._kp:
             # pykeepass writes "<name>.tmp" and moves it over the database, which would give the
             # new file default-umask permissions. Keep the existing mode (0600 for new files).
