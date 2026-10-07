@@ -4,13 +4,13 @@ from typing import Any
 
 from slowapi import Limiter
 
-from .client_ip import client_ip
+from .client_ip import client_bucket
 from .config import config
 
 
 def get_client_address(request: Any) -> str:
-    """Rate-limit identity: the TCP peer, or the proxy-reported client if trusted hops are configured."""
-    return client_ip(request.scope)
+    """Rate-limit identity: the client's throttling bucket (IPv4 address or IPv6 /64)."""
+    return client_bucket(request.scope)
 
 
 def read_limit() -> str:

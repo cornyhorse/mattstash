@@ -19,6 +19,7 @@ def main() -> None:
         log_level=config.LOG_LEVEL.lower(),
         ssl_certfile=config.TLS_CERT_FILE if tls else None,
         ssl_keyfile=config.TLS_KEY_FILE if tls else None,
+        access_log=False,  # the app's own access log (client address + key id) replaces uvicorn's anonymous one
         server_header=False,  # do not advertise the server software
         proxy_headers=False,  # client IPs come from MATTSTASH_TRUSTED_PROXY_HOPS, not from uvicorn
     )

@@ -64,9 +64,9 @@ def test_unexpected_errors_are_500_without_leaking_details(rw_client, monkeypatc
 
 def test_key_store_failure_is_503_not_500(make_client, monkeypatch):
     client = make_client()
-    import app.dependencies as deps
+    import app.middleware.security as security
 
-    monkeypatch.setattr(deps, "authenticate", lambda key: (_ for _ in ()).throw(OSError("disk")))
+    monkeypatch.setattr(security, "authenticate", lambda key: (_ for _ in ()).throw(OSError("disk")))
     assert client.get("/api/v1/credentials", headers=H).status_code == 503
 
 

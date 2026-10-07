@@ -103,7 +103,7 @@ def get_credential(
     - **show_password**: Whether to show the actual password (default: masked)
     """
     require_valid_name(name)
-    ensure_name_in_scope(principal, name, hide=True)
+    ensure_name_in_scope(principal, name, hide=True, request=request, op="read")
     audit(request, "get", name, reveal=show_password, version=version)
     with translate_errors("get"):
         credential = mattstash.get(name, show_password=True, version=version)
@@ -170,7 +170,7 @@ def list_versions(
     - **name**: Credential name
     """
     require_valid_name(name)
-    ensure_name_in_scope(principal, name, hide=True)
+    ensure_name_in_scope(principal, name, hide=True, request=request, op="read")
     audit(request, "versions", name)
     with translate_errors("versions"):
         versions = mattstash.list_versions(name)
@@ -211,7 +211,7 @@ def create_credential(
     - **name**: Credential name
     """
     require_valid_name(name)
-    ensure_name_in_scope(principal, name, hide=False)
+    ensure_name_in_scope(principal, name, hide=False, request=request, op="write")
     response.headers["Cache-Control"] = "no-store"
     with translate_errors("put"):
         result = mattstash.put(
@@ -253,7 +253,7 @@ def delete_credential(
     - **name**: Credential name
     """
     require_valid_name(name)
-    ensure_name_in_scope(principal, name, hide=False)
+    ensure_name_in_scope(principal, name, hide=False, request=request, op="delete")
     response.headers["Cache-Control"] = "no-store"
     with translate_errors("delete"):
         deleted = mattstash.delete(name, version)

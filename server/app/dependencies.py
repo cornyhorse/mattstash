@@ -3,11 +3,12 @@
 import logging
 import threading
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from mattstash import MattStash
 
+from .audit import audit
 from .config import config
 from .security.api_keys import Principal, authenticate
 
@@ -73,7 +74,15 @@ async def authenticate_request(
     request: Request,
     x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
 ) -> Principal:
-    """Authenticate the X-API-Key header and record the principal for auditing."""
+    """Return the authenticated principal.
+
+    The security middleware has normally authenticated the request already (and throttled failures); its result
+    is reused here. If the app is run without that middleware the header is verified here instead.
+    """
+    existing = request.scope.get("state", {}).get("principal")
+    if existing is not None:
+        request.state.principal = existing
+        return existing
     try:
         principal = authenticate(x_api_key) if x_api_key else None
     except Exception as exc:  # key store unusable (e.g. unreadable file on first load): not the caller's fault
@@ -90,8 +99,9 @@ async def authenticate_request(
 def require(op: str) -> Callable[..., Principal]:
     """Dependency factory: the caller must be authenticated and allowed to perform ``op``."""
 
-    async def dependency(principal: Annotated[Principal, Depends(authenticate_request)]) -> Principal:
+    async def dependency(request: Request, principal: Annotated[Principal, Depends(authenticate_request)]) -> Principal:
         if not principal.can(op):
+            audit(request, "denied", op=op)
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         return principal
 
@@ -108,16 +118,28 @@ def require_writes_enabled() -> None:
         )
 
 
-def ensure_name_in_scope(principal: Principal, name: str, *, hide: bool) -> None:
-    """Raise unless ``principal`` may touch ``name``.
+def ensure_name_in_scope(
+    principal: Principal,
+    name: str,
+    *,
+    hide: bool,
+    request: Optional[Request] = None,
+    op: Optional[str] = None,
+    not_found_detail: Optional[str] = None,
+) -> None:
+    """Raise unless ``principal`` may touch ``name``. Denied attempts are written to the audit log.
 
     ``hide=True`` (reads) answers 404 so a scoped key cannot probe which names exist outside its scope;
     ``hide=False`` (writes/deletes) answers 403, which reveals nothing because it is unconditional.
+    ``not_found_detail`` must be exactly what the endpoint answers for a genuinely missing name.
     """
     if not principal.allows_name(name):
+        if request is not None:
+            audit(request, "denied", name, op=op)
         if hide:
-            # must be byte-identical to the router's genuine "not found" response
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Credential not found: {name}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=not_found_detail or f"Credential not found: {name}"
+            )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
 

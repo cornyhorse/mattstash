@@ -41,8 +41,10 @@ _SHA256_HEX_RE = re.compile(r"[0-9a-fA-F]{64}", re.ASCII)
 
 # Cache the policy with a TTL so rotated keys are picked up without restart
 _CACHE_TTL_SECONDS: float = 300.0
+_RETRY_SECONDS: float = 5.0  # after a failed reload, try again after this long (not on every request)
+_NEVER = float("-inf")  # time.monotonic() counts from boot, so 0.0 would look "recently loaded" on a young host
 _policy: "Optional[KeyPolicy]" = None
-_policy_loaded_at: float = 0.0
+_policy_loaded_at: float = _NEVER
 _cache_lock = threading.Lock()
 
 
@@ -95,12 +97,9 @@ def _digest(key: str) -> bytes:
     return hashlib.sha256(key.encode("utf-8")).digest()
 
 
-def _legacy_record(key: str) -> _KeyRecord:
-    digest = _digest(key)
-    return _KeyRecord(
-        digest,
-        Principal(id=f"legacy-{digest.hex()[:8]}", ops=VALID_OPS, prefixes=None, legacy=True),
-    )
+def _legacy_record(key: str, key_id: str) -> _KeyRecord:
+    """A legacy full-access key. The id is positional (``legacy-env``, ``legacy-1``...), never derived from the key."""
+    return _KeyRecord(_digest(key), Principal(id=key_id, ops=VALID_OPS, prefixes=None, legacy=True))
 
 
 def _check_length(key: str, where: str) -> None:
@@ -154,9 +153,18 @@ def _parse_policy_entry(entry: Any, index: int) -> _KeyRecord:
     return _KeyRecord(digest, Principal(id=key_id, ops=frozenset(ops), prefixes=scoped, legacy=False))
 
 
+def _reject_duplicate_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+    for field, value in pairs:
+        if field in seen:
+            raise ValueError(f"API key policy contains the duplicate field '{field}'")
+        seen[field] = value
+    return seen
+
+
 def _parse_policy_json(text: str) -> list[_KeyRecord]:
     try:
-        document = json.loads(text)
+        document = json.loads(text, object_pairs_hook=_reject_duplicate_fields)
     except json.JSONDecodeError as exc:
         raise ValueError(f"API keys file is not valid JSON (line {exc.lineno}, column {exc.colno})") from None
     entries = document.get("keys") if isinstance(document, dict) else document
@@ -169,13 +177,24 @@ def _parse_policy_json(text: str) -> list[_KeyRecord]:
     return records
 
 
+def _first_content_character(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped[0]
+    return ""
+
+
 def _parse_legacy_lines(text: str, source: str) -> list[_KeyRecord]:
     records = []
     for number, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
-        if line and not line.startswith("#"):
-            _check_length(line, f"on line {number} of {source}")
-            records.append(_legacy_record(line))
+        if not line or line.startswith("#"):
+            continue
+        if re.search(r"\s", line):
+            raise ValueError(f"API key on line {number} of {source} contains whitespace; one key per line")
+        _check_length(line, f"on line {number} of {source}")
+        records.append(_legacy_record(line, f"legacy-{len(records) + 1}"))
     return records
 
 
@@ -185,15 +204,17 @@ def load_key_policy() -> KeyPolicy:
 
     if config.API_KEY:
         _check_length(config.API_KEY, "from MATTSTASH_API_KEY")
-        records.append(_legacy_record(config.API_KEY))
+        records.append(_legacy_record(config.API_KEY, "legacy-env"))
 
     if config.API_KEYS_FILE:
         path = Path(config.API_KEYS_FILE)
         if not path.is_file():
             raise FileNotFoundError(f"API keys file not found: {config.API_KEYS_FILE}")
-        text = path.read_text()
-        if text.lstrip()[:1] in ("{", "["):
-            records.extend(_parse_policy_json(text))
+        text = path.read_text(encoding="utf-8-sig")  # tolerate a BOM written by some editors
+        if _first_content_character(text) in ("{", "["):
+            # '#' comment lines are allowed in a policy file too (they are not JSON, so strip them first)
+            uncommented = "\n".join(line for line in text.splitlines() if not line.strip().startswith("#"))
+            records.extend(_parse_policy_json(uncommented))
         else:
             records.extend(_parse_legacy_lines(text, "the API keys file"))
 
@@ -232,6 +253,7 @@ def get_key_policy(*, force: bool = False) -> KeyPolicy:
                 if _policy is None:
                     raise
                 logger.error("API key policy reload failed (%s); keeping the previous policy", type(exc).__name__)
+                _policy_loaded_at = now - _CACHE_TTL_SECONDS + _RETRY_SECONDS  # retry soon, not on every request
         assert _policy is not None
         return _policy
 
@@ -240,11 +262,25 @@ def invalidate_api_key_cache() -> None:
     """Mark the cached policy stale so it is re-read on the next request.
 
     The previous policy is kept as a fallback: if the new file is broken the old keys keep working (and the
-    error is logged) instead of every request failing.
+    error is logged) instead of every request failing. Use :func:`reload_key_policy_now` when the caller needs to
+    *know* whether the new policy took effect (for example when revoking a key).
     """
     global _policy_loaded_at
     with _cache_lock:
-        _policy_loaded_at = 0.0
+        _policy_loaded_at = _NEVER
+
+
+def reload_key_policy_now() -> KeyPolicy:
+    """Re-read the key sources immediately and make the result the active policy.
+
+    Raises (and leaves the previous policy untouched) if the sources cannot be loaded, so the caller can report
+    that a revocation did NOT take effect.
+    """
+    global _policy, _policy_loaded_at
+    with _cache_lock:
+        policy = load_key_policy()
+        _policy, _policy_loaded_at = policy, time.monotonic()
+        return policy
 
 
 def authenticate(api_key: str) -> Optional[Principal]:

@@ -247,10 +247,12 @@ def test_invalidate_forces_a_reload_and_picks_up_rotation(monkeypatch, tmp_path)
     assert verify_api_key("t" * 40) and not verify_api_key(STRONG)
 
 
-def test_failed_reload_keeps_the_previous_policy_and_retries(monkeypatch, tmp_path, caplog):
+def test_failed_reload_keeps_the_previous_policy_and_retries_after_a_short_backoff(monkeypatch, tmp_path, caplog):
     path = tmp_path / "keys"
     path.write_text(STRONG + "\n")
     monkeypatch.setattr(Config, "API_KEYS_FILE", str(path))
+    clock = {"now": 10_000.0}
+    monkeypatch.setattr(api_keys.time, "monotonic", lambda: clock["now"])
     assert verify_api_key(STRONG)
 
     path.write_text("")  # broken edit: no keys
@@ -259,7 +261,13 @@ def test_failed_reload_keeps_the_previous_policy_and_retries(monkeypatch, tmp_pa
     assert verify_api_key(STRONG) is True  # old keys keep working
     assert "reload failed" in caplog.text and STRONG not in caplog.text
 
-    path.write_text("t" * 40 + "\n")  # fixed: picked up on the very next request (no TTL wait)
+    # no re-read (and no new error line) on every request during the backoff...
+    caplog.clear()
+    path.write_text("t" * 40 + "\n")  # the file is fixed, but we are still inside the backoff window
+    assert verify_api_key(STRONG) is True and not caplog.text
+
+    # ...and the fix is picked up as soon as the backoff has elapsed
+    clock["now"] += api_keys._RETRY_SECONDS + 0.1
     assert verify_api_key("t" * 40) and not verify_api_key(STRONG)
 
 

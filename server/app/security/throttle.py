@@ -1,16 +1,16 @@
-"""Throttling of failed authentication attempts, per client address.
+"""Throttling of failed authentication attempts, per client.
 
-This runs *before* authentication in the middleware: once a client has accumulated too many
-failures within the window every request from it is answered ``429`` without touching the key
-store, so keys cannot be brute-forced at line speed. Only failures count (a valid key never
-resets the counter), so legitimate clients are unaffected.
+This runs *before* the application: once a client has accumulated too many failures within the window every
+request from it that needs authentication is answered ``429`` without touching the key store, so keys cannot be
+brute-forced at line speed. Only failures count (a valid key never resets the counter), so legitimate clients are
+unaffected. Memory is bounded: the least recently active clients are evicted first, in O(1).
 """
 
 import math
 import threading
 import time
-from collections import deque
-from typing import Callable
+from collections import OrderedDict, deque
+from collections.abc import Callable
 
 
 class FailureTracker:
@@ -28,7 +28,7 @@ class FailureTracker:
         self._window = window_seconds
         self._max_clients = max_clients
         self._clock = clock
-        self._failures: dict[str, deque[float]] = {}
+        self._failures: OrderedDict[str, deque[float]] = OrderedDict()
         self._lock = threading.Lock()
 
     def _prune(self, client: str, now: float) -> deque[float]:
@@ -49,8 +49,9 @@ class FailureTracker:
             attempts = self._prune(client, now)
             attempts.append(now)
             self._failures[client] = attempts
-            if len(self._failures) > self._max_clients:
-                self._evict(now)
+            self._failures.move_to_end(client)  # most recently active last
+            while len(self._failures) > self._max_clients:
+                self._failures.popitem(last=False)  # O(1): drop the least recently active client
 
     def retry_after(self, client: str) -> int:
         """Seconds until ``client`` may try again; 0 if it is not blocked."""
@@ -66,9 +67,3 @@ class FailureTracker:
     def reset(self) -> None:
         with self._lock:
             self._failures.clear()
-
-    def _evict(self, now: float) -> None:
-        for client in list(self._failures):
-            self._prune(client, now)
-        while len(self._failures) > self._max_clients:  # still too many: drop the oldest-inserted
-            self._failures.pop(next(iter(self._failures)))

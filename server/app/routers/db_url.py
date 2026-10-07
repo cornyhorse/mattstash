@@ -40,7 +40,14 @@ def get_database_url(
     - **mask_password**: Whether to mask the password in the URL (default: true)
     """
     require_valid_name(name)
-    ensure_name_in_scope(principal, name, hide=True)
+    ensure_name_in_scope(
+        principal,
+        name,
+        hide=True,
+        request=request,
+        op="read",
+        not_found_detail=f"Credential not found or unsuitable: {name}",  # same text as an in-scope miss
+    )
     response.headers["Cache-Control"] = "no-store"
     if driver not in _ALLOWED_DRIVERS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid driver name")
