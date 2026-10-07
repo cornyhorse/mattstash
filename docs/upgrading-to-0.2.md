@@ -7,6 +7,9 @@ For the API server see also [server/docs/configuration.md](../server/docs/config
 
 ## Checklist
 
+0. **Python 3.11 or newer is required** (tested on 3.11, 3.12, 3.13 and 3.14; the Docker image runs 3.14).
+   Python 3.9 and 3.10 are no longer supported (3.10 reaches end of life on 2026-10-31); pin `mattstash<0.2` if you
+   cannot upgrade yet.
 1. **Create databases explicitly.** Nothing creates a database implicitly any more.
    ```bash
    mattstash setup                    # prompts for a master password
@@ -34,6 +37,7 @@ For the API server see also [server/docs/configuration.md](../server/docs/config
 | `get_s3_client(verbose=True)` printed to stdout. | `verbose=False` by default; output goes to stderr. | Library code should not write to stdout. |
 | Not thread/process safe. | One `MattStash` is thread-safe; writes take a cross-process lock (`<db>.lock`), re-read the file when another writer changed it, and discard in-memory state if saving fails. | Lost updates and "phantom" entries. |
 | `mattstash.core` module and package both existed. | Only the package. | Dead code. |
+| `requires-python >=3.9`. | `>=3.11`. | 3.9 is end of life and 3.10 follows on 2026-10-31. |
 | Titles were looked up through an XPath built from the title. | Exact string comparison in Python. | **Security:** a title such as `x" or "a"="a` could match or delete unrelated entries. |
 
 Files are created with mode `0600` (and keep their mode across saves). A warning is logged when the database or

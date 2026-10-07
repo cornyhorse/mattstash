@@ -166,7 +166,7 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 | L-6 | S3 builder `print`s to stdout by default in library code | `[x]` default `verbose=False` for library calls (CLI keeps its message) |
 | L-7 | OpenAPI/docs unauthenticated | `[x]` `MATTSTASH_DISABLE_DOCS` (default on in shipped examples) |
 | L-8 | `db-url` hard-codes PostgreSQL; no default `sslmode` | `[ ]` `scheme` custom property with an allow-list; document `sslmode=require` (Q7) |
-| L-9 | `requires-python>=3.9` (EOL); mypy target warning | `[ ]` raise floor to 3.10 (Q8) |
+| L-9 | `requires-python>=3.9` (EOL); mypy target warning | `[x]` floor raised to 3.11; ruff/mypy targets, classifiers, CI matrix (3.11-3.14), image base `python:3.14-slim`, lock regenerated on 3.14 (Q8, revised) |
 | L-10 | Env-var parsing (`int()`) crashes `import mattstash` on bad values | `[x]` clear error naming the variable |
 | G-1 | No way for pods/containers to consume secrets natively | `[ ]` `mattstash env` / `mattstash exec -- cmd` (Q7) |
 | G-2 | No backup/export; no master-password rotation | `[ ]` `mattstash backup`, `mattstash rotate-password` (Q7) |
@@ -257,7 +257,7 @@ session scratchpad and are re-created as proper regression tests rather than com
 | Q5 | Python API on DB errors | **Raise typed exceptions** (`DatabaseNotFoundError`, `DatabaseAccessError`); `get()` returns `None` only for a genuinely missing secret. Breaking → release as **0.2.0** (use `[minor]` in the merge commit; the release workflow bumps by commit-message tag). |
 | Q6 | TLS | **Implement optional in-app TLS** (cert/key files via env) and the CLI plain-`http://` warning. |
 | Q7 | Extra scope | **All four groups:** CLI input hardening; container/k8s consumption (`env`, `exec`); ops commands (`backup`, `rotate-password`, `prune`, `delete --version`); server extras (TLS, non-PG db-url schemes). |
-| Q8 | Python floor | **3.10** (3.9 is EOL). |
+| Q8 | Python floor | **3.11** (revised after review: 3.9 is EOL and 3.10 reaches EOL on 2026-10-31). Supported: 3.11-3.14. **Home version 3.14** for the Docker image, lint, type-checking, server tests, audit and release builds. 3.15 is not a target yet: the newest available build is a release candidate and `httptools` (via `uvicorn[standard]`) has no 3.15 wheels. |
 
 ### Consequences recorded for the plan
 

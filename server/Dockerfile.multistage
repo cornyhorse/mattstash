@@ -11,16 +11,16 @@
 #
 #     docker build -f server/Dockerfile.multistage -t mattstash-api .
 #
-# Base image: pinned to the python:3.12-slim tag in BOTH stages (they must match, because the
+# Base image: pinned to the python:3.14-slim tag in BOTH stages (they must match, because the
 # virtualenv is copied between them). For fully reproducible builds pin the digest as well,
-# e.g.  FROM python:3.12-slim@sha256:<digest> AS builder  /  FROM python:3.12-slim@sha256:<digest>
-# (`docker buildx imagetools inspect python:3.12-slim` prints it). Dependabot's "docker"
+# e.g.  FROM python:3.14-slim@sha256:<digest> AS builder  /  FROM python:3.14-slim@sha256:<digest>
+# (`docker buildx imagetools inspect python:3.14-slim` prints it). Dependabot's "docker"
 # ecosystem (.github/dependabot.yml) proposes updates for the tag and the digest.
 
 # ---------------------------------------------------------------------------------------
 # Builder: virtualenv with hash-verified dependencies + the library from this checkout
 # ---------------------------------------------------------------------------------------
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1
 
@@ -47,7 +47,7 @@ RUN pip install --no-cache-dir --disable-pip-version-check --no-deps . \
 # ---------------------------------------------------------------------------------------
 # Runtime: slim base + the finished virtualenv + the server code
 # ---------------------------------------------------------------------------------------
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Unbuffered stdout/stderr so logs reach `docker logs` / `kubectl logs` immediately;
 # no .pyc files (the root filesystem is meant to be mounted read-only at runtime).

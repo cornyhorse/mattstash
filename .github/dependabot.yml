@@ -9,7 +9,7 @@ version: 2
 #    is in its header). Dependabot's pip support is keyed on requirements*.txt / *.in files and may
 #    not rewrite a *.lock file, so refresh the lock by re-running that command when the CI "audit"
 #    job reports an advisory against a pinned version (it audits the lock on every run).
-#  * The base image (python:3.12-slim in server/Dockerfile*) is updated by the "docker" entry; if
+#  * The base image (python:3.14-slim in server/Dockerfile*) is updated by the "docker" entry; if
 #    you pin it by digest (recommended, see the comment in the Dockerfile) Dependabot updates the
 #    digest as well.
 

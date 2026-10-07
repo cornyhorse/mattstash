@@ -10,11 +10,11 @@
 # (Use server/Dockerfile.multistage for the slimmer variant that keeps build leftovers out of
 # the final image; both run exactly the same application.)
 #
-# Base image: pinned to the python:3.12-slim tag. For fully reproducible builds also pin the
-# digest, e.g.  FROM python:3.12-slim@sha256:<digest>  (`docker buildx imagetools inspect
-# python:3.12-slim` prints it). Dependabot's "docker" ecosystem (.github/dependabot.yml)
+# Base image: pinned to the python:3.14-slim tag. For fully reproducible builds also pin the
+# digest, e.g.  FROM python:3.14-slim@sha256:<digest>  (`docker buildx imagetools inspect
+# python:3.14-slim` prints it). Dependabot's "docker" ecosystem (.github/dependabot.yml)
 # proposes updates for the tag and the digest.
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Unbuffered stdout/stderr so logs reach `docker logs` / `kubectl logs` immediately;
 # no .pyc files (the root filesystem is meant to be mounted read-only at runtime).

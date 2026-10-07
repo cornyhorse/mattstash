@@ -328,7 +328,7 @@ whenever traffic crosses hosts.
 - Third-party dependencies come from `requirements.lock`, installed with `pip install --require-hashes`.
 - Released images carry SLSA build provenance and an SBOM
   (`docker buildx imagetools inspect ghcr.io/cornyhorse/mattstash:vX.Y.Z --format '{{ json .Provenance }}'`).
-- Deploy a **pinned version tag or digest**, never `:latest`. The base image (`python:3.12-slim`) can be pinned by
+- Deploy a **pinned version tag or digest**, never `:latest`. The base image (`python:3.14-slim`) can be pinned by
   digest in the Dockerfiles (see the comment there); Dependabot proposes updates for the tag, the digest, the GitHub
   Actions and the Python dependencies.
 
@@ -383,7 +383,7 @@ python -m app          # honours MATTSTASH_HOST / MATTSTASH_PORT / MATTSTASH_LOG
 
 `requirements.in` lists the server's direct dependencies as ranges; `requirements.lock` is the hash-pinned result
 that the images and CI install. After editing `requirements.in` or the root `pyproject.toml` dependencies,
-regenerate it from the repository root with Python 3.12 (the version the image uses):
+regenerate it from the repository root with Python 3.14 (the version the image uses):
 
 ```bash
 pip install pip-tools
