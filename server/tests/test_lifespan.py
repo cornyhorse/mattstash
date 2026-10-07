@@ -93,7 +93,7 @@ def test_sidecar_next_to_database_warns(configure, db_path, caplog):
     configure()
     caplog.set_level(logging.WARNING, logger="mattstash.api")
     _start(create_app())
-    assert "sidecar password file exists next to the database" in caplog.text
+    assert "Plaintext password file(s)" in caplog.text and ".mattstash.txt" in caplog.text
 
 
 def test_sidecar_next_to_database_can_be_refused(configure, db_path):

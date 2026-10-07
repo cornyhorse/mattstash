@@ -5,14 +5,18 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from limits import parse_many
 from mattstash.models.config import config as lib_config
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from .config import config
 from .dependencies import initialize_mattstash, reload_mattstash_if_changed
+from .logging_setup import configure_logging
 from .middleware.security import SecurityMiddleware
 from .rate_limit import limiter
 from .routers import admin, credentials, db_url, health
@@ -40,13 +44,18 @@ async def _poll_database_changes() -> None:
 
 
 def _check_sidecar() -> None:
-    """The master password must not sit next to the database it protects."""
-    sidecar = os.path.join(os.path.dirname(config.DB_PATH), lib_config.sidecar_basename)
-    if not os.path.exists(sidecar):
+    """The master password must not sit next to the database it protects (nor a backup of it)."""
+    directory = os.path.dirname(os.path.expanduser(config.DB_PATH)) or "."
+    try:
+        found = [n for n in os.listdir(directory) if n.startswith(lib_config.sidecar_basename)]
+    except OSError:
+        return
+    if not found:
         return
     message = (
-        "A plaintext sidecar password file exists next to the database; anyone who can read the data volume "
-        "can open it. Delete it and supply the password via KDBX_PASSWORD_FILE from a separate mount."
+        f"Plaintext password file(s) {sorted(found)} exist next to the database; anyone who can read the data "
+        "volume can open it. Delete them (backups of the sidecar included) and supply the password via "
+        "KDBX_PASSWORD_FILE from a separate mount."
     )
     if config.REFUSE_SIDECAR:
         raise RuntimeError(message + " (refusing to start: MATTSTASH_REFUSE_SIDECAR is set)")
@@ -64,6 +73,10 @@ async def lifespan(app: FastAPI):
         config.get_kdbx_password()
         policy = get_key_policy(force=True)
         config.validate_tls()
+        try:
+            parse_many(config.RATE_LIMIT)
+        except Exception:
+            raise ValueError(f"MATTSTASH_RATE_LIMIT is not a valid rate limit: {config.RATE_LIMIT!r}") from None
         logger.info("Configuration validated successfully (%d API key(s))", len(policy))
     except Exception:
         logger.error("Configuration validation failed - check environment variables")
@@ -108,8 +121,15 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down MattStash API")
 
 
+async def _validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 with only where/what/why: FastAPI's default body echoes the submitted values, i.e. the secrets."""
+    errors = [{"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]} for e in exc.errors()]
+    return JSONResponse({"detail": errors}, status_code=422)
+
+
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
+    configure_logging()
     docs = not config.DISABLE_DOCS
     app = FastAPI(
         title=config.API_TITLE,
@@ -124,6 +144,7 @@ def create_app() -> FastAPI:
     # Rate limiting (per client address)
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(RequestValidationError, _validation_error_handler)
 
     # Add CORS middleware (restrictive by default)
     app.add_middleware(

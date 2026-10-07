@@ -35,7 +35,7 @@ volume holding the `.kdbx`.
 | `MATTSTASH_MAX_REQUEST_BODY_BYTES` | `1048576` | Request body limit, enforced on the bytes actually received. |
 | `MATTSTASH_DB_POLL_INTERVAL` | `5` | Seconds between checks for external database changes (`0` disables; reads also notice changes on their own). |
 | `MATTSTASH_DISABLE_DOCS` | `false` | Hide `/api/v1/docs`, `/redoc` and `openapi.json`. |
-| `MATTSTASH_REFUSE_SIDECAR` | `false` | Refuse to start if `.mattstash.txt` sits next to the database (otherwise only a warning). |
+| `MATTSTASH_REFUSE_SIDECAR` | `false` | Refuse to start if `.mattstash.txt` (or a `.mattstash.txt.bak-*` backup of it) sits next to the database; otherwise only a warning. |
 | `MATTSTASH_HOST` / `MATTSTASH_PORT` | `0.0.0.0` / `8000` | Bind address. |
 | `MATTSTASH_TLS_CERT_FILE` / `MATTSTASH_TLS_KEY_FILE` | - | Serve HTTPS directly (both or neither). |
 | `MATTSTASH_LOG_LEVEL` | `info` | Log level. |
@@ -94,7 +94,8 @@ Point `MATTSTASH_API_KEYS_FILE` at a JSON file:
 | `ops` | Any of `read` (get/list/versions/db-url), `write` (POST), `delete` (DELETE), `admin` (reload, key-cache invalidate). Default `["read"]`. |
 | `prefixes` | Credential names the key may touch (`startswith`). Omit or `["*"]` for all names. |
 
-Generate keys with the helper; it prints the key once (to stderr) and the policy entry (to stdout):
+A key file may contain `#` comment lines (also in JSON files) and a UTF-8 byte-order mark; a legacy key line must not
+contain whitespace, and a JSON policy must not repeat a field. Generate keys with the helper; it prints the key once (to stderr) and the policy entry (to stdout):
 
 ```bash
 python -m app.keytool --id billing --ops read --prefix billing- >> entries.json
@@ -110,26 +111,40 @@ Scope behaviour worth knowing:
   addressable through the API and are not listed.
 - Keys shorter than `MATTSTASH_MIN_KEY_LENGTH` (plaintext only; hashes cannot be checked) are refused at startup.
 
-### Rotation
+### Rotation and revocation
 
 Edit the file, then `POST /api/v1/admin/invalidate-api-key-cache` (needs an `admin` key) or wait up to 5 minutes.
-Add the new key first, migrate clients, then remove the old key. If a reload fails (for example a bad edit) the
-previous policy keeps serving and the error is logged; fix the file and the next request picks it up.
+Add the new key first, migrate clients, then remove the old key.
+
+The endpoint reloads **immediately** and tells you whether it worked: `200 {"status": "api_key_cache_invalidated",
+"keys": N}`, or `409` if the file could not be loaded (bad edit, unreadable). On `409` the **previous keys are still
+active** - a key you meant to revoke may still work - so treat anything but `200` as "not revoked yet". Without the
+endpoint, a failed periodic reload keeps the previous policy serving, logs the error, and retries every few seconds.
 
 ## Throttling, limits and proxies
 
-- **Failed authentication** is throttled per client address *before* authentication runs: after
+Authentication happens in the outermost layer, before the application (and before any request body is read):
+
+- Everything except the probes (`/health`, `/ready`, also under `/api`) and the API docs needs a valid key; an
+  unknown path without a key is `401`, so nothing about the API is revealed to anonymous callers.
+- **Failed authentication** is throttled per client *before* the key is even looked at: after
   `MATTSTASH_AUTH_FAIL_LIMIT` failures within `MATTSTASH_AUTH_FAIL_WINDOW_SECONDS` every request from that client
-  gets `429` with `Retry-After`, even with a valid key. Only failures count and a valid key never resets the
-  counter. Use long random keys regardless: `openssl rand -base64 32`.
-- **Rate limits** apply per client to authenticated endpoints (`MATTSTASH_RATE_LIMIT` for reads).
+  that needs a key gets `429` with `Retry-After`, even with a valid key. The check and the failure record are atomic,
+  so a burst of concurrent requests cannot exceed the limit. Only failures count and a valid key never resets the
+  counter. The **probes are exempt**, so a blocked address (for example an ingress shared by everyone) cannot fail
+  the pod's own health checks. Use long random keys regardless: `openssl rand -base64 32`.
+- **Rate limits** apply per client to authenticated endpoints (`MATTSTASH_RATE_LIMIT` for reads; the value is
+  validated at startup, a malformed one stops the server).
 - **Request bodies** above `MATTSTASH_MAX_REQUEST_BODY_BYTES` are refused with `413`, including chunked uploads
-  (counted as they arrive), before authentication or parsing.
-- **Client address.** By default the TCP peer address is used; it cannot be spoofed. Behind a reverse proxy /
-  ingress every request appears to come from the proxy, so one attacker could lock out everybody. Set
-  `MATTSTASH_TRUSTED_PROXY_HOPS=N` (N = number of proxies you control) and the address is taken from the
-  `X-Forwarded-For` entry N positions from the right; entries further left are client-controlled and ignored. Only
-  set this when the proxy overwrites/appends the header and the server is not reachable except through it.
+  (counted as they arrive). Unauthenticated requests are answered `401` without their body being read or parsed.
+- **Client identity.** By default the TCP peer address is used; it cannot be spoofed. IPv4 clients are tracked per
+  address and IPv6 clients per **/64** (one subscriber normally controls a whole /64); IPv4-mapped IPv6 addresses
+  count as the IPv4 address. Behind a reverse proxy / ingress every request appears to come from the proxy, so one
+  attacker could lock out everybody. Set `MATTSTASH_TRUSTED_PROXY_HOPS=N` (N = number of proxies you control) and the
+  address is taken from the `X-Forwarded-For` entry N positions from the right (`1.2.3.4`, `1.2.3.4:5555`,
+  `[2001:db8::1]:443` and `2001:db8::1` are all understood); entries further left are client-controlled and
+  ignored. Only set this when the proxy overwrites/appends the header and the server is not reachable except through
+  it. Shared-address lock-out is otherwise inherent to per-address throttling: size `AUTH_FAIL_LIMIT` for your topology.
 
 ## Health and readiness
 
@@ -149,18 +164,28 @@ No authentication is required. Use `/health` for liveness probes and Docker `HEA
 | `403` | Key lacks the operation or the name is outside its prefixes (writes). |
 | `404` | Secret not found (or outside the key's scope, for reads). |
 | `405` | Server is read-only. |
+| `409` | `invalidate-api-key-cache`: the key source could not be loaded; the previous keys are still active. |
 | `413` | Body too large. |
-| `422` | Request body/query failed validation. |
+| `422` | Request body/query failed validation. The body lists only `loc`, `msg`, `type` - submitted values (secrets) are never echoed. |
 | `429` | Too many failed authentications, or rate limit exceeded. |
 | `503` | The database cannot be opened or locked (wrong password, missing/corrupt file, lock timeout). **Never** reported as `404`. `Retry-After: 5`. |
 | `500` | Unexpected error; the body never contains details, only the exception type is logged. |
 
 ## Logging and audit trail
 
-- **Access log** (`mattstash.api`): `METHOD /path -> status (duration) client=<ip> key=<id>`. No query string.
-- **Audit log** (`mattstash.audit`): one line per get/list/versions/put/delete/db-url/admin action:
-  `audit key=<id> ip=<ip> action=get name=<credential> reveal=True version=...`.
-- Keys, secrets and request bodies are never logged. Failed authentications show `key=-` and the client address.
+The server writes to **stderr** with a timestamp (uvicorn's own anonymous access log is turned off):
+
+- **Access log** (`mattstash.api`, level from `MATTSTASH_LOG_LEVEL`, default `info`):
+  `METHOD /path -> status (duration) client=<ip> key=<id>`. No query string.
+- **Audit log** (`mattstash.audit`, **always INFO**, not affected by `MATTSTASH_LOG_LEVEL`): one line per
+  get/list/versions/put/delete/db-url/admin action *and* per denied request:
+  `audit key=<id> ip=<ip> action=get name=<credential> reveal=True version=...`,
+  `audit key=app ip=... action=denied name=other op=read`.
+- Keys, secrets and request bodies are never logged; failed authentications show `key=-` and the client address.
+  Everything that comes from the request (path, names) is escaped to printable ASCII (`\x0a` for a newline), so a
+  client cannot forge log lines.
+- Legacy keys appear as `legacy-env` (from `MATTSTASH_API_KEY`) or `legacy-1`, `legacy-2`... (file order); the id is
+  never derived from the key.
 
 ## TLS
 

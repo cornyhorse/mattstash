@@ -211,11 +211,21 @@ def test_client_ip_without_peer(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_declared_oversized_body_is_rejected_unauthenticated(make_client):
+def test_declared_oversized_body_is_rejected(make_client):
     client = make_client(MAX_REQUEST_BODY_BYTES=1000)
-    response = client.post("/api/v1/credentials/x", content=b"x" * 1001, headers={"Content-Type": "application/json"})
+    response = client.post(
+        "/api/v1/credentials/x", content=b"x" * 1001, headers={**auth(), "Content-Type": "application/json"}
+    )
     assert response.status_code == 413
     assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_unauthenticated_oversized_or_malformed_bodies_get_401_and_are_never_parsed(make_client):
+    """Authentication runs before the body is touched, so anonymous callers cannot make the server read or parse it."""
+    client = make_client(MAX_REQUEST_BODY_BYTES=1000)
+    big = client.post("/api/v1/credentials/x", content=b"x" * 5000, headers={"Content-Type": "application/json"})
+    bad_json = client.post("/api/v1/credentials/x", content=b"{not json", headers={"Content-Type": "application/json"})
+    assert (big.status_code, bad_json.status_code) == (401, 401)  # not 413 / 422
 
 
 def test_chunked_oversized_body_cannot_bypass_the_limit(make_client):
@@ -228,7 +238,9 @@ def test_chunked_oversized_body_cannot_bypass_the_limit(make_client):
             received.append(1)
             yield b"[" + b"0," * 100  # ~300 bytes per chunk, no Content-Length
 
-    response = client.post("/api/v1/credentials/x", content=body(), headers={"Content-Type": "application/json"})
+    response = client.post(
+        "/api/v1/credentials/x", content=body(), headers={**auth(), "Content-Type": "application/json"}
+    )
     assert response.status_code == 413
     assert response.json() == {"detail": "Request body too large"}
 
@@ -247,7 +259,7 @@ def test_body_at_the_limit_is_accepted(rw_client, make_client):
 
 def test_invalid_content_length_is_400(make_client):
     client = make_client()
-    response = client.post("/api/v1/credentials/x", content=b"{}", headers={"Content-Length": "abc"})
+    response = client.post("/api/v1/credentials/x", content=b"{}", headers={**auth(), "Content-Length": "abc"})
     assert response.status_code in (400, 422)  # rejected either by us or by the HTTP stack, never a 500
 
 
@@ -262,7 +274,7 @@ def test_invalid_content_length_is_400(make_client):
         ("GET", "/health", 200),
         ("GET", "/api/v1/credentials", 401),
         ("GET", "/api/v1/credentials/x", 401),
-        ("GET", "/no/such/path", 404),
+        ("GET", "/no/such/path", 401),  # unknown paths need a key too: nothing is revealed to anonymous callers
         ("POST", "/api/v1/credentials/x", 401),
     ],
 )
@@ -279,7 +291,8 @@ def test_docs_can_be_disabled(make_client):
     assert make_client().get("/api/v1/openapi.json").status_code == 200
     hidden = make_client(DISABLE_DOCS=True)
     for path in ("/api/v1/docs", "/api/v1/redoc", "/api/v1/openapi.json"):
-        assert hidden.get(path).status_code == 404
+        assert hidden.get(path).status_code == 401  # no longer public...
+        assert hidden.get(path, headers=auth()).status_code == 404  # ...and not served at all
 
 
 def test_cors_is_closed_by_default(client):
