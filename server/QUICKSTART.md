@@ -55,36 +55,47 @@ curl -H "X-API-Key: $API_KEY" \
 ```python
 import requests
 
-
 class MattStashClient:
     def __init__(self, url, api_key):
         self.url = url
         self.headers = {"X-API-Key": api_key}
-
+    
     def get(self, name, show_password=True):
         r = requests.get(
-            f"{self.url}/credentials/{name}", headers=self.headers, params={"show_password": show_password}
+            f"{self.url}/credentials/{name}",
+            headers=self.headers,
+            params={"show_password": show_password}
         )
         r.raise_for_status()
         return r.json()
-
+    
     def list(self, prefix=None):
         params = {"prefix": prefix} if prefix else {}
-        r = requests.get(f"{self.url}/credentials", headers=self.headers, params=params)
+        r = requests.get(
+            f"{self.url}/credentials",
+            headers=self.headers,
+            params=params
+        )
         r.raise_for_status()
         return r.json()["credentials"]
-
+    
     def get_db_url(self, name, driver="psycopg", database=None):
         params = {"driver": driver, "mask_password": False}
         if database:
             params["database"] = database
-        r = requests.get(f"{self.url}/db-url/{name}", headers=self.headers, params=params)
+        r = requests.get(
+            f"{self.url}/db-url/{name}",
+            headers=self.headers,
+            params=params
+        )
         r.raise_for_status()
         return r.json()["url"]
 
-
 # Usage
-client = MattStashClient(url="http://mattstash-api:8000/api/v1", api_key="my-api-key")
+client = MattStashClient(
+    url="http://mattstash-api:8000/api/v1",
+    api_key="my-api-key"
+)
 
 # Get credential
 cred = client.get("db-prod")
