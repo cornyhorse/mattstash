@@ -1,86 +1,159 @@
-# Production Docker Compose configuration
-# This configuration includes additional security and production best practices
-
-version: "3.8"
+# MattStash API server - production-oriented example. READ-ONLY by default.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   # opt-in write mode (single instance only, see that file):
+#   docker compose -f docker-compose.prod.yml -f docker-compose.writable.yml up -d
+#
+# Compared with docker-compose.yml this file
+#   - hands the master password and API keys over as Compose `secrets:` (mounted under
+#     /run/secrets, never in the environment or in `docker inspect`),
+#   - publishes NO port and keeps the API on an internal-only network,
+#   - applies resource limits, a read-only root filesystem, dropped capabilities and log rotation.
+#
+# ---------------------------------------------------------------------------------------------
+# Networks (read this before changing anything)
+#
+#   backend   internal: true. The API and its clients talk over this network. An internal network
+#             has no route to or from the outside world, and Docker does not publish ports for
+#             containers that are attached ONLY to internal networks (the earlier version of this
+#             file combined `internal: true` with `ports:`, which cannot work). So this API
+#             service deliberately has no `ports:`.
+#   frontend  an ordinary bridge network. Only a TLS reverse proxy joins it (see the commented
+#             `proxy` service). The proxy is attached to BOTH networks, so it is the only thing
+#             that publishes a port, and the API is reachable from outside only through it.
+#
+# Clients: attach your application services to `backend` (in this file, or declare the network as
+# `external: true` in their own compose project and give this project's network a fixed `name:`).
+#
+# Plain http between a client and the API on `backend` stays inside the host. For anything that
+# crosses hosts, terminate TLS in the proxy (recommended) or enable the server's own TLS with
+# MATTSTASH_TLS_CERT_FILE / MATTSTASH_TLS_KEY_FILE (then also change the healthcheck below to https).
+# ---------------------------------------------------------------------------------------------
+#
+# Image: this file builds from the repository root (build context `..`), so the image contains
+# this checkout's mattstash library. To run a published image instead, delete `build:` and set
+# `image: ghcr.io/cornyhorse/mattstash:vX.Y.Z` - pin a version tag (or a @sha256 digest), never
+# `:latest`.
+#
+# Secrets: create the two files with restricted permissions, keep them out of version control, and
+# make them readable by the container user (${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}; file
+# secrets are bind mounts, so host permissions apply):
+#   mkdir -p secrets && (umask 077; openssl rand -base64 32 > secrets/api_keys.txt)
+#   (umask 077; openssl rand -base64 32 > secrets/kdbx_password.txt)
+#   mattstash --db data/mattstash.kdbx setup --password-file secrets/kdbx_password.txt
+# For Swarm / external secret stores, replace `file:` with `external: true`.
 
 services:
   mattstash-api:
     build:
-      context: .
-      dockerfile: Dockerfile.multistage
-    image: mattstash-api:latest
+      context: ..
+      dockerfile: server/Dockerfile.multistage
+    image: mattstash-api:local
     container_name: mattstash-api
-    
-    # Environment configuration
+    user: "${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}"
+
     environment:
-      - MATTSTASH_DB_PATH=/data/mattstash.kdbx
-      - MATTSTASH_API_KEYS_FILE=/secrets/api_keys.txt
-      - KDBX_PASSWORD_FILE=/secrets/kdbx_password.txt
-      - MATTSTASH_LOG_LEVEL=warning  # Less verbose in production
-      - MATTSTASH_RATE_LIMIT=100/minute
-    
-    # Read-only volumes for security
+      MATTSTASH_DB_PATH: /data/mattstash.kdbx
+      KDBX_PASSWORD_FILE: /run/secrets/kdbx_password
+      MATTSTASH_API_KEYS_FILE: /run/secrets/mattstash_api_keys
+      # Read-only mode (the default). docker-compose.writable.yml turns it on.
+      MATTSTASH_ALLOW_WRITES: "false"
+      MATTSTASH_LOG_LEVEL: warning # less verbose in production
+      MATTSTASH_RATE_LIMIT: 100/minute
+      # Do not serve the OpenAPI / Swagger pages in production.
+      MATTSTASH_DISABLE_DOCS: "true"
+      # Number of trusted reverse-proxy hops in front of the API. 0 (default) = use the TCP peer
+      # address. Set to 1 when the proxy below is the only hop, so rate limiting and logs see the
+      # real client instead of the proxy. Never set it higher than the proxies you control.
+      # MATTSTASH_TRUSTED_PROXY_HOPS: "1"
+
+    secrets:
+      - kdbx_password
+      - mattstash_api_keys
+
     volumes:
+      # Read-only; the master password is NOT in here (it comes from `secrets:`).
       - ./data:/data:ro
-      - ./secrets:/secrets:ro
-    
-    # Network isolation
+
     networks:
-      - internal
-    
-    # Only expose on localhost by default
-    # Use a reverse proxy (nginx/traefik) for external access with TLS
-    ports:
-      - "127.0.0.1:8000:8000"
-    
-    # Restart policy
+      - backend
+
     restart: unless-stopped
-    
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
-    
-    # Security options
-    security_opt:
-      - no-new-privileges:true
-    
-    # Read-only root filesystem (except /tmp)
     read_only: true
     tmpfs:
       - /tmp
-    
-    # Health check
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 128
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      # Liveness (never touches the database). The readiness endpoint is /ready.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
-  
-  # Optional: Nginx reverse proxy with TLS
-  # Uncomment to enable HTTPS access
-  # nginx:
-  #   image: nginx:alpine
-  #   container_name: mattstash-nginx
+      start_period: 15s
+
+  # Optional TLS reverse proxy. Uncomment, supply nginx.conf and certificates, and set
+  # MATTSTASH_TRUSTED_PROXY_HOPS above. The proxy config should proxy_pass to
+  # http://mattstash-api:8000, forward X-Forwarded-For, cap request bodies (e.g.
+  # client_max_body_size 1m) and rate-limit as a second line of defence.
+  # proxy:
+  #   image: nginx:1.27-alpine # pin a version or digest
+  #   container_name: mattstash-proxy
   #   volumes:
   #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
   #     - ./certs:/etc/nginx/certs:ro
   #   ports:
   #     - "443:443"
   #   networks:
-  #     - internal
+  #     - backend
+  #     - frontend
   #   depends_on:
-  #     - mattstash-api
+  #     mattstash-api:
+  #       condition: service_healthy
   #   restart: unless-stopped
+  #   read_only: true
+  #   tmpfs:
+  #     - /var/cache/nginx
+  #     - /var/run
+  #     - /tmp
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   # If you also `cap_drop: [ALL]` the proxy, add back what nginx needs to start as root and
+  #   # drop privileges: CHOWN, SETUID, SETGID, NET_BIND_SERVICE.
 
 networks:
-  internal:
+  backend:
     driver: bridge
-    # Network isolation - no external access by default
-    internal: true
+    internal: true # no external connectivity, no published ports - see the header
+  frontend:
+    driver: bridge # only the optional proxy joins this network
+
+secrets:
+  kdbx_password:
+    file: ./secrets/kdbx_password.txt
+  mattstash_api_keys:
+    file: ./secrets/api_keys.txt

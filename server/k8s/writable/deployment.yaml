@@ -1,0 +1,129 @@
+# MattStash API server - WRITABLE deployment (opt-in). Use this INSTEAD of ../deployment.yaml.
+#
+# Why it looks different from the read-only one - all of it is about having exactly one writer:
+#
+#   * replicas: 1 and strategy: Recreate. The database is a single KeePass file. Two pods writing
+#     it (two replicas, or the old and new pod of a rolling update overlapping) lose updates, and
+#     the advisory lock (<db>.lock) does not work across nodes or on most network filesystems.
+#     Recreate stops the old pod before the new one starts. NEVER raise `replicas`, and do not add
+#     an HPA. Do not apply ../pdb.yaml with this Deployment.
+#   * The database lives on a PersistentVolumeClaim (pvc.yaml), not in a Secret. The volume must be
+#     writable by uid/gid 1000 as a DIRECTORY, not just the .kdbx: every write creates <db>.lock
+#     and pykeepass writes a temporary file next to the database before renaming it. fsGroup: 1000
+#     makes that so on most storage drivers; if yours ignores fsGroup, fix ownership with an
+#     initContainer or the storage class.
+#   * MATTSTASH_ALLOW_WRITES is "true". Anyone holding an API key that may write can change or delete
+#     secrets - prefer a scoped key policy (docs/configuration.md) and back up the volume.
+#
+# Create the database first with setup-job.yaml (the server never creates one).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mattstash-api
+  namespace: mattstash
+  labels:
+    app: mattstash-api
+spec:
+  replicas: 1 # DO NOT INCREASE: one writer only
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mattstash-api
+  template:
+    metadata:
+      labels:
+        app: mattstash-api
+    spec:
+      serviceAccountName: mattstash-api
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000 # makes the PVC group-writable for uid 1000 (lock file, temp file, database)
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: mattstash-api
+          # Pin a released version tag (or, better, a digest). Never :latest.
+          image: ghcr.io/cornyhorse/mattstash:v0.2.0
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+
+          envFrom:
+            - configMapRef:
+                name: mattstash-config
+          env:
+            - name: MATTSTASH_ALLOW_WRITES
+              value: "true"
+
+          volumeMounts:
+            - name: db
+              mountPath: /data # read-write
+            - name: secrets
+              mountPath: /secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+          # /health = liveness (never touches the database); /ready = readiness (database opened).
+          # With in-app TLS add `scheme: HTTPS` to each httpGet.
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+
+      volumes:
+        - name: db
+          persistentVolumeClaim:
+            claimName: mattstash-data
+        - name: secrets
+          secret:
+            secretName: mattstash-secrets
+            defaultMode: 0400
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi

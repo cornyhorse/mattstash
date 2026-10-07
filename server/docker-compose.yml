@@ -1,37 +1,90 @@
-version: "3.8"
+# MattStash API server - default deployment: READ-ONLY.
+#
+#   - The database is mounted read-only and MATTSTASH_ALLOW_WRITES is off, so POST/DELETE answer
+#     405 and the container can never change (or corrupt) the database.
+#   - To let the server write, use the separate override file instead of editing this one:
+#         docker compose -f docker-compose.yml -f docker-compose.writable.yml up -d
+#     (single instance only - see that file).
+#
+# First-time setup (./start.sh does the secrets part for you):
+#   mkdir -p data secrets
+#   openssl rand -base64 32 > secrets/api_keys.txt        # API key, >= 32 chars (server refuses weaker ones)
+#   openssl rand -base64 32 > secrets/kdbx_password.txt   # KeePass master password
+#   mattstash --db data/mattstash.kdbx setup --password-file secrets/kdbx_password.txt
+#   docker compose up -d --build
+#
+# The server never creates a database; only `mattstash setup` does. Keep the master password in
+# secrets/ (a separate mount from data/) and do not use `mattstash setup --sidecar` for a service:
+# a .mattstash.txt next to the database lets anyone who can read data/ open it.
+#
+# Files in data/ and secrets/ must be readable by the container user. The container runs as
+# ${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}; set those (e.g. in .env, see .env.example) to the
+# owner of your files. ./start.sh sets them to your own uid/gid.
+#
+# Build context is the REPOSITORY ROOT so the image contains this checkout's mattstash library.
 
 services:
   mattstash-api:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: server/Dockerfile
+    image: mattstash-api:local
     container_name: mattstash-api
+    user: "${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}"
     environment:
-      - MATTSTASH_DB_PATH=/data/mattstash.kdbx
-      - MATTSTASH_API_KEYS_FILE=/secrets/api_keys.txt
-      - KDBX_PASSWORD_FILE=/secrets/kdbx_password.txt
-      - MATTSTASH_LOG_LEVEL=info
+      MATTSTASH_DB_PATH: /data/mattstash.kdbx
+      # Master password and API keys come from files in the separate /secrets mount.
+      KDBX_PASSWORD_FILE: /secrets/kdbx_password.txt
+      MATTSTASH_API_KEYS_FILE: /secrets/api_keys.txt
+      # Read-only mode (the default). Anything but "true" keeps writes off.
+      MATTSTASH_ALLOW_WRITES: "false"
+      MATTSTASH_LOG_LEVEL: "${MATTSTASH_LOG_LEVEL:-info}"
     volumes:
       - ./data:/data:ro
       - ./secrets:/secrets:ro
     networks:
-      - internal
+      - backend
     ports:
-      - "127.0.0.1:8000:8000"  # Only localhost by default
+      - "127.0.0.1:8000:8000" # loopback only; put a TLS proxy in front for anything else
     restart: unless-stopped
-    
-  # Example client service showing how to connect
-  # Uncomment and modify as needed
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # Liveness (never touches the database). The readiness endpoint is /ready.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Example client service on the same network. Uncomment and adapt.
   # my-app:
   #   image: myapp:latest
   #   environment:
-  #     - MATTSTASH_API_URL=http://mattstash-api:8000
-  #     - MATTSTASH_API_KEY=${MY_APP_API_KEY}
+  #     # The mattstash CLI / client read these two. Plain http on a private compose network is the
+  #     # documented pattern; the CLI warns about http:// to non-loopback hosts unless
+  #     # MATTSTASH_ALLOW_INSECURE_HTTP=1 is set.
+  #     MATTSTASH_SERVER_URL: http://mattstash-api:8000
+  #     MATTSTASH_API_KEY: ${MY_APP_API_KEY:?set MY_APP_API_KEY (a key of at least 32 characters)}
+  #     MATTSTASH_ALLOW_INSECURE_HTTP: "1"
   #   networks:
-  #     - internal
+  #     - backend
   #   depends_on:
-  #     - mattstash-api
+  #     mattstash-api:
+  #       condition: service_healthy
 
 networks:
-  internal:
+  # A normal bridge network (NOT `internal: true`): this development file publishes a port, which
+  # Docker does not do for networks that are internal-only. See docker-compose.prod.yml for the
+  # internal-network layout.
+  backend:
     driver: bridge

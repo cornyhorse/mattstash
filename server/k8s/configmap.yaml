@@ -1,3 +1,10 @@
+# Non-secret settings only. The KeePass database and the credentials live in Secrets (read-only
+# deployment: see secret.example.yaml) or on a PersistentVolumeClaim (writable deployment: see
+# writable/). A ConfigMap is neither secret-class nor able to hold a database larger than 1 MiB,
+# so the database is no longer stored here.
+#
+# MATTSTASH_ALLOW_WRITES is set per Deployment (false in deployment.yaml, true in
+# writable/deployment.yaml) so the mode is visible next to the volumes it depends on.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -5,21 +12,18 @@ metadata:
   namespace: mattstash
 data:
   MATTSTASH_DB_PATH: "/data/mattstash.kdbx"
+  # Master password and API keys are files from the separate /secrets mount (never env values).
   KDBX_PASSWORD_FILE: "/secrets/kdbx-password"
   MATTSTASH_API_KEYS_FILE: "/secrets/api-keys"
   MATTSTASH_LOG_LEVEL: "info"
   MATTSTASH_RATE_LIMIT: "100/minute"
-
----
-# Note: Store your KeePass database in a separate ConfigMap or PersistentVolume
-# For small databases, you can use a ConfigMap with base64-encoded data:
-#
-# apiVersion: v1
-# kind: ConfigMap
-# metadata:
-#   name: mattstash-db
-#   namespace: mattstash
-# binaryData:
-#   mattstash.kdbx: <base64-encoded-kdbx-file>
-#
-# To create: kubectl create configmap mattstash-db --from-file=mattstash.kdbx=/path/to/your/database.kdbx -n mattstash
+  # Do not serve the OpenAPI / Swagger pages.
+  MATTSTASH_DISABLE_DOCS: "true"
+  # How often (seconds) the server checks the database file for external changes. This is how a
+  # rolling update of the db Secret is picked up without restarting the pods. 0 disables polling.
+  MATTSTASH_DB_POLL_INTERVAL: "5"
+  # Number of trusted reverse-proxy hops in front of the pods (see ingress.yaml). Leave unset (0)
+  # unless ALL traffic arrives through proxies you control; with 1, the ingress controller is the
+  # only hop and the client IP is taken from X-Forwarded-For. Without it, every client behind the
+  # ingress shares one rate-limit bucket (the controller's IP).
+  # MATTSTASH_TRUSTED_PROXY_HOPS: "1"

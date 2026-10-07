@@ -1,0 +1,69 @@
+# Network isolation for the mattstash namespace. Requires a CNI that enforces NetworkPolicy
+# (Calico, Cilium, Antrea, ...). On a cluster whose CNI does not, these objects are accepted and
+# silently do nothing - verify with a test pod from a namespace that is NOT allowed.
+#
+# Kubelet probes are not affected: traffic from a pod's own node is always allowed.
+#
+# 1. default-deny-ingress   nothing in the namespace accepts connections unless a policy allows it.
+# 2. allow-clients          only labelled client namespaces (optionally only labelled pods) and,
+#                           if you use it, the ingress controller may reach the API on 8000.
+# 3. deny-egress            the server only reads local files: it needs no DNS and no outbound
+#                           connections, so a compromised pod cannot phone home.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: mattstash
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mattstash-api-allow-clients
+  namespace: mattstash
+spec:
+  podSelector:
+    matchLabels:
+      app: mattstash-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Every pod in a namespace that carries this label may connect. Grant access with:
+        #   kubectl label namespace my-app-namespace allowed-to-mattstash=true
+        - namespaceSelector:
+            matchLabels:
+              allowed-to-mattstash: "true"
+        # Stricter variant (AND): the namespace must carry the label AND the pod must carry its own
+        # label. Replace the rule above with this one to allow only specific client pods:
+        # - namespaceSelector:
+        #     matchLabels:
+        #       allowed-to-mattstash: "true"
+        #   podSelector:
+        #     matchLabels:
+        #       mattstash-client: "true"
+        #
+        # If you use ingress.yaml, also allow the ingress controller's namespace (adjust the name):
+        # - namespaceSelector:
+        #     matchLabels:
+        #       kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mattstash-api-deny-egress
+  namespace: mattstash
+spec:
+  podSelector:
+    matchLabels:
+      app: mattstash-api
+  policyTypes:
+    - Egress
+  # No egress rules: all outbound traffic from the API pods is denied.
