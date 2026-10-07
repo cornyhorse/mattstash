@@ -350,6 +350,9 @@ session scratchpad and are re-created as proper regression tests rather than com
 | Q9 | Secret-name separator | **`.`** (`myapp.db-password`). Names stay letters, digits, `_`, `.`, `-`: identical in the CLI, the library and the server. Hierarchical `/` names are not supported (optional follow-up; it would widen routing, prefix-scoping and URL-encoding surface). |
 | Q10 | Branch protection | The required status check moves from the old job names (`lint-server`, `server-tests`, `integration`) to the single roll-up job **`ci-gate`** (the owner changes it in the repository settings; the project is maintained agentically, so lighter protections are acceptable). |
 | Q11 | Release gating | A focused third review of the round-2 changes runs before the pull request is opened. |
+| Q12 | Coverage target | **100% line coverage** of `src/mattstash` and `server/app` (baseline: library 90%, server 97.6%), reached with in-process tests and mocks; `# pragma: no cover` only where a unit test makes no sense (OS-specific or defensive code). Branch coverage is not a goal. Done after the review fixes so code that is about to change is not covered twice. |
+| Q13 | Coverage gate | CI fails below **99%** (slack for platform-specific lines) on both the library and the server. |
+| Q14 | Subprocess coverage | **Not collected.** The real-process tests (CLI against a real server, `exec`, concurrent `create`, log output) stay as end-to-end checks that do not count towards the number. |
 
 ### Consequences recorded for the plan
 
