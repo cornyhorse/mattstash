@@ -2,6 +2,8 @@
 Tests for connection caching functionality.
 """
 
+import os
+import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, Mock, PropertyMock, patch
@@ -134,18 +136,33 @@ class TestConnectionCaching(unittest.TestCase):
         type(mock_kp_instance).entries = entries_prop
         mock_pykeepass.return_value = mock_kp_instance
 
-        # Create store with caching
-        store = CredentialStore(self.db_path, self.password, cache_enabled=True)
+        # Saving writes a staged file next to the database and renames it into place: use a real directory and let
+        # the mocked KeePass object "write" the staged file.
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "db.kdbx")
+            with open(db_path, "wb") as f:
+                f.write(b"old")
 
-        # Populate cache
-        store.find_entry_by_title("test-cred")
-        self.assertIn("test-cred", store._entry_cache)
+            def fake_save(filename):
+                with open(filename, "wb") as staged:
+                    staged.write(b"new")
 
-        # Save database (should clear cache)
-        store.save()
+            mock_kp_instance.save.side_effect = fake_save
 
-        # Cache should be empty
-        self.assertEqual(len(store._entry_cache), 0)
+            # Create store with caching
+            store = CredentialStore(db_path, self.password, cache_enabled=True)
+
+            # Populate cache
+            store.find_entry_by_title("test-cred")
+            self.assertIn("test-cred", store._entry_cache)
+
+            # Save database (should clear cache)
+            store.save()
+
+            # Cache should be empty
+            self.assertEqual(len(store._entry_cache), 0)
+            with open(db_path, "rb") as f:
+                self.assertEqual(f.read(), b"new")
         self.assertEqual(len(store._cache_timestamps), 0)
 
     @patch("mattstash.credential_store.PyKeePass")

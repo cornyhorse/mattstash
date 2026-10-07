@@ -66,6 +66,10 @@ class Config:
 
     # Rate limiting (per client IP) for read endpoints; writes/deletes/admin have fixed lower limits
     RATE_LIMIT: str = os.getenv("MATTSTASH_RATE_LIMIT", "100/minute")
+    #: Writes (POST/DELETE) that may be in flight at once. Each waits for the database write lock in a worker thread;
+    #: more than this are answered 503 immediately, so a stuck lock holder cannot use up every worker thread and
+    #: take reads and the readiness probe down with it.
+    MAX_CONCURRENT_WRITES: int = _get_int_env("MATTSTASH_MAX_CONCURRENT_WRITES", 8, minimum=1, maximum=64)
     MAX_REQUEST_BODY_BYTES: int = _get_int_env(
         "MATTSTASH_MAX_REQUEST_BODY_BYTES",
         1_048_576,

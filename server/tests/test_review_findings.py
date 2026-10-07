@@ -16,6 +16,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from mattstash import MattStash
 
 from app.client_ip import client_bucket, client_ip, parse_address
 from app.config import Config
@@ -592,3 +593,36 @@ def test_f5_specific_but_value_free_reasons(rw_client):
     response = rw_client.get("/api/v1/db-url/pg", headers=H)
     assert response.status_code == 400 and "no database name" in response.json()["detail"]
     assert "db.internal" not in response.text, "nothing stored in the entry is echoed back"
+
+
+def test_c3_queued_writes_are_capped_so_a_stuck_lock_cannot_use_up_every_worker_thread(make_client, monkeypatch):
+    """Writers wait for the database lock inside worker threads; unbounded, 40 of them starve reads and /ready."""
+    import threading
+
+    monkeypatch.setattr(Config, "MAX_CONCURRENT_WRITES", 2)
+    client = make_client(ALLOW_WRITES=True)
+    real_put = MattStash.put
+
+    def slow_put(self, *args, **kwargs):
+        time.sleep(0.8)
+        return real_put(self, *args, **kwargs)
+
+    monkeypatch.setattr(MattStash, "put", slow_put)
+    codes: list[int] = []
+    retry_after: list[str] = []
+
+    def write(n: int) -> None:
+        response = client.post(f"/api/v1/credentials/slot-{n}", json={"value": "v"}, headers=H)
+        codes.append(response.status_code)
+        if response.status_code == 503:
+            retry_after.append(response.headers.get("Retry-After", ""))
+
+    threads = [threading.Thread(target=write, args=(n,)) for n in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert sorted(codes) == [201, 201, 503, 503, 503], codes
+    assert set(retry_after) == {"1"}
+    # the slots are released afterwards
+    assert client.post("/api/v1/credentials/after", json={"value": "v"}, headers=H).status_code == 201

@@ -60,6 +60,8 @@ def _write_private(path: str, data: bytes) -> None:
     with contextlib.suppress(FileNotFoundError):
         os.remove(path)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with contextlib.suppress(OSError, AttributeError):
+        os.fchmod(fd, 0o600)  # the umask must not make it unwritable (or unreadable) for its owner
     with os.fdopen(fd, "wb") as f:
         f.write(data)
 
@@ -90,8 +92,18 @@ class DatabaseBootstrapper:
     """Creates a new KeePass database (and optionally the sidecar password file)."""
 
     def __init__(self, db_path: str, sidecar_basename: Optional[str] = None):
+        #: The path as given (the sidecar lives next to it).
         self.db_path = db_path
         self.sidecar_basename = sidecar_basename or config.sidecar_basename
+
+    @property
+    def real_db_path(self) -> str:
+        """The file the database path resolves to *now*: what writers lock, replace and back up.
+
+        ``setup --force`` on a symlinked path must replace the target (keeping the link) under the same lock the
+        writers use, not replace the link itself.
+        """
+        return os.path.realpath(self.db_path)
 
     @property
     def db_dir(self) -> str:
@@ -103,7 +115,7 @@ class DatabaseBootstrapper:
 
     def existing_files(self) -> list[str]:
         """Paths that creating a database here would replace."""
-        return [p for p in (self.db_path, self.sidecar_path) if os.path.exists(p)]
+        return [p for p in (self.real_db_path, self.sidecar_path) if os.path.exists(p)]
 
     @staticmethod
     def _backup(path: str) -> str:
@@ -116,7 +128,12 @@ class DatabaseBootstrapper:
             except FileExistsError:
                 continue
             os.close(fd)
-            shutil.copyfile(path, dest)
+            try:
+                shutil.copyfile(path, dest)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.remove(dest)  # a truncated ".bak" next to the real file would look like a good backup
+                raise
             return dest
         raise MattStashError(f"Could not find a free backup name for {path}")  # pragma: no cover
 
@@ -163,14 +180,19 @@ class DatabaseBootstrapper:
             )
 
         # Directory: restrictive perms only if we are the ones creating it.
-        if not os.path.isdir(self.db_dir):
-            os.makedirs(self.db_dir, mode=0o700, exist_ok=True)
-            with contextlib.suppress(OSError):  # pragma: no cover - non-POSIX
-                os.chmod(self.db_dir, 0o700)
+        real_dir = os.path.dirname(self.real_db_path) or "."
+        for directory in dict.fromkeys((self.db_dir, real_dir)):
+            if not os.path.isdir(directory):
+                try:
+                    os.makedirs(directory, mode=0o700, exist_ok=True)
+                except OSError as exc:
+                    raise MattStashError(f"Cannot create the directory {directory}: {exc.strerror or exc}") from exc
+                with contextlib.suppress(OSError):  # pragma: no cover - non-POSIX
+                    os.chmod(directory, 0o700)
 
         # Writers and other creators serialise on the same lock file, so a writer cannot finish a save
         # (and rename an old-password copy over the new database) in the middle of a replacement.
-        with FileLock(self.db_path + ".lock", timeout=lock_timeout):
+        with FileLock(self.real_db_path + ".lock", timeout=lock_timeout):
             return self._create_locked(password, generated, sidecar=sidecar, force=force, backup=backup, padded=padded)
 
     def _create_locked(
@@ -186,7 +208,9 @@ class DatabaseBootstrapper:
         new_sidecar = None
         old_sidecar: Optional[bytes] = None  # kept in memory so a failed swap can restore it even without backups
         token = secrets.token_hex(6)  # unique per call: concurrent creators never share a temp file
-        new_db = os.path.join(self.db_dir, f".{os.path.basename(self.db_path)}.{token}.new")
+        real_db = self.real_db_path
+        real_dir = os.path.dirname(real_db) or "."
+        new_db = os.path.join(real_dir, f".{os.path.basename(real_db)}.{token}.new")
         temp_sidecar = os.path.join(self.db_dir, f".{self.sidecar_basename}.{token}.new")
         leftovers = [new_db, os.path.splitext(new_db)[0] + ".tmp", temp_sidecar]
         try:
@@ -210,7 +234,7 @@ class DatabaseBootstrapper:
         except Exception as exc:
             self._cleanup(leftovers)
             logger.error(f"Failed to create KeePass DB: {exc}")
-            raise MattStashError(f"Failed to create database: {exc}") from exc
+            raise MattStashError(f"Failed to create database: {exc}{self._backup_note(backups)}") from exc
 
         # --- 2) swap in. Old files were backed up above; the database goes LAST ---------------------
         sidecar_swapped = False
@@ -224,7 +248,7 @@ class DatabaseBootstrapper:
             if new_sidecar is not None:
                 _link_or_replace(new_sidecar, self.sidecar_path, replace=force)
                 sidecar_swapped = True
-            _link_or_replace(new_db, self.db_path, replace=force)
+            _link_or_replace(new_db, real_db, replace=force)
         except FileExistsError as exc:
             self._restore_sidecar(sidecar_swapped, old_sidecar)
             self._cleanup(leftovers)
@@ -232,7 +256,9 @@ class DatabaseBootstrapper:
         except OSError as exc:
             self._restore_sidecar(sidecar_swapped, old_sidecar)
             self._cleanup(leftovers)
-            raise MattStashError(f"Failed to install the new database: {exc.strerror or exc}") from exc
+            raise MattStashError(
+                f"Failed to install the new database: {exc.strerror or exc}{self._backup_note(backups)}"
+            ) from exc
         finally:
             self._cleanup(leftovers)
 
@@ -253,6 +279,13 @@ class DatabaseBootstrapper:
             backups=backups,
             warnings=warnings,
         )
+
+    @staticmethod
+    def _backup_note(backups: list[str]) -> str:
+        """Tell the operator where the safety copies are (the old sidecar copy holds the old password in plain text)."""
+        if not backups:
+            return ""
+        return "; the previous files were backed up first and are kept: " + ", ".join(backups)
 
     @staticmethod
     def _cleanup(paths: list[str]) -> None:

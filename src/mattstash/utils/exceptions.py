@@ -61,13 +61,32 @@ class DatabaseLockError(MattStashError):
     pass
 
 
-class SidecarUpdateError(MattStashError):
-    """The database was re-keyed but the sidecar password file next to it could not be updated.
+class RotationIncompleteError(MattStashError):
+    """``rotate_password`` failed *after* the database was re-keyed.
 
-    The database already uses the new password; the sidecar still holds the old one.
+    The database already uses the new password, so the caller must make sure the new password reaches the user
+    (``rekeyed`` is always True). ``backup_path`` is set when a pre-rotation backup exists.
     """
 
-    pass
+    rekeyed = True
+    backup_path: Optional[str] = None
+
+
+class SidecarUpdateError(RotationIncompleteError):
+    """The database was re-keyed but the sidecar password file next to it could not be updated.
+
+    The database already uses the new password; the sidecar still holds the old one. The new password is kept in
+    ``staged_path`` (a private file next to the sidecar) when that could be written.
+    """
+
+    staged_path: Optional[str] = None
+
+
+class RekeyVerifyError(RotationIncompleteError, DatabaseAccessError):
+    """The database was re-keyed and saved, but re-reading it with the new password failed (an I/O error?).
+
+    The database and the sidecar (when it is managed) both already use the new password.
+    """
 
 
 class ServerError(MattStashError):

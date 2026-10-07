@@ -18,6 +18,31 @@ def _temp_name(path: str) -> str:
     return f"{path}.tmp-{os.getpid()}-{secrets.token_hex(4)}"
 
 
+def match_owner(reference: os.stat_result, path: str) -> None:
+    """Best effort: give ``path`` the owner and group of the file it is about to replace.
+
+    A save by ``root`` (cron, ``kubectl exec``) must not turn the service user's database into a root-owned file the
+    service can no longer read. Only root may change the owner; anyone may try to keep the group.
+    """
+    if not hasattr(os, "chown"):  # pragma: no cover - Windows
+        return
+    with contextlib.suppress(OSError):
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            os.chown(path, reference.st_uid, reference.st_gid)
+        else:
+            os.chown(path, -1, reference.st_gid)
+
+
+def fsync_directory(path: str) -> None:
+    """Best effort: make a rename in ``path`` durable."""
+    with contextlib.suppress(OSError):
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
 def discard(path: Optional[str]) -> None:
     """Remove ``path`` if it exists (used to clean up staged temp files)."""
     if path:

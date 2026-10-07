@@ -28,7 +28,12 @@ def force_reload(request: Request, principal: AdminAccess) -> dict[str, str]:
         logger.info("Database reloaded via admin endpoint")
         return {"status": "reloaded"}
     logger.warning("Database reload requested but it failed or there is no instance to reload")
-    return {"status": "no_change"}
+    # Not a 200: a caller that has just replaced the database file must be able to tell that the server is still
+    # serving the previous state (or nothing).
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Database reload failed; the server is still serving the previous state (see the server log)",
+    )
 
 
 @router.post("/admin/invalidate-api-key-cache")

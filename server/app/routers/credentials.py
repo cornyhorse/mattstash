@@ -18,6 +18,7 @@ from ..dependencies import (
     ReadAccess,
     WriteAccess,
     WritesEnabled,
+    WriteSlot,
     ensure_name_in_scope,
 )
 from ..errors import translate_errors
@@ -204,6 +205,7 @@ def create_credential(
     mattstash: MattStashDep,
     principal: WriteAccess,
     _writes: WritesEnabled,
+    _slot: WriteSlot,
 ) -> CreateCredentialResponse:
     """
     Create a new version of a credential (or the first one).
@@ -245,6 +247,7 @@ def delete_credential(
     mattstash: MattStashDep,
     principal: DeleteAccess,
     _writes: WritesEnabled,
+    _slot: WriteSlot,
     version: int | None = Query(None, ge=0, description="Delete only this version (default: all versions)"),
 ) -> dict[str, str]:
     """

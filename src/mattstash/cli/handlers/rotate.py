@@ -17,10 +17,18 @@ from typing import Optional, Tuple
 
 from ...core.mattstash import MattStash
 from ...core.password_resolver import PasswordResolver
-from ...utils.exceptions import SidecarUpdateError
+from ...utils.exceptions import DatabaseAccessError, RotationIncompleteError
 from .. import exit_codes
 from ..inputs import InputError, read_credential_file, read_stdin_line
 from .base import BaseHandler
+
+
+def _read_or_none(path: str) -> Optional[str]:
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            return f.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 class RotatePasswordHandler(BaseHandler):
@@ -48,27 +56,57 @@ class RotatePasswordHandler(BaseHandler):
 
         stash = MattStash(path=self.opt(args, "path", str), password=self.opt(args, "password", str))
         sidecar = PasswordResolver(stash.path).sidecar_path
-        had_sidecar = os.path.exists(sidecar)
-        sidecar_error: Optional[str] = None
+        old_sidecar = _read_or_none(sidecar)
+        failure: Optional[Exception] = None
+        backup_path: Optional[str] = None
         try:
             backup_path = stash.rotate_password(new_password, backup=not self.flag(args, "no_backup"))
-        except SidecarUpdateError as exc:
-            # The database is re-keyed: the new password must still reach the user.
-            backup_path, sidecar_error = None, str(exc)
+        except RotationIncompleteError as exc:
+            # The database IS re-keyed: whatever else went wrong, the new password must still reach the user.
+            failure, backup_path = exc, exc.backup_path
+        except Exception as exc:
+            # Nothing was changed, but a backup taken before the failure should not be a secret.
+            backup = getattr(exc, "backup_path", None)
+            if backup:
+                self._say(f"  A backup made before the failure was kept: {backup}", err=True)
+            raise
 
-        print(f"Master password rotated for {stash.path}")
+        lines = [f"Master password rotated for {stash.path}"]
         if backup_path:
-            print(f"  Backup (opens with the OLD password; delete it once the new one is verified): {backup_path}")
-        if sidecar_error:
-            self.error(sidecar_error)
-        elif had_sidecar:
-            print(f"  Sidecar password file updated: {sidecar}")
+            lines.append(
+                f"  Backup (opens with the OLD password; delete it once the new one is verified): {backup_path}"
+            )
+        if failure is None and old_sidecar is not None:
+            if _read_or_none(sidecar) == new_password:
+                lines.append(f"  Sidecar password file updated: {sidecar}")
+            else:
+                lines.append(
+                    f"  Sidecar password file left unchanged (it does not hold this database's password): {sidecar}"
+                )
         if generated:
-            print(f"  Generated new master password (shown once, store it safely): {new_password}")
+            lines.append(f"  Generated new master password (shown once, store it safely): {new_password}")
+        # One write, with stderr as the fallback: a closed or full stdout must not lose a generated password.
+        self._say("\n".join(lines))
+        if failure is not None:
+            self.error(str(failure))
         self._warn_stale_environment()
-        return exit_codes.ERROR if sidecar_error else exit_codes.OK
+        if failure is None:
+            return exit_codes.OK
+        return exit_codes.DB_ACCESS if isinstance(failure, DatabaseAccessError) else exit_codes.ERROR
 
     # ---- helpers ------------------------------------------------------------------
+
+    @staticmethod
+    def _say(text: str, *, err: bool = False) -> None:
+        """Print ``text`` to stdout (stderr with ``err`` or when stdout is unusable)."""
+        if not err:
+            try:
+                print(text)
+                sys.stdout.flush()
+                return
+            except OSError:
+                pass
+        print(text, file=sys.stderr)
 
     def _warn_stale_environment(self) -> None:
         for name in ("KDBX_PASSWORD", "KDBX_PASSWORD_FILE"):

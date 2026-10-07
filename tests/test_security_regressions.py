@@ -198,7 +198,7 @@ def test_h5_failed_put_leaves_no_phantom_entry(temp_db: Path):
     ms = MattStash(path=str(temp_db))
     ms.put("keep", value="1")
     _fail_next_save(ms)
-    with pytest.raises(OSError):
+    with pytest.raises(DatabaseAccessError, match="Could not save"):  # typed, not a raw OSError
         ms.put("phantom", value="never-persisted")
 
     assert ms.get("phantom") is None  # not visible in memory...
@@ -211,7 +211,7 @@ def test_h5_failed_delete_does_not_hide_a_secret_that_is_still_on_disk(temp_db: 
     ms = MattStash(path=str(temp_db))
     ms.put("keep", value="1")
     _fail_next_save(ms)
-    with pytest.raises(OSError):
+    with pytest.raises(DatabaseAccessError, match="Could not save"):
         ms.delete("keep")
     assert ms.get("keep", show_password=True)["value"] == "1"
 

@@ -4,7 +4,9 @@ mattstash.cli.handlers.base
 Base class for CLI command handlers.
 """
 
+import logging
 import os
+import sys
 from abc import ABC, abstractmethod
 from argparse import Namespace
 from typing import Any, Optional, Type, TypeVar
@@ -127,8 +129,14 @@ class BaseHandler(ABC):
             return None
 
     def error(self, message: str) -> None:
-        """Print an error message to stderr."""
+        """Print an error message to stderr.
+
+        Goes through the logger (so it is formatted, filterable and capturable), but never disappears: with logging
+        silenced (``MATTSTASH_LOG_LEVEL=CRITICAL``) the failure explanation is written to stderr directly.
+        """
         logger.error(message)
+        if not logger.isEnabledFor(logging.ERROR):
+            print(message, file=sys.stderr)
 
     def warning(self, message: str) -> None:
         """Log a warning (stderr)."""

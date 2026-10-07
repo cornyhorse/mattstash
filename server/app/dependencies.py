@@ -2,7 +2,7 @@
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Annotated, Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -150,3 +150,30 @@ WriteAccess = Annotated[Principal, Depends(require("write"))]
 DeleteAccess = Annotated[Principal, Depends(require("delete"))]
 AdminAccess = Annotated[Principal, Depends(require("admin"))]
 WritesEnabled = Annotated[None, Depends(require_writes_enabled)]
+
+
+_writes_in_flight = 0
+_writes_lock = threading.Lock()
+
+
+def write_slot() -> Iterator[None]:
+    """Admit at most ``MAX_CONCURRENT_WRITES`` writes at a time; the rest get 503 + ``Retry-After`` at once."""
+    global _writes_in_flight
+    with _writes_lock:
+        busy = _writes_in_flight >= config.MAX_CONCURRENT_WRITES
+        if not busy:
+            _writes_in_flight += 1
+    if busy:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Too many writes in progress; retry shortly",
+            headers={"Retry-After": "1"},
+        )
+    try:
+        yield
+    finally:
+        with _writes_lock:
+            _writes_in_flight -= 1
+
+
+WriteSlot = Annotated[None, Depends(write_slot)]

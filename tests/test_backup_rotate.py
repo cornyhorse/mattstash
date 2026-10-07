@@ -95,7 +95,7 @@ def test_backup_default_destination_contents_and_mode(seeded: Path):
     ms = MattStash(path=str(seeded))
     dest = Path(ms.backup())
     assert dest.parent == seeded.parent
-    assert re.fullmatch(r"s\.kdbx\.bak-\d{8}T\d{6}Z", dest.name)
+    assert re.fullmatch(r"s\.kdbx\.bak-\d{8}T\d{12}Z", dest.name)  # UTC, microsecond resolution
     assert mode(dest) == 0o600
     assert dest.read_bytes() == seeded.read_bytes()
     assert opens_with(dest, OLD)
@@ -177,13 +177,18 @@ def test_backup_works_on_filesystems_without_hard_links(seeded: Path, tmp_path: 
         ms.backup(str(dest))
 
 
-def test_backup_default_name_collision_in_the_same_second_is_refused(seeded: Path):
+def test_backup_default_names_never_collide(seeded: Path):
+    """Two backups in the same instant (``backup`` then ``rotate-password`` in a script) get distinct names."""
+    from datetime import UTC, datetime
+
     ms = MattStash(path=str(seeded))
-    with patch("mattstash.core.mattstash.time.gmtime", return_value=(2026, 10, 7, 12, 0, 0, 0, 0, 0)):
-        first = ms.backup()
-        with pytest.raises(DatabaseExistsError):
-            ms.backup()
-    assert first.endswith(".bak-20261007T120000Z")
+    frozen = datetime(2026, 10, 7, 12, 0, 0, 123456, tzinfo=UTC)
+    with patch("mattstash.core.mattstash.datetime") as fake:
+        fake.now.return_value = frozen
+        first, second = ms.backup(), ms.backup()
+    assert first.endswith(".bak-20261007T120000123456Z")
+    assert second.endswith(".bak-20261007T120000123456Z-1")
+    assert Path(first).exists() and Path(second).exists()
 
 
 def test_backup_does_not_need_the_password(seeded: Path):
@@ -355,13 +360,17 @@ def test_rotate_sidecar_replace_failure_after_rekey_is_reported_clearly(seeded: 
 
     monkeypatch.setattr("mattstash.core.mattstash.os.replace", selective)
     ms = MattStash(path=str(seeded))
-    with pytest.raises(SidecarUpdateError, match="now uses the new password"):
+    with pytest.raises(SidecarUpdateError, match="now uses the new password") as excinfo:
         ms.rotate_password(NEW)
     monkeypatch.undo()
     assert opens_with(seeded, NEW), "the database is re-keyed"
     assert sidecar_of(seeded).read_text() == OLD, "the sidecar still holds the old password"
     assert ms.password == NEW
-    assert not [n for n in siblings(seeded) if ".tmp-" in n]
+    # the staged file is NOT thrown away: it is the only other record of the new password
+    staged = [n for n in siblings(seeded) if ".tmp-" in n]
+    assert len(staged) == 1 and excinfo.value.staged_path.endswith(staged[0])
+    assert (seeded.parent / staged[0]).read_text() == NEW and mode(seeded.parent / staged[0]) == 0o600
+    assert excinfo.value.staged_path in str(excinfo.value)
 
 
 def test_rotate_waits_for_the_write_lock_and_changes_nothing_on_timeout(seeded: Path):

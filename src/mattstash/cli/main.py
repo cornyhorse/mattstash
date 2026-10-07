@@ -526,6 +526,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         except MattStashError as e:
             print(f"mattstash: {e}", file=sys.stderr)
             return exit_codes.ERROR
+        except OSError as e:
+            # A file-system failure (disk full, permission denied, ...) is an operational error, not a crash.
+            print(f"mattstash: {e.strerror or e}", file=sys.stderr)
+            return exit_codes.ERROR
 
     # Should not reach here
     return 1  # pragma: no cover

@@ -84,7 +84,8 @@ def test_reload_helpers_with_an_instance(client, db_path):
 def test_admin_reload_reports_success_and_failure(client, monkeypatch):
     assert client.post("/api/v1/admin/reload", headers=H).json() == {"status": "reloaded"}
     monkeypatch.setattr("app.routers.admin.reload_mattstash", lambda: False)
-    assert client.post("/api/v1/admin/reload", headers=H).json() == {"status": "no_change"}
+    failed = client.post("/api/v1/admin/reload", headers=H)
+    assert failed.status_code == 503 and "still serving the previous state" in failed.json()["detail"]
 
 
 def test_get_mattstash_lazy_failure_is_503_and_recovers(configure, monkeypatch, tmp_path):

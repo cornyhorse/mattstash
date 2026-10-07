@@ -13,7 +13,7 @@ from typing import Optional
 from ...core.bootstrap import DatabaseBootstrapper
 from ...core.password_resolver import PasswordResolver, read_password_file
 from ...models.config import config
-from ...utils.exceptions import DatabaseExistsError, MattStashError
+from ...utils.exceptions import DatabaseExistsError, DatabaseLockError, MattStashError
 from .. import exit_codes
 from .base import BaseHandler
 
@@ -66,6 +66,9 @@ class SetupHandler(BaseHandler):
         except DatabaseExistsError as exc:
             self.error(str(exc))
             return exit_codes.WOULD_OVERWRITE
+        except DatabaseLockError as exc:
+            self.error(f"Setup failed: {exc}")
+            return exit_codes.DB_ACCESS
         except MattStashError as exc:
             self.error(f"Setup failed: {exc}")
             return exit_codes.ERROR

@@ -26,7 +26,9 @@ import contextlib
 import os
 import threading
 import time
+import weakref
 from collections.abc import Iterable, Iterator, Mapping
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
 from ..builders.db_url import DatabaseUrlBuilder
@@ -38,13 +40,15 @@ from ..utils.exceptions import (
     CredentialNotFoundError,
     DatabaseAccessError,
     DatabaseExistsError,
+    DatabaseLockError,
     DatabaseNotFoundError,
     InvalidCredentialError,
     MattStashError,
+    RekeyVerifyError,
     SidecarUpdateError,
 )
 from ..utils.filelock import FileLock
-from ..utils.fileops import copy_private, discard, stage_private_file
+from ..utils.fileops import copy_private, discard, match_owner, stage_private_file
 from ..utils.logging_config import get_logger
 from ..utils.validation import (
     validate_credential_title,
@@ -56,7 +60,7 @@ from ..utils.validation import (
 from .bootstrap import CreatedDatabase, DatabaseBootstrapper
 from .entry_manager import EntryManager
 from .env_vars import STANDARD_FIELDS, collect_env
-from .password_resolver import PasswordResolver
+from .password_resolver import PasswordResolver, read_password_file
 
 logger = get_logger(__name__)
 
@@ -83,6 +87,24 @@ class _EntrySource:
         return self._manager.custom_property(entry, field)
 
 
+#: First four bytes of every KeePass (KDBX) file.
+_KDBX_SIGNATURE = b"\x03\xd9\xa2\x9a"
+
+#: Every live instance, so a forked child gets fresh mutexes (a lock held by another thread of the parent at the
+#: moment of ``fork`` would otherwise stay locked forever in the child).
+_INSTANCES: "weakref.WeakSet[MattStash]" = weakref.WeakSet()
+
+
+def _reset_locks_in_child() -> None:  # pragma: no cover - runs only in a forked child
+    for instance in list(_INSTANCES):
+        instance._write_mutex = threading.RLock()
+        instance._lock = threading.RLock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_locks_in_child)
+
+
 class MattStash:
     """
     Simple KeePass accessor with:
@@ -96,23 +118,25 @@ class MattStash:
     """
 
     def __init__(self, path: Optional[str] = None, password: Optional[str] = None, *, lock_timeout: float = 30.0):
-        self.path = os.path.expanduser(path or config.default_db_path)
+        # Absolute, so a long-lived instance keeps meaning the same place after a ``chdir``; symlinks are NOT
+        # resolved here (they are followed on every access, see ``_real_path``).
+        self.path = os.path.abspath(os.path.expanduser(path or config.default_db_path))
 
         self._password_resolver = PasswordResolver(self.path)
         # Resolve password (lazily failing: a missing password is reported on first use)
+        self._password_from_resolver = not password
         self.password = password or self._password_resolver.resolve_password()
-
-        # All file operations (open, save, lock, copy) use the resolved path: pykeepass saves by renaming a temp
-        # file over the target, which would otherwise replace a symlinked database with a regular file and leave
-        # the real database stale; and two paths to one file must share ONE lock.
-        self._real_path = os.path.realpath(self.path)
 
         # Lock order (outermost first): _write_mutex (one writer thread) -> _file_lock (other processes) -> _lock.
         # Readers only take _lock, so they wait only while a writer is actually mutating/saving, never while a
         # writer is merely waiting for another process to release the file lock.
+        self._lock_timeout = lock_timeout
         self._write_mutex = threading.RLock()
         self._lock = threading.RLock()
+        # The lock lives next to the file the path currently resolves to, so two paths to one database (a symlink
+        # and its target) share ONE lock. Re-resolved for every write (see ``_exclusive``).
         self._file_lock = FileLock(self._real_path + ".lock", timeout=lock_timeout)
+        _INSTANCES.add(self)
 
         # Initialized on first use
         self._credential_store: Optional[CredentialStore] = None
@@ -158,6 +182,15 @@ class MattStash:
 
     # ---- internals ----------------------------------------------------------
 
+    @property
+    def _real_path(self) -> str:
+        """The file ``self.path`` currently resolves to (symlinks followed *now*, not when the object was made).
+
+        A retargeted symlink or a swapped Kubernetes Secret volume (``..data`` -> ``..<timestamp>``) must be
+        followed; saves go to the resolved file so a symlinked database stays a symlink.
+        """
+        return os.path.realpath(self.path)
+
     def _open(self) -> EntryManager:
         """Open the database if needed. Caller must hold ``self._lock``. Raises on failure."""
         if self._credential_store is None or self._entry_manager is None:
@@ -166,17 +199,26 @@ class MattStash:
                     "No database password available: pass one explicitly or set KDBX_PASSWORD, "
                     "KDBX_PASSWORD_FILE or provide a sidecar file"
                 )
-            try:
-                store = CredentialStore(self._real_path, self.password)
-                kp = store.open()  # raises DatabaseNotFoundError / DatabaseAccessError
-            except MattStashError:
-                raise
-            except Exception as exc:
-                # Callers only ever need to handle MattStashError.
-                raise DatabaseAccessError(f"Failed to open database: {exc}") from exc
+            for attempt in (1, 2):
+                try:
+                    store = CredentialStore(self.path, self.password)
+                    kp = store.open()  # raises DatabaseNotFoundError / DatabaseAccessError
+                    break
+                except DatabaseAccessError:
+                    # A password read from KDBX_PASSWORD_FILE / the sidecar may have been rotated since this object was
+                    # made (a writer queued behind `rotate-password` is the typical case): look once more.
+                    refreshed = self._password_resolver.resolve_password() if self._password_from_resolver else None
+                    if attempt == 2 or not refreshed or refreshed == self.password:
+                        raise
+                    self.password = refreshed
+                except MattStashError:
+                    raise
+                except Exception as exc:
+                    # Callers only ever need to handle MattStashError.
+                    raise DatabaseAccessError(f"Failed to open database: {exc}") from exc
             if kp is None:  # pragma: no cover - defensive
                 raise DatabaseAccessError("Unable to open database")
-            self._entry_manager = EntryManager(kp, save_callback=store.save)
+            self._entry_manager = EntryManager(kp, save_callback=self._save)
             self._credential_store = store
         assert self._entry_manager is not None
         return self._entry_manager
@@ -195,16 +237,25 @@ class MattStash:
         self._credential_store = None
         self._entry_manager = None
 
+    def _save(self) -> None:
+        """Save callback for the entry manager: refuses to write if the lock we hold no longer protects anything."""
+        self._file_lock.check_current()
+        assert self._credential_store is not None
+        self._credential_store.save()
+
     def _reload_locked(self) -> EntryManager:
         assert self._credential_store is not None
         kp = self._credential_store.reload()
         if kp is None:  # pragma: no cover - defensive
             raise DatabaseAccessError("Unable to reload database")
-        self._entry_manager = EntryManager(kp, save_callback=self._credential_store.save)
+        self._entry_manager = EntryManager(kp, save_callback=self._save)
         return self._entry_manager
 
     def _fresh(self) -> EntryManager:
         """Entry manager for the current on-disk state. Caller must hold ``self._lock``."""
+        store = self._credential_store
+        if store is not None and store.real_path != self._real_path:
+            self._discard()  # the path now resolves to another file (retargeted symlink, swapped Secret volume)
         manager = self._open()
         assert self._credential_store is not None
         if self._credential_store._current_signature() is None:
@@ -225,12 +276,32 @@ class MattStash:
 
     @contextlib.contextmanager
     def _exclusive(self) -> Iterator[None]:
-        """One writer at a time across threads AND processes, without blocking readers while waiting."""
-        if not os.path.exists(self._real_path):
+        """One writer at a time across threads AND processes, without blocking readers while waiting.
+
+        ``lock_timeout`` bounds the *whole* wait (other writer threads of this process plus other processes), so
+        queued writers do not each wait out the full timeout one after the other.
+        """
+        deadline = time.monotonic() + self._lock_timeout
+        real = self._real_path
+        if not os.path.exists(real):
             # Report the real problem (and don't litter a lock file) before locking anything.
             raise DatabaseNotFoundError(self._not_found_message())
-        with self._write_mutex, self._file_lock, self._lock:
-            yield
+        if not self._write_mutex.acquire(timeout=self._lock_timeout):
+            raise DatabaseLockError(
+                f"Timed out after {self._lock_timeout:.0f}s waiting for another writer in this process"
+            )
+        try:
+            lock_path = real + ".lock"
+            if self._file_lock.path != lock_path and not self._file_lock.held:
+                self._file_lock = FileLock(lock_path, timeout=self._lock_timeout)  # the path was retargeted
+            self._file_lock.acquire(timeout=max(0.0, deadline - time.monotonic()))
+            try:
+                with self._lock:
+                    yield
+            finally:
+                self._file_lock.release()
+        finally:
+            self._write_mutex.release()
 
     @contextlib.contextmanager
     def _write(self) -> Iterator[EntryManager]:
@@ -337,14 +408,29 @@ class MattStash:
     # ---- operations -------------------------------------------------------------
 
     def _backup_target(self, dest: Optional[str]) -> str:
-        """Where a backup goes: ``dest`` (a file, or a directory to put the default name in) or next to the DB."""
-        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        default_name = f"{os.path.basename(self.path)}.bak-{stamp}"
+        """Where a backup goes: ``dest`` (a file, or a directory to put the default name in) or next to the DB.
+
+        Default names carry a UTC timestamp with microseconds and get a counter if they still collide, so two
+        backups in the same second (``backup`` followed by ``rotate-password``) never fail for want of a name.
+        """
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        base = os.path.basename(self.path)
+
+        def default_in(directory: str) -> str:
+            candidate = os.path.join(directory, f"{base}.bak-{stamp}")
+            for attempt in range(1, 1000):
+                if not os.path.lexists(candidate):
+                    break
+                candidate = os.path.join(directory, f"{base}.bak-{stamp}-{attempt}")
+            return candidate
+
         if dest is None:
-            return os.path.join(os.path.dirname(self.path), default_name)
+            return default_in(os.path.dirname(self.path))
         target = os.path.expanduser(dest)
         if os.path.isdir(target):
-            return os.path.join(target, default_name)
+            return default_in(target)
+        if target.endswith(("/", os.sep)):
+            raise MattStashError(f"Backup directory does not exist: {target}")
         return target
 
     def _copy_locked(self, dest: Optional[str], force: bool) -> str:
@@ -353,17 +439,29 @@ class MattStash:
         directory = os.path.dirname(os.path.abspath(target))
         if not os.path.isdir(directory):
             raise MattStashError(f"Backup directory does not exist: {directory}")
-        protected = {self.path, self._real_path, self._real_path + ".lock", PasswordResolver(self.path).sidecar_path}
+        real = self._real_path
+        protected = {self.path, real, real + ".lock", PasswordResolver(self.path).sidecar_path}
         if os.path.realpath(target) in {os.path.realpath(p) for p in protected}:
             raise MattStashError("Refusing to write the backup over the database, its lock or its sidecar file")
+        # Refuse to preserve garbage (a truncated or emptied file) -- and, with force, to overwrite the last good
+        # backup with it. Every KDBX file starts with this signature; checking it needs no password.
         try:
-            copy_private(self._real_path, target, overwrite=force)
+            with open(real, "rb") as source:
+                signature = source.read(4)
+        except FileNotFoundError:
+            raise DatabaseNotFoundError(self._not_found_message()) from None
+        except OSError as exc:
+            raise DatabaseAccessError(f"Cannot read the database file: {exc.strerror or exc}") from exc
+        if signature != _KDBX_SIGNATURE:
+            raise DatabaseAccessError(
+                f"{self.path} is not a valid KeePass database (empty or truncated?); refusing to back it up"
+            )
+        try:
+            copy_private(real, target, overwrite=force)
         except FileExistsError:
             raise DatabaseExistsError(
                 f"Refusing to overwrite existing file: {target} (use force to replace it)"
             ) from None
-        except FileNotFoundError:
-            raise DatabaseNotFoundError(self._not_found_message()) from None
         except OSError as exc:
             raise MattStashError(f"Backup to {target} failed: {exc.strerror or exc}") from exc
         logger.info("Database backed up to %s", target)
@@ -396,10 +494,11 @@ class MattStash:
 
         Under the write lock this verifies that the current password opens the database, optionally copies
         the file first (``backup=True``; the copy keeps the *old* password and its path is returned), re-keys
-        and saves the database, re-opens it from disk with the new password to prove it works, and updates
-        the sidecar password file next to the database if there is one (atomically, mode 0600). The
-        sidecar temp file is prepared before the database is touched, so a failure cannot leave the sidecar
-        changed while the database is not.
+        and saves the database, and updates the sidecar password file next to the database -- but only if that
+        file holds the password this database was just opened with (one ``.mattstash.txt`` per directory can
+        belong to a different database, whose only password record must not be overwritten). The sidecar is
+        replaced atomically (mode 0600, symlinks followed) right after the re-key; the database is then re-read
+        from disk with the new password to prove it works.
 
         ``self.password`` is updated. Other processes that hold the old password (a server, ``KDBX_PASSWORD``
         in an environment) can no longer open the database until they are given the new one.
@@ -407,48 +506,98 @@ class MattStash:
         Raises:
             DatabaseAccessError: the current password is wrong/missing (nothing is changed).
             InvalidCredentialError: the new password is empty, or has leading/trailing whitespace while a
-                sidecar exists (password files are read with surrounding whitespace stripped).
+                sidecar will be updated (password files are read with surrounding whitespace stripped).
             DatabaseLockError: another process held the write lock for too long (nothing is changed).
-            SidecarUpdateError: the database *was* re-keyed but the sidecar could not be replaced.
+            RotationIncompleteError: the database *was* re-keyed but something after that failed:
+                ``SidecarUpdateError`` (the sidecar could not be replaced; the new password is kept in
+                ``staged_path``) or ``RekeyVerifyError`` (re-reading failed). The new password is in effect and the
+                caller must show it to the user. ``backup_path`` on any exception names the pre-rotation backup.
         """
         if not isinstance(new_password, str) or not new_password:
             raise InvalidCredentialError("The new password cannot be empty")
-        sidecar = PasswordResolver(self.path).sidecar_path
-        has_sidecar = os.path.exists(sidecar)
-        if has_sidecar and new_password != new_password.strip():
-            raise InvalidCredentialError(
-                "The new password has leading or trailing whitespace, which the sidecar password file cannot hold"
-            )
-
         backup_path: Optional[str] = None
-        with self._write():  # opens (verifies the current password) under the thread and file locks
-            assert self._credential_store is not None
-            store = self._credential_store
-            if backup:
-                backup_path = self._copy_locked(None, False)
-            staged = stage_private_file(sidecar, new_password.encode()) if has_sidecar else None
-            try:
-                store.change_password(new_password)
-                self.password = new_password
+        try:
+            with self._write():  # opens (verifies the current password) under the thread and file locks
+                assert self._credential_store is not None
+                store = self._credential_store
+                sidecar_target = self._managed_sidecar(self.password)
+                if sidecar_target is not None and new_password != new_password.strip():
+                    raise InvalidCredentialError(
+                        "The new password has leading or trailing whitespace, which the sidecar password file "
+                        "cannot hold"
+                    )
+                if backup:
+                    backup_path = self._copy_locked(None, False)
+                staged = stage_private_file(sidecar_target, new_password.encode()) if sidecar_target else None
+                if staged is not None:
+                    with contextlib.suppress(OSError):
+                        match_owner(os.stat(sidecar_target), staged)  # type: ignore[arg-type]
+                before = store._current_signature()
                 try:
-                    self._reload_locked()  # prove the new password opens what was written
-                except MattStashError as exc:
-                    raise DatabaseAccessError(
-                        "The database was re-keyed but could not be re-opened with the new password"
-                        + (f"; restore it from the backup {backup_path}" if backup_path else "")
-                    ) from exc
+                    store.change_password(new_password)
+                except BaseException:
+                    if store._current_signature() != before:
+                        # The file was replaced before the interruption: the database really has the new password,
+                        # and the staged file is the only other record of it. Roll forward, never discard.
+                        self.password = new_password
+                        if staged is not None:
+                            with contextlib.suppress(OSError):
+                                os.replace(staged, sidecar_target)  # type: ignore[arg-type]
+                    else:
+                        discard(staged)
+                    raise
+                self.password = new_password
+                # From here on the database only opens with the new password and the sidecar is the only other
+                # record of it: publish it NOW, before the (seconds-long) verification, and never delete the staged
+                # file again -- if the swap fails it is the operator's only copy.
                 if staged is not None:
                     try:
-                        os.replace(staged, sidecar)  # atomic; consumes the staged file
+                        os.replace(staged, sidecar_target)  # type: ignore[arg-type]  # atomic; consumes the file
                     except OSError as exc:
-                        raise SidecarUpdateError(
-                            f"The database now uses the new password, but the sidecar file {sidecar} "
-                            f"could not be updated: {exc.strerror or exc}"
-                        ) from exc
-            finally:
-                discard(staged)  # no-op once the staged file has replaced the sidecar
+                        error = SidecarUpdateError(
+                            f"The database now uses the new password, but the sidecar file {sidecar_target} "
+                            f"could not be updated: {exc.strerror or exc}. The new password is saved in {staged}"
+                        )
+                        error.staged_path = staged
+                        raise error from exc
+                try:
+                    self._reload_locked()  # prove the new password opens what was written
+                except Exception as exc:
+                    raise RekeyVerifyError(
+                        "The database was re-keyed and saved, but re-reading it with the new password failed "
+                        f"({exc}); the database and the sidecar both use the NEW password: check with `mattstash list`"
+                    ) from exc
+        except BaseException as exc:
+            if backup_path is not None:
+                with contextlib.suppress(Exception):
+                    exc.backup_path = backup_path  # type: ignore[attr-defined]
+            raise
         logger.info("Master password rotated")
         return backup_path
+
+    def _managed_sidecar(self, current_password: Optional[str]) -> Optional[str]:
+        """The sidecar file to update on rotation, or ``None`` if there is none or it is not this database's.
+
+        One ``.mattstash.txt`` serves a whole directory. It belongs to this database only if it holds the password
+        the database was opened with; otherwise it records another database's password (or a stale one) and
+        replacing it would destroy that record.
+        """
+        sidecar = PasswordResolver(self.path).sidecar_path
+        if not os.path.exists(sidecar):
+            return None
+        target = os.path.realpath(sidecar)  # a symlinked sidecar is updated through the link
+        try:
+            held = read_password_file(target)
+        except (OSError, UnicodeDecodeError):
+            held = None
+        if held != current_password:
+            logger.warning(
+                "The sidecar %s does not hold this database's password (another database in the same directory, or "
+                "a stale file): it is left unchanged",
+                sidecar,
+            )
+            return None
+        return target
 
     def reload(self) -> bool:
         """
