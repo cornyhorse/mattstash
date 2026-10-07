@@ -2,6 +2,10 @@
 
 This guide demonstrates practical Python usage patterns for MattStash, focusing on storing credentials and retrieving ready-to-use service clients.
 
+> **First create a database.** MattStash never creates one implicitly: run `mattstash setup` (or
+> `MattStash.create("path.kdbx", password=...)` from Python) once, and make the master password available through
+> `KDBX_PASSWORD_FILE` / `KDBX_PASSWORD`. Without a database every call raises `DatabaseNotFoundError`.
+
 ## Table of Contents
 
 - [S3 Credential Management](#s3-credential-management)

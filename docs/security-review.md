@@ -145,7 +145,7 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 | M-7 | `delete()` removes only the unversioned entry if both exist; versions stay readable | Verified | `[x]` delete `title` and every `title@N`; return True if any removed |
 | M-8 | `hydrate_env()` ignores versioned entries (the default `put` output); also opens a stale copy | Verified | `[x]` use the shared resolver, latest version |
 | M-8b | `get_entry` prefers latest `@N` over unversioned, `get_entry_with_custom_properties` prefers unversioned → `db-url`/`get` can disagree | Read | `[x]` single `_resolve_entry(title, version)` used by both |
-| M-9 | CLI server-mode client does not URL-encode titles (`db#prod` writes `db`) | Verified | `[ ]` `quote(title, safe="")` for path segments |
+| M-9 | CLI server-mode client does not URL-encode titles (`db#prod` writes `db`) | Verified | `[x]` `quote(title, safe="")` for path segments (client also refuses to follow redirects, warns on plain `http://`) |
 | M-10 | `/health` is always "healthy"; DB opened lazily, so a wrong password only shows on first request | Read | covered by H-6a (`[x]` server side) |
 | M-11 | `release.yml` interpolates `github.event.head_commit.message` into a shell script in the job holding the PyPI token | Read | `[x]` pass via `env:`; job-level minimal `permissions`; trusted-publishing stanza prepared (needs a one-time PyPI setting — your action) |
 | M-12 | CI never runs `server/tests` (65 pass) or `tests/integration` (2 stale failures); `server/` not linted (43 ruff findings) | Verified | `[x]` add server-test, integration, server-lint, `pip-audit` jobs; fix the 2 stale tests and the lint findings |
@@ -158,18 +158,18 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 
 | ID | Item | Plan |
 |----|------|------|
-| L-1 | Secrets on argv (`put --value`, `--password`, `--api-key`) leak via history/`ps`; no stdin/file input | `[ ]` `--value -` reads stdin; `--*-file` options; (Q7) |
-| L-2 | `--password` is the DB password with `--value` but the entry password with `--fields`; help claims `--password` auto-infers fields mode (it does not) | `[ ]` add explicit `--db-password` / `--entry-password`; keep `--password` working with a deprecation note (Q7) |
-| L-3 | `get` masks by default and prints a formatted block; no raw mode for scripts | `[ ]` `get --raw` (value only) (Q7) |
-| L-4 | Versions accumulate forever; delete is all-or-nothing; README calls it an "audit trail" | `[ ]` `delete --version N`, `prune --keep N`; correct the README wording (Q7) |
+| L-1 | Secrets on argv (`put --value`, `--password`, `--api-key`) leak via history/`ps`; no stdin/file input | `[x]` `put --value -` / `--value-file`, `--entry-password-*`, `--db-password-file`, `--api-key-file`; help steers away from argv (Q7) |
+| L-2 | `--password` is the DB password with `--value` but the entry password with `--fields`; help claims `--password` auto-infers fields mode (it does not) | `[x]` `--db-password` and `--entry-password*`; bare `--password` on `put --fields` still works with a deprecation warning (Q7) |
+| L-3 | `get` masks by default and prints a formatted block; no raw mode for scripts | `[x]` `get --raw [--field F]` (Q7) |
+| L-4 | Versions accumulate forever; delete is all-or-nothing; README calls it an "audit trail" | `[x]` `delete --version N`, `prune --keep N` (local only); README/docs say "history of values, not an audit log" (Q7) |
 | L-5 | `src/mattstash/core.py` is dead (shadowed by `core/`) | `[x]` remove |
 | L-6 | S3 builder `print`s to stdout by default in library code | `[x]` default `verbose=False` for library calls (CLI keeps its message) |
 | L-7 | OpenAPI/docs unauthenticated | `[x]` `MATTSTASH_DISABLE_DOCS` (default on in shipped examples) |
-| L-8 | `db-url` hard-codes PostgreSQL; no default `sslmode` | `[ ]` `scheme` custom property with an allow-list; document `sslmode=require` (Q7) |
+| L-8 | `db-url` hard-codes PostgreSQL; no default `sslmode` | `[x]` `dialect` (argument or custom property) with an allow-list: postgresql, mysql, mariadb; `sslmode` documented. **Decision:** no default `sslmode` is imposed (it would break plain-TCP databases); `sslmode` on a non-PostgreSQL dialect is an error rather than silently ignored (Q7) |
 | L-9 | `requires-python>=3.9` (EOL); mypy target warning | `[x]` floor raised to 3.11; ruff/mypy targets, classifiers, CI matrix (3.11-3.14), image base `python:3.14-slim`, lock regenerated on 3.14 (Q8, revised) |
 | L-10 | Env-var parsing (`int()`) crashes `import mattstash` on bad values | `[x]` clear error naming the variable |
-| G-1 | No way for pods/containers to consume secrets natively | `[ ]` `mattstash env` / `mattstash exec -- cmd` (Q7) |
-| G-2 | No backup/export; no master-password rotation | `[ ]` `mattstash backup`, `mattstash rotate-password` (Q7) |
+| G-1 | No way for pods/containers to consume secrets natively | `[x]` `mattstash env` / `mattstash exec -- cmd` (Q7) |
+| G-2 | No backup/export; no master-password rotation | `[x]` `mattstash backup`, `mattstash rotate-password` (Q7) |
 | G-3 | Stale integration tests: wrong sidecar name; `test_env_password` encodes the old precedence | `[x]` rewrite to the H-4d/H-7d behaviour |
 | G-4 | Docs vs reality: "TLS support", "audit trail", `GET /health` | `[x]` update README/server README/k8s README as each fix lands |
 
@@ -186,7 +186,7 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 | N-5 | The `.kdbx` was re-created 0644 on *every* save (pykeepass writes a temp file and renames it). Mode is now preserved/restored (0600 for new files). | `[x]` |
 | N-6 | Existing tests were not hermetic (a developer/CI `AWS_ACCESS_KEY_ID` made `test_hydrate_env_missing_entry` fail). `tests/conftest.py` now scrubs `KDBX_*`/`AWS_*`/`MATTSTASH_*`. | `[x]` |
 | N-7 | `s3-test` verbose output went to stdout from library code; it now defaults to off and uses stderr. | `[x]` |
-| N-8 | Docs referenced `~/.credentials/…` as the default path; the code default is `~/.config/mattstash/mattstash.kdbx`. Fixed in the pages touched so far. | partial |
+| N-8 | Docs referenced `~/.credentials/…` as the default path; the code default is `~/.config/mattstash/mattstash.kdbx`. | `[x]` every page; every `mattstash ...` command in the docs was run through the real argument parser |
 
 ---
 
@@ -288,6 +288,13 @@ cannot detect that. Upgrade the server before using `delete --version` against i
 
 ---
 
+## 4g. Status: are all review findings fixed?
+
+Every finding in sections 2-4 and every independent-review finding in 4e is fixed on this branch, with a regression test
+that fails on the old code. What is *not* a code fix and therefore still open is in section 7.
+
+---
+
 ## 5. Phases
 
 1. **Library correctness & safety** — H-1, H-4, H-5 (library part), H-7a/b/d, M-7, M-8, M-8b, L-5, L-10, G-3.
@@ -321,3 +328,32 @@ session scratchpad and are re-created as proper regression tests rather than com
 - Many existing tests rely on auto-bootstrap and on `None`-returning error paths; they are updated to create DBs explicitly
   and to expect exceptions (this is intentional, not test-weakening).
 - Version/changelog: breaking changes are called out in the merge commit with `[minor]` (→ 0.2.0).
+
+---
+
+## 7. Open items and saved follow-ups
+
+Nothing below is a known defect in the code; these are owner actions, things that could not be validated here, and
+optional improvements. Tick them off as they are done.
+
+**Owner actions (need your accounts)**
+
+- [ ] PyPI trusted publishing: configure the publisher (GitHub `cornyhorse/mattstash`, workflow `release.yml`, environment `pypi`) and enable the commented stanza in `release.yml`; then retire the long-lived `PYPI_API_TOKEN`.
+- [ ] Release as 0.2.0: put `[minor]` in the merge commit message; the manifests reference image tag `v0.2.0`.
+- [ ] Upgrade servers before clients use `delete --version` (an old server ignores `?version=N` and deletes every version).
+- [ ] Dependabot may not rewrite `server/requirements.lock`; when `server/requirements.in` changes (or the `audit` job reports an advisory) regenerate it with the command in the lock header. At last check only `pydantic_core` (2.46.5, latest 2.49.0) was behind.
+
+**Not validated here (no Docker daemon, cluster or GitHub runner)**
+
+- [ ] Build both Dockerfiles (including `linux/arm64`) and run the container with a read-only root filesystem.
+- [ ] Apply `server/k8s/` and `server/k8s/writable/` to a cluster: NetworkPolicy enforcement, fsGroup/PVC writability, probes.
+- [ ] Watch the workflows run once on GitHub: SHA-pinned actions resolve, provenance/SBOM output, the CLI-to-server integration job (now installs the server lock).
+- [ ] Run the test suites on Python 3.12 and 3.13 (only 3.11 and 3.14 were run; CI covers all four).
+- [ ] Consider a native `linux/arm64` build/test job (GitHub's Linux arm64 runners cost the same as or less than x64; free for public repositories) instead of QEMU emulation.
+
+**Optional improvements**
+
+- [ ] Image signing and vulnerability scanning of the published image; hash-pin the build backend (hatchling) and `pip install build` in the release job.
+- [ ] Modernize typing style (`Optional[X]` to `X | None`, builtin generics) and drop the ruff `UP006`/`UP035`/`UP045` ignores.
+- [ ] Add `*.kdbx`, `*.kdbx.lock` and `.mattstash.txt` to the global `.gitignore`.
+- [ ] Python 3.15 support once `httptools` (via `uvicorn[standard]`) ships wheels and 3.15 is released; 3.10 reaches end of life on 2026-10-31 (already unsupported by this release).

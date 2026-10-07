@@ -305,21 +305,21 @@ mattstash versions "api-key"
 ### Demo Script:
 ```bash
 # Show secure file permissions
-ls -la ~/.credentials/
+ls -la ~/.config/mattstash/
 # Shows: -rw------- .mattstash.txt, -rw-r--r-- mattstash.kdbx
 
 # Show multiple database support
 echo "=== Multi-environment security ==="
 
 # Development database (separate file)
-mattstash --db ~/.credentials/dev.kdbx put "dev-secret" --value "dev-value"
+mattstash --db ~/.config/mattstash/dev.kdbx put "dev-secret" --value "dev-value"
 
 # Production database (separate file)  
-mattstash --db ~/.credentials/prod.kdbx put "prod-secret" --value "prod-value"
+mattstash --db ~/.config/mattstash/prod.kdbx put "prod-secret" --value "prod-value"
 
 # Show they're isolated
-mattstash --db ~/.credentials/dev.kdbx keys
-mattstash --db ~/.credentials/prod.kdbx keys
+mattstash --db ~/.config/mattstash/dev.kdbx keys
+mattstash --db ~/.config/mattstash/prod.kdbx keys
 
 # CredStash migration demo
 echo "=== CredStash Migration ==="

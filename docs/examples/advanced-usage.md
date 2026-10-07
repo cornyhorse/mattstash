@@ -56,18 +56,18 @@ Organize credentials across different environments and projects.
 
 ```bash
 # Development environment
-mattstash --db ~/.credentials/dev.kdbx put "api-key" --value "dev-key-123"
-mattstash --db ~/.credentials/dev.kdbx put "database" --fields \
+mattstash --db ~/.config/mattstash/dev.kdbx put "api-key" --value "dev-key-123"
+mattstash --db ~/.config/mattstash/dev.kdbx put "database" --fields \
   --username "dev_user" --password "dev_pass" --url "localhost:5432"
 
 # Staging environment
-mattstash --db ~/.credentials/staging.kdbx put "api-key" --value "staging-key-456"
-mattstash --db ~/.credentials/staging.kdbx put "database" --fields \
+mattstash --db ~/.config/mattstash/staging.kdbx put "api-key" --value "staging-key-456"
+mattstash --db ~/.config/mattstash/staging.kdbx put "database" --fields \
   --username "staging_user" --password "staging_pass" --url "staging.db:5432"
 
 # Production environment
-mattstash --db ~/.credentials/prod.kdbx put "api-key" --value "prod-key-789"
-mattstash --db ~/.credentials/prod.kdbx put "database" --fields \
+mattstash --db ~/.config/mattstash/prod.kdbx put "api-key" --value "prod-key-789"
+mattstash --db ~/.config/mattstash/prod.kdbx put "database" --fields \
   --username "prod_user" --password "prod_pass" --url "prod.db:5432"
 ```
 
@@ -80,7 +80,7 @@ import os
 class EnvironmentCredentials:
     def __init__(self, environment="dev"):
         self.environment = environment
-        db_path = f"~/.credentials/{environment}.kdbx"
+        db_path = f"~/.config/mattstash/{environment}.kdbx"
         self.stash = MattStash(path=os.path.expanduser(db_path))
     
     def get_database_config(self):
@@ -122,7 +122,7 @@ prod_token = prod_creds.get_api_token()
 # backup-credentials.sh
 
 BACKUP_DIR="$HOME/secure-backup/credentials"
-CREDENTIALS_DIR="$HOME/.credentials"
+CREDENTIALS_DIR="$HOME/.config/mattstash"
 DATE=$(date +%Y%m%d_%H%M%S)
 
 # Create backup directory
@@ -155,7 +155,7 @@ echo "Backup completed: $BACKUP_DIR"
 # sync-credentials.sh
 
 CREDENTIALS_REPO="$HOME/credentials-sync"
-CREDENTIALS_DIR="$HOME/.credentials"
+CREDENTIALS_DIR="$HOME/.config/mattstash"
 
 # Initialize git repo for database files only
 if [[ ! -d "$CREDENTIALS_REPO/.git" ]]; then
