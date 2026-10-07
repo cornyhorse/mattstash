@@ -2,7 +2,7 @@
 
 Review date: 2026-10-07 · Reviewed version: 0.1.19 (`a4751d4`) · Branch: `claude/security-hardening`
 
-**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ⏳
+**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · independent-review follow-up ✅ (4e)
 
 Target use cases: (1) CLI on machines you log into, (2) API service in a docker-compose stack,
 (3) secrets service inside a k8s cluster, plus other library/CLI uses.
@@ -230,6 +230,61 @@ Owner actions: (1) to use PyPI trusted publishing configure the publisher on PyP
 `v0.2.0` (merge with `[minor]`); (3) Dependabot may not rewrite `server/requirements.lock` — the `audit` CI job fails on
 advisories against pinned versions; regenerate with the command in the lock header when `server/requirements.in` changes;
 (4) hatchling (build backend) and `pip install build` in the release job are not hash-pinned; image signing/scanning not added.
+
+---
+
+## 4e. Independent review of the implementation (findings and status)
+
+After Phases 1-3 an independent reviewer went through the *implementation* (not the original findings) and probed it
+with real processes. Everything below was reproduced before it was fixed; the numbers are the reviewer's, and the
+regression tests carry them (`tests/test_review_findings.py`, `server/tests/test_review_findings.py`).
+
+| # | Finding | Status |
+|---|---------|--------|
+| 1 | Audit trail and access log were not reliably emitted by a real server process | fixed: `configure_logging()` in `create_app` (idempotent), audit lines always INFO; tested with a real subprocess |
+| 2 | Failed-auth throttle could be bypassed by a concurrent burst (check and record separated by an `await`) | fixed: authentication moved into the outermost ASGI middleware, check + record are atomic |
+| 3 | IPv6 clients could rotate addresses within a /64 to evade the throttle; unnormalised addresses | fixed: per-/64 buckets, addresses normalised |
+| 4 | Probes were throttled/authenticated; `X-Forwarded-For` shapes; O(n) eviction | fixed: probes and docs are public and exempt, trusted-hop parsing from the right, LRU `OrderedDict` |
+| 5 | `create()` had no lock, shared temp names, no atomic create-if-absent (two creators could both "win") | fixed: creation holds `<db>.lock`, unique temp names, `os.link` create-if-absent |
+| 6 | Failed reload left a store without its database; saving a closed store looked like success | fixed: `save()` raises on a closed store; `reload()` discards state on failure |
+| 7 | Backups could overwrite each other (second resolution) | fixed: microsecond stamp, `O_EXCL`, counter; sidecar backups added |
+| 8 | Readers queued behind a writer that was only waiting for another process's file lock | fixed: lock order write-mutex, file lock, state lock; readers take only the state lock; `backup()` follows the same order |
+| 9 | Key revocation: `invalidate` could report success when the new policy did not load; on a freshly booted host a stale marker made keys look just loaded (`time.monotonic()` counts from boot); the policy swap was not atomic | fixed; semantics documented in `server/docs/configuration.md` |
+| 10 | Log injection through request paths and key ids | fixed: `printable()` escaping in every log line |
+| 11 | Key-policy file parsing: a comment plus minified JSON was read as a legacy key; BOM; whitespace inside a legacy key line; duplicate JSON fields (last one won); legacy principal ids leaked a key hash | fixed: fail-closed, positional ids |
+| 12-14 | db-url 404 texts differed between "missing" and "out of scope"; 422 validation errors echoed submitted secrets; denied requests were not audited | fixed |
+| 15 | A symlinked database was replaced by a regular file on save, leaving the real file stale; two paths to one file had two locks | fixed: all file operations use the resolved path |
+| 16 | After the database file vanished, reads (and `/ready`) kept serving the in-memory copy | fixed: `DatabaseNotFoundError`; the instance recovers when the file returns |
+| 17 | An invalid `MATTSTASH_RATE_LIMIT` made every request fail with 500 | fixed: startup refuses it |
+| 18 | A failure while swapping in a new database could leave the old database without its password | fixed: sidecar restored from memory, database swapped last |
+| 19 | `FileLock` reported every OS error as contention; db-url accepted bare IPv6 hosts and out-of-range ports | fixed: only `EAGAIN`/`EACCES`/`EWOULDBLOCK`/`EDEADLK` are retried; hosts normalised (`::1` becomes `[::1]`), ports 1-65535, scope ids rejected |
+
+Also fixed from the same pass: backups of the database next to it (`*.bak-*`) are flagged by the startup sidecar check; invalid names are exactly `400` on every route; entries a KeePass client moved to the **Recycle Bin** were still served, listed and
+resolved as the latest version (now ignored; their version numbers are never reused); a master password with leading or
+trailing whitespace could be stored in a sidecar that would then strip it (refused with a sidecar, warned otherwise;
+`setup` prints the collected warnings); `mattstash exec` handed `KDBX_PASSWORD` and `MATTSTASH_API_KEY` to the command
+(now removed unless `--keep-vault-env`); the server's db-url endpoint now accepts `dialect` (`postgresql`, `mysql`,
+`mariadb`) and an optional `driver`, using the same allow-list as the library.
+
+## 4f. Phase 4 (CLI ergonomics, ops commands)
+
+Built and tested (about 440 new tests): secrets without argv (`put --value -`, `--value-file`, `--entry-password-*`,
+`--db-password-file`, `--api-key-file`); `get --raw [--field]`; `delete --version` and `prune`; `env` / `exec`
+(shell-quoted, collision-checked); `backup` and `rotate-password`; db-url dialects; percent-encoded request paths and the
+plain-`http://` warning; `ServerError` instead of `httpx.HTTPStatusError`. Details for users are in
+[upgrading-to-0.2.md](upgrading-to-0.2.md) and [cli-reference.md](cli-reference.md).
+
+Interpretations made while building (change them if you disagree): `--upper` is opt-in (derived names keep their case);
+`exec` uses `execve` with the program resolved on the caller's `PATH` (a secret named `PATH` cannot redirect the lookup)
+and exits 126/127 like `env`/`xargs`; `--driver` defaults to `auto`; `put --value` combined with `--username`/`--url` is an
+error instead of silently dropping them.
+
+The CLI-to-server integration tests (`tests/integration`) used to need Docker and were skipped everywhere else. They now
+start the real server (`python -m app`) on a free localhost port with a throw-away database and run the real CLI against
+it, so they run in CI and on a laptop; they skip only when the server's dependencies are not installed.
+
+**Compatibility risk to know about:** an *old* server ignores `DELETE ?version=N` and deletes every version, and the CLI
+cannot detect that. Upgrade the server before using `delete --version` against it.
 
 ---
 

@@ -109,8 +109,8 @@ jobs:
         working-directory: server
         run: python -m pytest
 
-  # Integration tests (CLI workflows; the Docker-based server tests skip themselves when Docker or
-  # docker-compose is not available).
+  # Integration tests: CLI workflows, and the real CLI against the real server (started as a subprocess on a
+  # free port by tests/integration/conftest.py; no Docker needed).
   integration:
     runs-on: ubuntu-latest
     steps:
@@ -125,6 +125,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # The server's runtime dependencies (hash-pinned, as in the image) so the CLI-to-server tests run
+          pip install --require-hashes -r server/requirements.lock
           pip install -e ".[all,dev]"
 
       - name: Run integration tests

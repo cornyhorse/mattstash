@@ -348,7 +348,7 @@ MattStash includes an optional FastAPI-based HTTP service for accessing credenti
 **Features:**
 - 🔒 API key authentication
 - 🐳 Docker and Kubernetes ready
-- 📊 Rate limiting and audit logging
+- 📊 Rate limiting, failed-login throttling and an audit log of who read or changed which secret
 - 🚀 Read-only by default (secure)
 
 See the [Server README](server/README.md) for setup and deployment instructions.

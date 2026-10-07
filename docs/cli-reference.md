@@ -403,7 +403,7 @@ Do not write the output to disk or logs unless you mean to; prefer `exec`.
 
 ```bash
 mattstash exec [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... [--strip-prefix | --no-strip-prefix] [--upper]
-               [--override] -- COMMAND [ARGS...]
+               [--override] [--keep-vault-env] -- COMMAND [ARGS...]
 ```
 
 Builds the same environment as `env` and then **replaces** the process with `COMMAND` (`execve`): the command's exit
@@ -411,9 +411,10 @@ status is the process's exit status, no shell is involved, and nothing is writte
 are already set win unless you pass `--override`. The command is looked up with your original `PATH` (a secret
 named `PATH` cannot redirect the lookup). Everything after `--` belongs to the command; options must come before it.
 
-The command inherits your whole environment, which includes `KDBX_PASSWORD` and `MATTSTASH_API_KEY` if you set them
-(and then lets it open the whole database or call the server). Prefer `KDBX_PASSWORD_FILE` / `MATTSTASH_API_KEY_FILE`,
-which only expose a file *path*, for the process that runs `exec`.
+The command inherits your environment **except** `KDBX_PASSWORD` and `MATTSTASH_API_KEY`: those unlock the whole
+vault, and the command should receive only the secrets you asked for. Pass `--keep-vault-env` if the command needs
+them (for example a wrapper that calls `mattstash` itself). `KDBX_PASSWORD_FILE` / `MATTSTASH_API_KEY_FILE` (file
+*paths*) are left alone; a secret you deliberately map to one of the removed names is still injected.
 
 ```bash
 mattstash exec --prefix myapp/ --upper -- ./server --port 8080

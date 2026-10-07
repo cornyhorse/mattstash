@@ -7,9 +7,10 @@ MattStash configuration options and setup guide.
 MattStash uses sensible defaults that work out of the box:
 
 ```python
-# Default paths
-Database: ~/.credentials/mattstash.kdbx
-Password: ~/.credentials/.mattstash.txt
+# Defaults
+Database: ~/.config/mattstash/mattstash.kdbx      # MATTSTASH_DB_PATH or --db to change
+Password: none stored by default                  # KDBX_PASSWORD / KDBX_PASSWORD_FILE, or an optional sidecar
+                                                  # (~/.config/mattstash/.mattstash.txt, created by `setup --sidecar`)
 Version padding: 10 digits (0000000001)
 ```
 
@@ -187,7 +188,7 @@ export MATTSTASH_API_KEY="key"
 mattstash list  # Uses server
 
 # Inline mode selection
-mattstash --db ~/.credentials/mattstash.kdbx list  # Local
+mattstash --db ~/.config/mattstash/mattstash.kdbx list  # Local
 mattstash --server-url http://server:8000 --api-key key list  # Server
 ```
 
@@ -222,9 +223,10 @@ mattstash put "api-key" --value "v1"    # Creates version 1
 # Second time  
 mattstash put "api-key" --value "v2"    # Creates version 2
 
-# Explicit version
-mattstash put "api-key" --value "v5" --version 5  # Creates version 5
 ```
+
+An explicit version number is only available from the Python API (`put("api-key", value="v5", version=5)`);
+the command line always appends the next version.
 
 ## Multi-Database Setup
 
@@ -259,11 +261,11 @@ prod_token = prod_stash.get("api-token")
 
 ```bash
 # Secure the credentials directory
-chmod 700 ~/.credentials/
+chmod 700 ~/.config/mattstash/
 
 # Verify permissions
-ls -la ~/.credentials/
-# drwx------ ~/.credentials/
+ls -la ~/.config/mattstash/
+# drwx------ ~/.config/mattstash/
 # -rw------- .mattstash.txt
 # -rw-r--r-- mattstash.kdbx
 ```
@@ -282,10 +284,10 @@ ls -la ~/.credentials/
 
 ```bash
 # Backup database (encrypted, safe)
-cp ~/.credentials/mattstash.kdbx backup/mattstash-$(date +%Y%m%d).kdbx
+cp ~/.config/mattstash/mattstash.kdbx backup/mattstash-$(date +%Y%m%d).kdbx
 
 # Backup password file (plaintext, secure storage only)
-cp ~/.credentials/.mattstash.txt secure-backup/
+cp ~/.config/mattstash/.mattstash.txt secure-backup/
 ```
 
 ## Custom Properties
@@ -296,7 +298,7 @@ Store additional metadata using custom properties:
 # Database credentials with custom properties
 mattstash put "prod-db" --fields \
   --username dbuser \
-  --password secret123 \
+  --entry-password-file ./dbpass.txt \
   --url localhost:5432 \
   --notes "Production database"
   
@@ -315,10 +317,10 @@ ssl_mode = cred.get_custom_property("sslmode")
 
 ```bash
 # Fix directory permissions
-chmod 700 ~/.credentials/
+chmod 700 ~/.config/mattstash/
 
 # Fix password file permissions  
-chmod 600 ~/.credentials/.mattstash.txt
+chmod 600 ~/.config/mattstash/.mattstash.txt
 ```
 
 ### Database Corruption
@@ -327,31 +329,33 @@ chmod 600 ~/.credentials/.mattstash.txt
 # Verify database integrity
 mattstash list  # Should work if database is OK
 
-# Re-create if corrupted
-rm ~/.credentials/mattstash.kdbx ~/.credentials/.mattstash.txt
-mattstash setup
+# Restore from the latest backup (made by `mattstash backup`, `rotate-password` or `setup --force`)
+ls ~/.config/mattstash/mattstash.kdbx.bak-*
+cp ~/.config/mattstash/mattstash.kdbx.bak-<timestamp> ~/.config/mattstash/mattstash.kdbx
 ```
+
+Do not run `mattstash setup --force` to "repair" a database: it replaces it with an empty one (after taking a
+backup).
 
 ### Password Issues
 
 ```bash
-# Clear cached password
-unset KDBX_PASSWORD
+# A stale KDBX_PASSWORD / KDBX_PASSWORD_FILE in the environment beats the sidecar file
+unset KDBX_PASSWORD KDBX_PASSWORD_FILE
 
-# Regenerate password file
-rm ~/.credentials/.mattstash.txt
-mattstash setup --force
+# Change the master password (re-keys the database and updates the sidecar, if there is one)
+mattstash rotate-password            # prompts for the new password; --generate / --new-password-file also work
 ```
 
 ### Path Issues
 
 ```bash
 # Verify paths
-echo $HOME/.credentials/
+echo $HOME/.config/mattstash/
 
 # Create directory if missing
-mkdir -p ~/.credentials/
-chmod 700 ~/.credentials/
+mkdir -p ~/.config/mattstash/
+chmod 700 ~/.config/mattstash/
 ```
 
 ## Integration Examples
@@ -359,16 +363,14 @@ chmod 700 ~/.credentials/
 ### Docker
 
 ```dockerfile
-# Copy database into container
+# The database may be baked into an image or mounted; the password must NOT be: mount it as a secret at run time
 COPY credentials/mattstash.kdbx /app/credentials/
-COPY credentials/.mattstash.txt /app/credentials/
-
-# Set permissions
-RUN chmod 600 /app/credentials/.mattstash.txt
-
-# Use in application
-ENV MATTSTASH_DB=/app/credentials/mattstash.kdbx
+ENV MATTSTASH_DB_PATH=/app/credentials/mattstash.kdbx
+ENV KDBX_PASSWORD_FILE=/run/secrets/mattstash_password
 ```
+
+For services, prefer running the MattStash API server (see `server/README.md`) and reading secrets over HTTP, or
+`mattstash exec -- COMMAND` to start the application with its secrets in the environment.
 
 ### CI/CD
 
@@ -376,14 +378,14 @@ ENV MATTSTASH_DB=/app/credentials/mattstash.kdbx
 # GitHub Actions example
 - name: Setup credentials
   run: |
-    mkdir -p ~/.credentials
-    echo "${{ secrets.KDBX_PASSWORD }}" > ~/.credentials/.mattstash.txt
-    chmod 600 ~/.credentials/.mattstash.txt
-    
+    umask 077
+    printf '%s' "${{ secrets.KDBX_PASSWORD }}" > "$RUNNER_TEMP/mattstash.pw"
+
 - name: Deploy
+  env:
+    KDBX_PASSWORD_FILE: ${{ runner.temp }}/mattstash.pw
   run: |
-    # MattStash will use the password file automatically
-    mattstash get "deploy-key"
+    mattstash get "deploy-key" --raw
 ```
 
 ### Systemd Service
@@ -397,7 +399,7 @@ After=network.target
 Type=simple
 User=myapp
 ExecStart=/usr/local/bin/myapp
-Environment=MATTSTASH_DB=/etc/myapp/credentials.kdbx
+Environment=MATTSTASH_DB_PATH=/etc/myapp/credentials.kdbx
 Environment=KDBX_PASSWORD_FILE=/etc/myapp/.password
 
 [Install]

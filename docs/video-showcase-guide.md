@@ -124,17 +124,15 @@ mattstash get "api-key" --version 1 --show-password
 mattstash get "api-key" --show-password  
 # Shows: api-key: key-v3-rotated
 
-# Explicit version number
-mattstash put "api-key" --value "key-v5-explicit" --version 5
-mattstash versions "api-key"
-# Shows jump to version 5
+# Keep only the newest two versions
+mattstash prune "api-key" --keep 2
 ```
 
 **Key messages:**
 - Automatic versioning on updates
-- Complete audit trail
+- A history of earlier values (not an audit log: it does not record who changed what)
 - Access any historical version
-- Explicit version control available
+- Prune old versions with `prune --keep N`, remove one with `delete --version N`
 
 ---
 
