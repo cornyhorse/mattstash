@@ -23,6 +23,7 @@ from mattstash.utils.exceptions import (
     DatabaseAccessError,
     DatabaseExistsError,
     DatabaseLockError,
+    DatabaseNotFoundError,
     MattStashError,
 )
 from mattstash.utils.filelock import FileLock
@@ -302,3 +303,241 @@ def test_6_saving_a_store_that_is_not_open_raises(temp_db: Path):
     store = CredentialStore(str(temp_db), "irrelevant")
     with pytest.raises(DatabaseAccessError, match="not open"):
         store.save()
+
+
+# ---------------------------------------------------------------------------
+# #6 reload failure must not leave a half-open instance
+# ---------------------------------------------------------------------------
+
+
+def test_6_failed_reload_discards_state_and_recovers(temp_db: Path):
+    stash = MattStash(str(temp_db))
+    stash.put("a", value="1")
+    original = temp_db.read_bytes()
+
+    temp_db.write_bytes(b"not a database")
+    assert stash.reload() is False
+    assert stash._credential_store is None and stash._entry_manager is None
+
+    temp_db.write_bytes(original)  # operator restores the file; the same instance must work again
+    assert stash.get("a", show_password=True)["value"] == "1"
+    stash.put("b", value="2")  # and writes must really be saved, not silently dropped
+    assert MattStash(str(temp_db)).get("b", show_password=True)["value"] == "2"
+
+
+# ---------------------------------------------------------------------------
+# #8 readers must not queue behind a writer that is merely waiting for the file lock
+# ---------------------------------------------------------------------------
+
+
+def test_8_reader_is_not_blocked_by_writer_waiting_for_another_process(temp_db: Path):
+    stash = MattStash(str(temp_db), lock_timeout=3.0)
+    stash.put("a", value="1")
+    stash.get("a")  # open
+
+    other_process = FileLock(str(temp_db) + ".lock", timeout=1.0)
+    other_process.acquire()  # simulates another process holding the write lock
+    try:
+        writer_started = threading.Event()
+        outcome: list[BaseException | None] = []
+
+        def writer() -> None:
+            writer_started.set()
+            try:
+                stash.put("b", value="2")
+                outcome.append(None)
+            except BaseException as exc:
+                outcome.append(exc)
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        writer_started.wait(2)
+        time.sleep(0.3)  # the writer is now parked on the file lock
+
+        started = time.monotonic()
+        assert stash.get("a", show_password=True)["value"] == "1"
+        assert time.monotonic() - started < 1.0, "reader waited for the writer's file-lock timeout"
+    finally:
+        other_process.release()
+    thread.join(10)
+    assert outcome == [None]
+
+
+def test_8_backup_takes_the_same_locks_as_writers(temp_db: Path, tmp_path: Path):
+    stash = MattStash(str(temp_db), lock_timeout=0.3)
+    stash.put("a", value="1")
+    holder = FileLock(str(temp_db) + ".lock", timeout=1.0)
+    holder.acquire()
+    try:
+        with pytest.raises(DatabaseLockError):
+            stash.backup(str(tmp_path / "copy.kdbx"))
+    finally:
+        holder.release()
+    assert not (tmp_path / "copy.kdbx").exists()
+
+
+# ---------------------------------------------------------------------------
+# #15 a symlinked database must stay a symlink (and the real file must be updated)
+# ---------------------------------------------------------------------------
+
+
+def test_15_symlinked_database_keeps_its_link_and_updates_the_target(tmp_path: Path):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    real = real_dir / "secrets.kdbx"
+    MattStash.create(str(real), password="pw", sidecar=False)
+
+    link = tmp_path / "link.kdbx"
+    link.symlink_to(real)
+
+    stash = MattStash(str(link), password="pw")
+    stash.put("a", value="1")
+    stash.put("b", value="2")
+
+    assert link.is_symlink(), "saving replaced the symlink with a regular file"
+    assert MattStash(str(real), password="pw").get("b", show_password=True)["value"] == "2"
+    assert not (tmp_path / "link.kdbx.lock").exists()  # one lock file, next to the real database
+    assert (real_dir / "secrets.kdbx.lock").exists()
+
+
+def test_15_two_paths_to_one_database_share_a_lock(tmp_path: Path):
+    real = tmp_path / "real.kdbx"
+    MattStash.create(str(real), password="pw", sidecar=False)
+    link = tmp_path / "link.kdbx"
+    link.symlink_to(real)
+
+    via_link = MattStash(str(link), password="pw")
+    via_real = MattStash(str(real), password="pw")
+    assert via_link._file_lock.path == via_real._file_lock.path
+
+
+# ---------------------------------------------------------------------------
+# #16 a database that disappears must not keep being served from memory
+# ---------------------------------------------------------------------------
+
+
+def test_16_reads_fail_once_the_database_file_is_gone(temp_db: Path):
+    stash = MattStash(str(temp_db))
+    stash.put("a", value="1")
+    assert stash.get("a") is not None  # loaded into memory
+
+    temp_db.unlink()
+    with pytest.raises(DatabaseNotFoundError):
+        stash.get("a")
+    with pytest.raises(DatabaseNotFoundError):
+        stash.list()
+    with pytest.raises(DatabaseNotFoundError):
+        stash.put("b", value="2")
+    assert not temp_db.exists()  # and nothing resurrected it
+
+
+def test_16_instance_recovers_when_the_file_comes_back(tmp_path: Path):
+    db = tmp_path / "x.kdbx"
+    MattStash.create(str(db), password="pw", sidecar=False)
+    stash = MattStash(str(db), password="pw")
+    stash.put("a", value="1")
+    saved = db.read_bytes()
+
+    db.unlink()
+    with pytest.raises(DatabaseNotFoundError):
+        stash.get("a")
+
+    db.write_bytes(saved)  # e.g. the volume is mounted again
+    assert stash.get("a", show_password=True)["value"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# #19 (db-url) IPv6 hosts and port range
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "expected"),
+    [
+        ("db.internal:5432", ("db.internal", 5432)),
+        ("[::1]:5432", ("[::1]", 5432)),
+        ("::1:5432", ("[::1]", 5432)),  # unbracketed: must not produce postgresql://u@::1:5432/db
+        ("postgresql://u:p@[2001:db8::10]:6543/app", ("[2001:db8::10]", 6543)),
+        ("10.0.0.5:3306", ("10.0.0.5", 3306)),
+    ],
+)
+def test_19_db_url_hosts_are_normalised_for_urls(temp_db: Path, endpoint: str, expected: tuple[str, int]):
+    assert MattStash(str(temp_db))._parse_host_port(endpoint) == expected
+
+
+@pytest.mark.parametrize(
+    "endpoint", ["db:0", "db:65536", "db:99999999999", "[::1:5432", "[db]:5432", "fe80::1%eth0:5432"]
+)
+def test_19_db_url_rejects_bad_ports_and_hosts(temp_db: Path, endpoint: str):
+    with pytest.raises(ValueError):
+        MattStash(str(temp_db))._parse_host_port(endpoint)
+
+
+def test_19_db_url_with_bare_ipv6_endpoint_is_a_valid_url(temp_db: Path):
+    from urllib.parse import urlparse
+
+    stash = MattStash(str(temp_db))
+    stash.put("pg", username="u", password="p@ss", url="::1:5432", notes="")
+    url = stash.get_db_url("pg", database="app", mask_password=False)
+    parsed = urlparse(url)
+    assert (parsed.hostname, parsed.port, parsed.username) == ("::1", 5432, "u")
+
+
+# ---------------------------------------------------------------------------
+# Recycle Bin: entries trashed by another KeePass client are deleted, not secrets to serve
+# ---------------------------------------------------------------------------
+
+
+def test_trashed_entries_are_not_served_listed_or_resolved(temp_db: Path):
+    stash = MattStash(str(temp_db))
+    stash.put("old", value="1")
+    stash.put("old", value="2")  # old@0000000001 / old@0000000002 style history
+    stash.put("keep", value="k")
+    password = stash.password
+
+    kp = PyKeePass(str(temp_db), password=password)
+    for entry in [e for e in kp.entries if (e.title or "").startswith("old")]:
+        kp.trash_entry(entry)
+    kp.save()
+
+    fresh = MattStash(str(temp_db))
+    assert fresh.get("old") is None
+    assert fresh.get("old", version=1) is None
+    assert [c.credential_name for c in fresh.list(latest_only=True)] == ["keep"]
+    assert [c.credential_name for c in fresh.list()] == ["keep@0000000001"]
+    assert fresh.list_versions("old") == []
+
+    # version numbers are not reused, so a later restore from the bin cannot collide with a live entry
+    fresh.put("old", value="3")
+    assert fresh.get("old", show_password=True)["value"] == "3"
+    assert fresh.list_versions("old") == ["0000000003"]
+
+
+# ---------------------------------------------------------------------------
+# password whitespace: file sources strip it, so a padded password must not be stored in one
+# ---------------------------------------------------------------------------
+
+
+def test_padded_password_cannot_be_combined_with_a_sidecar(tmp_path: Path):
+    db = tmp_path / "x.kdbx"
+    with pytest.raises(MattStashError, match="whitespace"):
+        MattStash.create(str(db), password=" pw ", sidecar=True)
+    assert list(tmp_path.iterdir()) == []  # refused before anything was written (not even a lock file)
+
+
+def test_padded_password_without_sidecar_works_but_warns(tmp_path: Path):
+    db = tmp_path / "x.kdbx"
+    _stash, info = MattStash.create_with_info(str(db), password=" pw ", sidecar=False)
+    assert opens_with(db, " pw ")
+    assert any("whitespace" in w for w in info.warnings)
+
+
+def test_setup_prints_the_warnings_it_collected(tmp_path: Path, caplog, monkeypatch):
+    import io
+
+    from mattstash.cli.main import main
+
+    db = tmp_path / "x.kdbx"
+    monkeypatch.setattr("sys.stdin", io.StringIO(" padded \n"))
+    assert main(["--db", str(db), "setup", "--password-stdin"]) == 0
+    assert any(r.levelname == "WARNING" and "whitespace" in r.getMessage() for r in caplog.records)

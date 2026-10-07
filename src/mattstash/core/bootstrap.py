@@ -154,6 +154,13 @@ class DatabaseBootstrapper:
         if not password:
             password = secrets.token_urlsafe(32)
             generated = True
+        padded = password != password.strip()
+        if padded and sidecar:
+            # Password files are read with surrounding whitespace stripped, so the sidecar could never open
+            # the database it was written for.
+            raise MattStashError(
+                "The master password has leading or trailing whitespace, which a sidecar password file cannot hold"
+            )
 
         # Directory: restrictive perms only if we are the ones creating it.
         if not os.path.isdir(self.db_dir):
@@ -164,10 +171,10 @@ class DatabaseBootstrapper:
         # Writers and other creators serialise on the same lock file, so a writer cannot finish a save
         # (and rename an old-password copy over the new database) in the middle of a replacement.
         with FileLock(self.db_path + ".lock", timeout=lock_timeout):
-            return self._create_locked(password, generated, sidecar=sidecar, force=force, backup=backup)
+            return self._create_locked(password, generated, sidecar=sidecar, force=force, backup=backup, padded=padded)
 
     def _create_locked(
-        self, password: str, generated: bool, *, sidecar: bool, force: bool, backup: bool
+        self, password: str, generated: bool, *, sidecar: bool, force: bool, backup: bool, padded: bool = False
     ) -> CreatedDatabase:
         assert _kp_create_database is not None
         existing = self.existing_files()
@@ -208,6 +215,11 @@ class DatabaseBootstrapper:
         # --- 2) swap in. Old files were backed up above; the database goes LAST ---------------------
         sidecar_swapped = False
         warnings: list[str] = []
+        if padded:
+            warnings.append(
+                "the master password has leading or trailing whitespace: it cannot be supplied through "
+                "KDBX_PASSWORD_FILE or a sidecar file (those are read with whitespace stripped)"
+            )
         try:
             if new_sidecar is not None:
                 _link_or_replace(new_sidecar, self.sidecar_path, replace=force)

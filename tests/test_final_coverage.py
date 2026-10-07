@@ -167,6 +167,7 @@ def test_entry_manager_get_simple_secret_missing():
 
     # Mock entries as an empty list to make it iterable
     mock_kp.entries = []
+    mock_kp.recyclebin_group = None  # a database without a Recycle Bin
     mock_kp.find_entries.return_value = []
 
     result = manager.get_entry("nonexistent", show_password=True)
@@ -207,6 +208,8 @@ def test_entry_manager_list_entries_simple_mode():
     mock_entry.get_custom_property.return_value = None
 
     mock_kp.entries = [mock_entry]
+
+    mock_kp.recyclebin_group = None  # a database without a Recycle Bin
 
     # Mock the _is_simple_secret to return True
     with patch.object(manager, "_is_simple_secret", return_value=True):

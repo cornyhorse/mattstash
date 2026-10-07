@@ -51,7 +51,8 @@ def test_bootstrap_create_database_failure():
         with patch("mattstash.core.bootstrap._kp_create_database", side_effect=Exception("Database creation failed")):
             with pytest.raises(MattStashError, match="Database creation failed"):
                 bootstrapper.create(sidecar=True)
-        assert os.listdir(temp_dir) == []
+        # only the lock file (create() serialises on it like writers do) remains: no database, sidecar or temp files
+        assert os.listdir(temp_dir) == ["test.kdbx.lock"]
 
 
 def test_bootstrap_create_database_none():
@@ -125,6 +126,7 @@ def test_entry_manager_put_entry_simple_mode():
 
     # Set up mock for entries iteration
     mock_kp.entries = [mock_entry]
+    mock_kp.recyclebin_group = None  # a database without a Recycle Bin
     mock_kp.find_entries.return_value = mock_entry  # Return single entry, not list
 
     manager.put_entry("test", value="new_value", autoincrement=False)  # Disable autoincrement
@@ -150,6 +152,7 @@ def test_entry_manager_delete_not_found():
 
     mock_kp.find_entries.return_value = []
     mock_kp.entries = []  # No entries at all (versioned fallback)
+    mock_kp.recyclebin_group = None  # a database without a Recycle Bin
 
     result = manager.delete_entry("nonexistent")
     assert result is False

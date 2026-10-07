@@ -30,7 +30,7 @@ import re
 import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Protocol, Tuple, Union
+from typing import Dict, List, Optional, Protocol, Tuple
 
 from ..utils.exceptions import CredentialNotFoundError
 from ..utils.logging_config import get_logger
@@ -138,7 +138,7 @@ def collect_env(
     source: SecretSource,
     *,
     prefix: Optional[str] = None,
-    mappings: Optional[Union[Mapping[str, str], Iterable[str]]] = None,
+    mappings: Optional[Mapping[str, str] | Iterable[str]] = None,
     strip_prefix: bool = True,
     upper: bool = False,
 ) -> Dict[str, str]:

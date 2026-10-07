@@ -78,6 +78,8 @@ class SetupHandler(BaseHandler):
             print("        open it. Prefer an operator-supplied password (KDBX_PASSWORD_FILE) for services.")
         for backup in info.backups:
             print(f"  Backed up previous file: {backup}")
+        for warning in info.warnings:
+            self.warning(warning)
         if info.generated and not info.sidecar_path:
             print(f"  Generated master password (shown once, store it safely): {info.password}")
         return exit_codes.OK

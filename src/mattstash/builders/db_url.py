@@ -5,6 +5,7 @@ Database URL construction functionality.
 """
 
 # Updated import path for refactored structure
+import ipaddress
 import re
 from typing import TYPE_CHECKING, Dict, FrozenSet, Optional
 from urllib.parse import quote, urlencode, urlparse
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
     from ..core.mattstash import MattStash
 
 _SSLMODES = frozenset({"disable", "allow", "prefer", "require", "verify-ca", "verify-full"})
-_HOST_RE = re.compile(r"[A-Za-z0-9._\-\[\]:%]+")
+_HOST_RE = re.compile(r"[A-Za-z0-9._\-]+")
 
 #: Dialect used when neither the ``dialect`` argument nor the entry's ``dialect`` property is set.
 DEFAULT_DIALECT = "postgresql"
@@ -130,10 +131,31 @@ class DatabaseUrlBuilder:
             if not port_str.isdigit():
                 raise ValueError("[mattstash] Invalid database port in endpoint")
             port = int(port_str)
+        if not 1 <= port <= 65535:
+            raise ValueError("[mattstash] Invalid database port in endpoint (must be 1-65535)")
+        return self._normalize_host(host), port
+
+    @staticmethod
+    def _normalize_host(host: str) -> str:
+        """Validate a host name / IP and return it in URL form (IPv6 addresses bracketed).
+
+        ``::1`` and ``[::1]`` both give ``[::1]``: an unbracketed IPv6 address would make the URL's port ambiguous.
+        Scope ids (``%eth0``) and anything else outside host-name characters are rejected.
+        """
         host = host.strip("/")
-        if not host or not _HOST_RE.fullmatch(host):
+        bracketed = host.startswith("[") and host.endswith("]")
+        candidate = host[1:-1] if bracketed else host
+        if ":" in candidate:
+            try:
+                if "%" in candidate:  # Python accepts scope ids; in a URL they are ambiguous (and need %25)
+                    raise ValueError(candidate)
+                ipaddress.IPv6Address(candidate)
+            except ValueError:
+                raise ValueError("[mattstash] Invalid database host in endpoint") from None
+            return f"[{candidate}]"
+        if bracketed or not candidate or not _HOST_RE.fullmatch(candidate):
             raise ValueError("[mattstash] Invalid database host in endpoint")
-        return host, port
+        return candidate
 
     def build_url(
         self,

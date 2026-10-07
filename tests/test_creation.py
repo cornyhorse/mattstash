@@ -134,8 +134,8 @@ def test_create_makes_private_files_and_opens(tmp_path: Path):
     assert info.generated is True
     assert ms.password == Path(info.sidecar_path).read_text()
     assert ms.list() == []
-    # no temp/leftover files
-    assert sorted(p.name for p in db.parent.iterdir()) == [".mattstash.txt", "db.kdbx"]
+    # no temp/leftover files (the lock file is the one deliberate extra: create() serialises on it like writers do)
+    assert sorted(p.name for p in db.parent.iterdir()) == [".mattstash.txt", "db.kdbx", "db.kdbx.lock"]
 
 
 def test_create_does_not_change_permissions_of_an_existing_directory(tmp_path: Path):
@@ -236,7 +236,9 @@ def test_failed_force_creation_leaves_existing_files_untouched(temp_db: Path):
             MattStash.create(str(temp_db), password="new", force=True, sidecar=True)
 
     assert (temp_db.read_bytes(), sidecar.read_bytes()) == before
-    assert sorted(p.name for p in temp_db.parent.iterdir() if ".bak-" not in p.name) == [".mattstash.txt", "test.kdbx"]
+    assert sorted(
+        p.name for p in temp_db.parent.iterdir() if ".bak-" not in p.name and not p.name.endswith(".lock")
+    ) == [".mattstash.txt", "test.kdbx"]
 
 
 def test_force_no_backup(temp_db: Path):

@@ -27,7 +27,7 @@ import os
 import threading
 import time
 from collections.abc import Iterable, Iterator, Mapping
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from ..builders.db_url import DatabaseUrlBuilder
 from ..builders.s3_client import S3ClientBuilder
@@ -102,8 +102,17 @@ class MattStash:
         # Resolve password (lazily failing: a missing password is reported on first use)
         self.password = password or self._password_resolver.resolve_password()
 
+        # All file operations (open, save, lock, copy) use the resolved path: pykeepass saves by renaming a temp
+        # file over the target, which would otherwise replace a symlinked database with a regular file and leave
+        # the real database stale; and two paths to one file must share ONE lock.
+        self._real_path = os.path.realpath(self.path)
+
+        # Lock order (outermost first): _write_mutex (one writer thread) -> _file_lock (other processes) -> _lock.
+        # Readers only take _lock, so they wait only while a writer is actually mutating/saving, never while a
+        # writer is merely waiting for another process to release the file lock.
+        self._write_mutex = threading.RLock()
         self._lock = threading.RLock()
-        self._file_lock = FileLock(self.path + ".lock", timeout=lock_timeout)
+        self._file_lock = FileLock(self._real_path + ".lock", timeout=lock_timeout)
 
         # Initialized on first use
         self._credential_store: Optional[CredentialStore] = None
@@ -158,7 +167,7 @@ class MattStash:
                     "KDBX_PASSWORD_FILE or provide a sidecar file"
                 )
             try:
-                store = CredentialStore(self.path, self.password)
+                store = CredentialStore(self._real_path, self.password)
                 kp = store.open()  # raises DatabaseNotFoundError / DatabaseAccessError
             except MattStashError:
                 raise
@@ -198,6 +207,11 @@ class MattStash:
         """Entry manager for the current on-disk state. Caller must hold ``self._lock``."""
         manager = self._open()
         assert self._credential_store is not None
+        if self._credential_store._current_signature() is None:
+            # Deleted or unmounted underneath us: serving the stale in-memory copy would hand out secrets (and
+            # report "ready") from a database that is no longer there.
+            self._discard()
+            raise DatabaseNotFoundError(self._not_found_message())
         if self._credential_store.has_file_changed():
             logger.info("External database modification detected, reloading")
             manager = self._reload_locked()
@@ -210,15 +224,21 @@ class MattStash:
             yield self._fresh()
 
     @contextlib.contextmanager
+    def _exclusive(self) -> Iterator[None]:
+        """One writer at a time across threads AND processes, without blocking readers while waiting."""
+        if not os.path.exists(self._real_path):
+            # Report the real problem (and don't litter a lock file) before locking anything.
+            raise DatabaseNotFoundError(self._not_found_message())
+        with self._write_mutex, self._file_lock, self._lock:
+            yield
+
+    @contextlib.contextmanager
     def _write(self) -> Iterator[EntryManager]:
         """Context for read-modify-write operations (thread + process exclusive).
 
         On any exception the in-memory state is discarded so it cannot diverge from disk.
         """
-        if not os.path.exists(self.path):
-            # Report the real problem (and don't litter a lock file) before locking anything.
-            raise DatabaseNotFoundError(self._not_found_message())
-        with self._lock, self._file_lock:
+        with self._exclusive():
             manager = self._fresh()
             try:
                 yield manager
@@ -333,11 +353,11 @@ class MattStash:
         directory = os.path.dirname(os.path.abspath(target))
         if not os.path.isdir(directory):
             raise MattStashError(f"Backup directory does not exist: {directory}")
-        protected = {self.path, self.path + ".lock", PasswordResolver(self.path).sidecar_path}
+        protected = {self.path, self._real_path, self._real_path + ".lock", PasswordResolver(self.path).sidecar_path}
         if os.path.realpath(target) in {os.path.realpath(p) for p in protected}:
             raise MattStashError("Refusing to write the backup over the database, its lock or its sidecar file")
         try:
-            copy_private(self.path, target, overwrite=force)
+            copy_private(self._real_path, target, overwrite=force)
         except FileExistsError:
             raise DatabaseExistsError(
                 f"Refusing to overwrite existing file: {target} (use force to replace it)"
@@ -368,9 +388,7 @@ class MattStash:
             DatabaseLockError: another process held the write lock for too long.
             DatabaseExistsError: ``dest`` exists and ``force`` is False.
         """
-        if not os.path.exists(self.path):
-            raise DatabaseNotFoundError(self._not_found_message())
-        with self._lock, self._file_lock:
+        with self._exclusive():
             return self._copy_locked(dest, force)
 
     def rotate_password(self, new_password: str, *, backup: bool = False) -> Optional[str]:
@@ -456,6 +474,7 @@ class MattStash:
                 return True
             except Exception as e:
                 logger.error(f"Failed to reload database: {e}")
+                self._discard()  # never keep a store that lost its database: the next operation re-opens it
                 return False
 
     def reload_if_changed(self) -> bool:
@@ -506,7 +525,7 @@ class MattStash:
     def resolve_env(
         self,
         prefix: Optional[str] = None,
-        mappings: Optional[Union[Mapping[str, str], Iterable[str]]] = None,
+        mappings: Optional[Mapping[str, str] | Iterable[str]] = None,
         *,
         strip_prefix: bool = True,
         upper: bool = False,

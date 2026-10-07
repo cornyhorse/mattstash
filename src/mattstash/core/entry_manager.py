@@ -41,11 +41,30 @@ class EntryManager:
 
     # ---- lookup -----------------------------------------------------------
 
+    def _live_entries(self) -> list[Entry]:
+        """Every entry except those in the Recycle Bin.
+
+        KeePass clients "delete" by moving an entry to the Recycle Bin. Such an entry must not be served (or
+        listed, or resolved as the latest version): the owner deleted it. ``mattstash delete`` removes entries
+        permanently, so this only concerns entries trashed by another client.
+        """
+        entries = list(self.kp.entries)
+        bin_group = self.kp.recyclebin_group  # None when the database has no Recycle Bin (does not create one)
+        if bin_group is None:
+            return entries
+        trashed: set[Any] = set()
+        pending = [bin_group]
+        while pending:
+            group = pending.pop()
+            trashed.update(e.uuid for e in group.entries)
+            pending.extend(group.subgroups)
+        return [e for e in entries if e.uuid not in trashed]
+
     def _scan(self, title: str) -> tuple[Optional[Entry], list[tuple[int, Entry]]]:
         """Single pass over the database: (exact-title entry, [(version, entry), ...])."""
         exact: Optional[Entry] = None
         versions: list[tuple[int, Entry]] = []
-        for entry in self.kp.entries:
+        for entry in self._live_entries():
             entry_title = entry.title
             if entry_title is None:
                 continue
@@ -60,7 +79,7 @@ class EntryManager:
 
     def find_entry(self, title: str) -> Optional[Entry]:
         """Return the entry whose title is exactly ``title`` (no version resolution)."""
-        return next((e for e in self.kp.entries if e.title == title), None)
+        return next((e for e in self._live_entries() if e.title == title), None)
 
     def resolve_entry(self, title: str, version: Optional[int] = None) -> Optional[tuple[Entry, Optional[str]]]:
         """Resolve ``title`` (and optional version) to ``(entry, version_string)``.
@@ -182,14 +201,14 @@ class EntryManager:
         """
         creds: List[Credential] = []
         if not latest_only:
-            for entry in self.kp.entries:
+            for entry in self._live_entries():
                 creds.append(self._credential_from_entry(entry, entry.title, None, show_password))
             return creds
 
         # Group "<base>@<digits>" entries by base name; keep the highest version of each.
         best: Dict[str, tuple[int, Entry]] = {}
         plain: List[Entry] = []
-        for entry in self.kp.entries:
+        for entry in self._live_entries():
             title = entry.title or ""
             base, sep, suffix = title.rpartition("@")
             if sep and base and suffix.isascii() and suffix.isdigit():
@@ -270,7 +289,10 @@ class EntryManager:
             entry = next((e for n, e in versions if n == version), None)
             entry_title = self.version_manager.get_versioned_title(title, version)
         elif autoincrement:
-            next_version = max((n for n, _ in versions), default=0) + 1
+            # Count trashed versions too: a version number is never reused, so restoring one from the Recycle Bin
+            # cannot collide with a live entry.
+            numbers = (parse_version_suffix(e.title or "", title) for e in self.kp.entries)
+            next_version = max((n for n in numbers if n is not None), default=0) + 1
             vstr = self.version_manager.format_version(next_version)
             entry = None
             entry_title = self.version_manager.get_versioned_title(title, next_version)
@@ -303,6 +325,7 @@ class EntryManager:
         if version is not None or autoincrement:
             if version is None and autoincrement:
                 # Find next version
+                # all entries, trashed ones included: a version number is never reused, so restoring one cannot collide
                 next_version = self.version_manager.get_next_version(title, list(self.kp.entries))
                 vstr = self.version_manager.format_version(next_version)
             elif version is not None:

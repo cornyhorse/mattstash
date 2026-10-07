@@ -113,6 +113,10 @@ class BaseHandler(ABC):
         """Print an error message to stderr."""
         logger.error(message)
 
+    def warning(self, message: str) -> None:
+        """Log a warning (stderr)."""
+        logger.warning(message)
+
     def deprecation(self, message: str) -> None:
         """Log a deprecation warning (stderr)."""
         logger.warning(f"DEPRECATED: {message}")
