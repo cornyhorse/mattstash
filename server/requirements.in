@@ -9,6 +9,6 @@
 #   The library's runtime dependencies (pykeepass, httpx, ...) are pulled into the lock
 #   from the root pyproject.toml when it is compiled together with this file.
 # * Test/lint tooling lives in requirements-dev.txt and is never installed in the image.
-fastapi>=0.109,<1.0
+fastapi>=0.142.2,<1.0
 uvicorn[standard]>=0.27,<1.0
 slowapi>=0.1.10  # key_style (per-route rate-limit buckets) needs >= 0.1.9; 0.1.10 is what is locked and tested
