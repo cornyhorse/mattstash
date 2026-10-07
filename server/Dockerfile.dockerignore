@@ -7,6 +7,7 @@
 # VCS / CI
 .git
 .github
+.claude
 
 # Anything that could hold a secret or a database
 **/*.kdbx

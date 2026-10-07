@@ -1,8 +1,8 @@
-# Build context for server/Dockerfile.multistage is the REPOSITORY ROOT. The Dockerfile only COPYs
+# Build context for server/Dockerfile is the REPOSITORY ROOT. The Dockerfile only COPYs
 # pyproject.toml, README.md, LICENSE, src/, server/requirements.lock and server/app/ - this file
 # keeps everything else (and above all secrets) out of the context that is sent to the builder.
-# (BuildKit reads "<Dockerfile>.dockerignore" next to the Dockerfile in preference to a root
-# .dockerignore. server/Dockerfile.dockerignore is an identical copy.)
+# (BuildKit prefers server/Dockerfile.dockerignore / server/Dockerfile.multistage.dockerignore, which are
+# identical copies; this root file covers builders that do not support per-Dockerfile ignore files.)
 
 # VCS / CI
 .git
