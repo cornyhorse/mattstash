@@ -80,6 +80,27 @@ def read_stdin_secret(option: str, stream: Optional[IO[bytes]] = None) -> str:
     return value
 
 
+def read_stdin_line(option: str) -> str:
+    """Read the first line of stdin (line break removed) as a password. Rejects empty input.
+
+    Same rule as ``setup --password-stdin``: one line, so a pipeline can send the password followed by anything.
+    """
+    stdin = sys.stdin
+    try:
+        interactive = stdin.isatty()
+    except (AttributeError, ValueError):
+        interactive = False
+    if interactive:
+        print(f"mattstash: reading {option} from the terminal; finish with Enter", file=sys.stderr)
+    line = stdin.readline(MAX_SECRET_BYTES + 1)
+    if len(line) > MAX_SECRET_BYTES:
+        raise InputError(f"{option}: the first line on stdin is larger than {MAX_SECRET_BYTES} bytes")
+    value = line.rstrip("\r\n")
+    if not value:
+        raise InputError(f"{option}: no password received on stdin (empty line)")
+    return value
+
+
 def read_secret_file(option: str, path: str) -> str:
     """Read a secret value from ``path``, dropping one trailing newline. Rejects empty files."""
     path = os.path.expanduser(path)

@@ -61,6 +61,15 @@ class DatabaseLockError(MattStashError):
     pass
 
 
+class SidecarUpdateError(MattStashError):
+    """The database was re-keyed but the sidecar password file next to it could not be updated.
+
+    The database already uses the new password; the sidecar still holds the old one.
+    """
+
+    pass
+
+
 class ServerError(MattStashError):
     """Raised by the CLI's HTTP client when a MattStash server request fails.
 

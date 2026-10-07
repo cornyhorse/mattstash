@@ -25,6 +25,7 @@ are never disguised as "not found".
 import contextlib
 import os
 import threading
+import time
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, Dict, List, Optional, Union
 
@@ -33,8 +34,17 @@ from ..builders.s3_client import S3ClientBuilder
 from ..credential_store import CredentialStore
 from ..models.config import config
 from ..models.credential import Credential, CredentialResult
-from ..utils.exceptions import CredentialNotFoundError, DatabaseAccessError, DatabaseNotFoundError, MattStashError
+from ..utils.exceptions import (
+    CredentialNotFoundError,
+    DatabaseAccessError,
+    DatabaseExistsError,
+    DatabaseNotFoundError,
+    InvalidCredentialError,
+    MattStashError,
+    SidecarUpdateError,
+)
 from ..utils.filelock import FileLock
+from ..utils.fileops import copy_private, discard, stage_private_file
 from ..utils.logging_config import get_logger
 from ..utils.validation import (
     validate_credential_title,
@@ -303,6 +313,127 @@ class MattStash:
         validate_lookup_title(title)
         with self._write() as manager:
             return manager.prune_versions(title, keep)
+
+    # ---- operations -------------------------------------------------------------
+
+    def _backup_target(self, dest: Optional[str]) -> str:
+        """Where a backup goes: ``dest`` (a file, or a directory to put the default name in) or next to the DB."""
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        default_name = f"{os.path.basename(self.path)}.bak-{stamp}"
+        if dest is None:
+            return os.path.join(os.path.dirname(self.path), default_name)
+        target = os.path.expanduser(dest)
+        if os.path.isdir(target):
+            return os.path.join(target, default_name)
+        return target
+
+    def _copy_locked(self, dest: Optional[str], force: bool) -> str:
+        """Copy the database file to ``dest``. The caller holds the thread and file locks."""
+        target = self._backup_target(dest)
+        directory = os.path.dirname(os.path.abspath(target))
+        if not os.path.isdir(directory):
+            raise MattStashError(f"Backup directory does not exist: {directory}")
+        protected = {self.path, self.path + ".lock", PasswordResolver(self.path).sidecar_path}
+        if os.path.realpath(target) in {os.path.realpath(p) for p in protected}:
+            raise MattStashError("Refusing to write the backup over the database, its lock or its sidecar file")
+        try:
+            copy_private(self.path, target, overwrite=force)
+        except FileExistsError:
+            raise DatabaseExistsError(
+                f"Refusing to overwrite existing file: {target} (use force to replace it)"
+            ) from None
+        except FileNotFoundError:
+            raise DatabaseNotFoundError(self._not_found_message()) from None
+        except OSError as exc:
+            raise MattStashError(f"Backup to {target} failed: {exc.strerror or exc}") from exc
+        logger.info("Database backed up to %s", target)
+        return target
+
+    def backup(self, dest: Optional[str] = None, *, force: bool = False) -> str:
+        """Write a consistent, private copy of the database file and return its path.
+
+        The copy is taken while holding the write lock, so it cannot interleave with a writer. It is
+        written to a temp file (mode 0600) and renamed into place, so ``dest`` is never left partial.
+
+        Args:
+            dest: target file, or an existing directory (the default file name is used inside it).
+                Default: ``<db>.bak-<UTC timestamp>`` next to the database.
+            force: replace ``dest`` if it already exists (otherwise ``DatabaseExistsError``).
+
+        The backup is the encrypted file as it is: it needs (and contains) no password, and the sidecar
+        file is not copied. It can be opened with the master password that was current when it was made.
+
+        Raises:
+            DatabaseNotFoundError: there is no database file.
+            DatabaseLockError: another process held the write lock for too long.
+            DatabaseExistsError: ``dest`` exists and ``force`` is False.
+        """
+        if not os.path.exists(self.path):
+            raise DatabaseNotFoundError(self._not_found_message())
+        with self._lock, self._file_lock:
+            return self._copy_locked(dest, force)
+
+    def rotate_password(self, new_password: str, *, backup: bool = False) -> Optional[str]:
+        """Change the master password of the database.
+
+        Under the write lock this verifies that the current password opens the database, optionally copies
+        the file first (``backup=True``; the copy keeps the *old* password and its path is returned), re-keys
+        and saves the database, re-opens it from disk with the new password to prove it works, and updates
+        the sidecar password file next to the database if there is one (atomically, mode 0600). The
+        sidecar temp file is prepared before the database is touched, so a failure cannot leave the sidecar
+        changed while the database is not.
+
+        ``self.password`` is updated. Other processes that hold the old password (a server, ``KDBX_PASSWORD``
+        in an environment) can no longer open the database until they are given the new one.
+
+        Raises:
+            DatabaseAccessError: the current password is wrong/missing (nothing is changed).
+            InvalidCredentialError: the new password is empty, or has leading/trailing whitespace while a
+                sidecar exists (password files are read with surrounding whitespace stripped).
+            DatabaseLockError: another process held the write lock for too long (nothing is changed).
+            SidecarUpdateError: the database *was* re-keyed but the sidecar could not be replaced.
+        """
+        if not isinstance(new_password, str) or not new_password:
+            raise InvalidCredentialError("The new password cannot be empty")
+        sidecar = PasswordResolver(self.path).sidecar_path
+        has_sidecar = os.path.exists(sidecar)
+        if has_sidecar and new_password != new_password.strip():
+            raise InvalidCredentialError(
+                "The new password has leading or trailing whitespace, which the sidecar password file cannot hold"
+            )
+
+        backup_path: Optional[str] = None
+        with self._write():  # opens (verifies the current password) under the thread and file locks
+            assert self._credential_store is not None
+            store = self._credential_store
+            if backup:
+                backup_path = self._copy_locked(None, False)
+            staged = stage_private_file(sidecar, new_password.encode()) if has_sidecar else None
+            try:
+                store.change_password(new_password)
+            except BaseException:
+                discard(staged)
+                raise
+            self.password = new_password
+            try:
+                self._reload_locked()  # prove the new password opens what was written
+            except MattStashError as exc:
+                discard(staged)
+                raise DatabaseAccessError(
+                    "The database was re-keyed but could not be re-opened with the new password"
+                    + (f"; restore it from the backup {backup_path}" if backup_path else "")
+                ) from exc
+            if staged is not None:
+                try:
+                    os.replace(staged, sidecar)
+                except OSError as exc:
+                    discard(staged)
+                    raise SidecarUpdateError(
+                        f"The database now uses the new password, but the sidecar file {sidecar} "
+                        f"could not be updated: {exc.strerror or exc}"
+                    ) from exc
+        logger.info("Master password rotated")
+        return backup_path
 
     def reload(self) -> bool:
         """

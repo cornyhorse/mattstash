@@ -13,6 +13,7 @@ from typing import Any, Optional
 from ..utils.exceptions import MattStashError
 from . import exit_codes
 from .handlers import (
+    BackupHandler,
     ConfigHandler,
     DbUrlHandler,
     DeleteHandler,
@@ -23,6 +24,7 @@ from .handlers import (
     ListHandler,
     PruneHandler,
     PutHandler,
+    RotatePasswordHandler,
     S3TestHandler,
     SetupHandler,
     VersionsHandler,
@@ -373,6 +375,41 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     p_exec.add_argument("command", nargs=argparse.REMAINDER, metavar="-- COMMAND [ARGS...]", help="Command to run")
 
+    # backup
+    p_backup = subparsers.add_parser(
+        "backup",
+        help="Copy the database file consistently (local database only)",
+        description="Write a consistent copy of the database file while holding the write lock, with mode 0600, "
+        "atomically. Prints the path of the backup. The copy is encrypted with the current master password; "
+        "the sidecar file is not copied.",
+        parents=[global_opts],
+    )
+    p_backup.add_argument(
+        "dest",
+        nargs="?",
+        metavar="DEST",
+        help="Backup file, or an existing directory (default: <db>.bak-<UTC timestamp> next to the database)",
+    )
+    p_backup.add_argument("--force", action="store_true", help="Replace DEST if it already exists")
+
+    # rotate-password
+    p_rotate = subparsers.add_parser(
+        "rotate-password",
+        help="Change the master password of the database (local database only)",
+        description="Re-key the database with a new master password. The old password comes from the usual "
+        "sources (--db-password-file, KDBX_PASSWORD, KDBX_PASSWORD_FILE, sidecar); a backup is taken first "
+        "(--no-backup to skip) and the sidecar file, if there is one, is updated. Services holding the old "
+        "password must be given the new one.",
+        parents=[global_opts],
+    )
+    rotate_source = p_rotate.add_mutually_exclusive_group()
+    rotate_source.add_argument("--new-password-file", metavar="FILE", help="Read the new password from FILE")
+    rotate_source.add_argument(
+        "--new-password-stdin", action="store_true", help="Read the new password from the first line of stdin"
+    )
+    rotate_source.add_argument("--generate", action="store_true", help="Generate a random password and print it once")
+    p_rotate.add_argument("--no-backup", action="store_true", help="Do not copy the database before re-keying it")
+
     # s3-test
     p_s3 = subparsers.add_parser(
         "s3-test",
@@ -432,6 +469,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "put": PutHandler(),
         "delete": DeleteHandler(),
         "prune": PruneHandler(),
+        "backup": BackupHandler(),
+        "rotate-password": RotatePasswordHandler(),
         "env": EnvHandler(),
         "exec": ExecHandler(),
         "versions": VersionsHandler(),

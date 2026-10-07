@@ -217,6 +217,23 @@ class CredentialStore:
             self.clear_cache()  # Invalidate cache on save
             logger.debug("Database saved successfully")
 
+    def change_password(self, new_password: str) -> None:
+        """Re-key the open database with ``new_password`` and save it.
+
+        If saving fails the old password is restored in memory and the file is left as it was.
+        """
+        kp = self.open()
+        if kp is None:  # pragma: no cover - open() raises instead
+            raise DatabaseAccessError("Unable to open database")
+        old_password = self.password
+        kp.password = new_password
+        try:
+            self.save()
+        except BaseException:
+            kp.password = old_password
+            raise
+        self.password = new_password
+
     def has_file_changed(self) -> bool:
         """Check if the KDBX file has been modified externally since last open/save.
 
