@@ -568,7 +568,7 @@ kubectl logs -f deployment/mattstash-api -n mattstash
 
 ## Testing
 
-The server has its own test suite in `tests/` with a coverage gate (`pytest.ini`, currently 90%):
+The server has its own test suite in `tests/` with a coverage gate (`pytest.ini`, currently 99%):
 
 ```bash
 # From the repository root: library + test tooling + server dependencies

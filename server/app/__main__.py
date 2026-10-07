@@ -8,6 +8,7 @@ use this when clients talk to the container directly.
 import uvicorn
 
 from .config import config
+from .logging_setup import uvicorn_level
 
 
 def main() -> None:
@@ -16,7 +17,7 @@ def main() -> None:
         "app.main:app",
         host=config.HOST,
         port=config.PORT,
-        log_level=config.LOG_LEVEL.lower(),
+        log_level=uvicorn_level(),
         ssl_certfile=config.TLS_CERT_FILE if tls else None,
         ssl_keyfile=config.TLS_KEY_FILE if tls else None,
         access_log=False,  # the app's own access log (client address + key id) replaces uvicorn's anonymous one

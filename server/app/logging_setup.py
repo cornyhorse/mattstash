@@ -21,6 +21,19 @@ def _level() -> int:
     return level if isinstance(level, int) else logging.INFO
 
 
+def uvicorn_level() -> str:
+    """``MATTSTASH_LOG_LEVEL`` as a name uvicorn accepts.
+
+    Python's level names include ``WARN`` and ``FATAL`` (and an unknown name falls back to INFO for the app), but
+    uvicorn raises ``KeyError`` for anything outside its own list, which would stop the server at startup.
+    """
+    level = _level()
+    for threshold, name in ((logging.CRITICAL, "critical"), (logging.ERROR, "error"), (logging.WARNING, "warning")):
+        if level >= threshold:
+            return name
+    return "info" if level >= logging.INFO else "debug"
+
+
 def configure_logging() -> None:
     """Attach stderr handlers to the server's loggers (idempotent)."""
     for name, level in (("mattstash.api", _level()), ("mattstash.audit", logging.INFO)):

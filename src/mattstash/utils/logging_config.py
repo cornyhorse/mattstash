@@ -13,6 +13,12 @@ from typing import Optional
 _logger: Optional[logging.Logger] = None
 
 
+def _parse_level(name: str) -> int:
+    """A logging level from its name; anything that is not a level name (``verbose``, ``BASIC_FORMAT``) is WARNING."""
+    level = logging.getLevelName(name.strip().upper())
+    return level if isinstance(level, int) else logging.WARNING
+
+
 def get_logger(name: str = "mattstash") -> logging.Logger:
     """
     Get a configured logger instance for MattStash.
@@ -42,11 +48,7 @@ def get_logger(name: str = "mattstash") -> logging.Logger:
         logger.addHandler(handler)
 
         # Set level from environment or default to WARNING
-        log_level = os.getenv("MATTSTASH_LOG_LEVEL", "WARNING").upper()
-        try:
-            logger.setLevel(getattr(logging, log_level))
-        except AttributeError:
-            logger.setLevel(logging.WARNING)
+        logger.setLevel(_parse_level(os.getenv("MATTSTASH_LOG_LEVEL", "WARNING")))
 
     _logger = logger
     return logger
@@ -59,11 +61,7 @@ def configure_logging(level: str = "WARNING") -> None:
     Args:
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     """
-    logger = get_logger()
-    try:
-        logger.setLevel(getattr(logging, level.upper()))
-    except AttributeError:
-        logger.setLevel(logging.WARNING)
+    get_logger().setLevel(_parse_level(level))
 
 
 # Convenience function for security-related warnings
