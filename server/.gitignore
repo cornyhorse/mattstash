@@ -1,11 +1,24 @@
-# Environment files
+# Environment files (compose interpolation / local overrides)
 .env
 .env.local
 
-# Secrets and data
-data/*.kdbx
+# Secrets and data - NEVER commit these
+# (data/ holds the KeePass database, its <db>.lock file and any setup backups; secrets/ holds
+#  the master password file and the API key file)
+data/*
+!data/.gitkeep
 secrets/*
 !secrets/.gitkeep
+*.kdbx
+*.kdbx.lock
+*.bak-*
+.mattstash.txt
+
+# Kubernetes: real Secret manifests (secret.example.yaml is the committed template)
+k8s/secret.yaml
+k8s/*.secret.yaml
+k8s/*.local.yaml
+k8s/**/*.local.yaml
 
 # Python
 __pycache__/
@@ -22,6 +35,7 @@ venv/
 # Testing
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 htmlcov/
 .coverage
 .coverage.*
