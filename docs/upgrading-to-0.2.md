@@ -66,6 +66,21 @@ sidecar is group/world readable.
 | `db-url` | `--dialect`; `--driver` defaults to `auto`. |
 | `--password` / `--api-key` on the command line | Still work; help text and docs steer to the file/stdin/env forms because argv is visible to other users. |
 
+## Changes from the second review (library, CLI, server)
+
+| Area | Change |
+|------|--------|
+| Paths | `MattStash.path` is absolute. Symlinks are followed on **every** access (a retargeted link or a swapped Kubernetes Secret volume is picked up); saves go to the resolved file so a symlinked database stays a symlink; two paths to one file share one lock. |
+| Locking | `lock_timeout` bounds the *whole* wait for a write (queued threads included, they no longer wait one timeout each). A busy writer can no longer starve other processes. A lock file deleted while held makes the write fail with `DatabaseLockError` instead of silently losing exclusion. |
+| Saving | The database is written to a uniquely named staged file and renamed (it keeps owner, group and mode; `0600` for new files). Failures raise `DatabaseAccessError` ("Could not save the database: ...") instead of a raw `OSError`. Single-file bind mounts cannot be renamed over and now fail loudly instead of truncating the database. |
+| `rotate-password` | The new password is never lost: the sidecar is replaced right after the re-key; if something fails afterwards (`RotationIncompleteError`: `SidecarUpdateError`, `RekeyVerifyError`) the CLI still prints a generated password and names the backup. A sidecar is only rewritten when it holds the password the database was opened with (one `.mattstash.txt` per directory can belong to another database); symlinked sidecars are updated through the link. |
+| `backup` | Default names are `<db>.bak-<UTC timestamp with microseconds>` (with a counter on collision). A truncated or non-KDBX file is refused. |
+| `setup` | `--force` on a symlinked database replaces the target under the writers' lock. A lock timeout exits `7`. Failed runs name the backups they kept. |
+| `env` / `exec` | Names derived from `--prefix` may not be loader/shell control variables (`LD_PRELOAD`, `PATH`, `BASH_ENV`, ...): use `--map NAME=TITLE` or `--allow-reserved`. New `--format docker-env` for `docker run --env-file`. `exec` leaves SIGPIPE at its default, injects a secret mapped to a vault variable without `--override`, and exits 126 for a non-executable command on `PATH`. The documented prefix separator is `.` (`put` and the server reject `/`). |
+| API key / passwords | Keys are stripped and must be visible ASCII; empty `--password`, `--db-password-file`, `--api-key`, `--api-key-file` are errors (no silent fallback to another source); a UTF-8 BOM in a password/key file is ignored; password files are capped at 1 MiB; a terminal is read without echo. |
+| Server mode (CLI) | Only the server's own "Credential not found" 404 means "no such secret" (a wrong URL is an error, so `delete` cannot report "already gone"). Responses are bounded in size and time; rate-limited `GET`s are retried honouring `Retry-After`. |
+| Server | Rate limits per route, `Retry-After` on `429`, `MATTSTASH_MAX_CONCURRENT_WRITES`, `POST /admin/reload` fails with `503`. See [server/docs/configuration.md](../server/docs/configuration.md). |
+
 ## Server mode (CLI client)
 
 - Failures raise `mattstash.utils.exceptions.ServerError` (HTTP status and request path only; never the API key, query

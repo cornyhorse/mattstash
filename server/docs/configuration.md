@@ -28,7 +28,8 @@ volume holding the `.kdbx`.
 | `MATTSTASH_MIN_KEY_LENGTH` | `32` | Minimum length of plaintext keys (8-256). Startup fails on weaker keys. |
 | `MATTSTASH_REQUIRE_SCOPED_KEYS` | `false` | Refuse to start if any legacy full-access key is configured. |
 | `MATTSTASH_ALLOW_WRITES` | `false` | Enable `POST`/`DELETE`. Otherwise they return `405`. |
-| `MATTSTASH_RATE_LIMIT` | `100/minute` | Per-client limit for read endpoints (writes: 30/min, admin: 10/min). |
+| `MATTSTASH_RATE_LIMIT` | `100/minute` | Per-client, **per-route** limit for read endpoints (writes: 30/min, admin: 10/min). |
+| `MATTSTASH_MAX_CONCURRENT_WRITES` | `8` | Writes allowed in flight at once (1-64); more get `503` + `Retry-After: 1` immediately. |
 | `MATTSTASH_AUTH_FAIL_LIMIT` | `10` | Failed authentications allowed per client per window... |
 | `MATTSTASH_AUTH_FAIL_WINDOW_SECONDS` | `60` | ...before the client is answered `429` (applies before auth, even to valid keys). |
 | `MATTSTASH_TRUSTED_PROXY_HOPS` | `0` | Number of reverse proxies in front of the server (see [proxies](#throttling-limits-and-proxies)). |
@@ -133,8 +134,15 @@ Authentication happens in the outermost layer, before the application (and befor
   so a burst of concurrent requests cannot exceed the limit. Only failures count and a valid key never resets the
   counter. The **probes are exempt**, so a blocked address (for example an ingress shared by everyone) cannot fail
   the pod's own health checks. Use long random keys regardless: `openssl rand -base64 32`.
-- **Rate limits** apply per client to authenticated endpoints (`MATTSTASH_RATE_LIMIT` for reads; the value is
-  validated at startup, a malformed one stops the server).
+- **Rate limits** apply per client **and per route** (all `GET /credentials/{name}` requests share one bucket, however
+  many different names they use; so do all writes) to authenticated endpoints (`MATTSTASH_RATE_LIMIT` for reads; the
+  value is validated at startup, a malformed one stops the server). A `429` carries `Retry-After`; the CLI honours it
+  and retries rate-limited `GET`s (`mattstash env`/`exec` fetch one secret per request: with more secrets than the
+  limit they take a minute or more, or raise `MATTSTASH_RATE_LIMIT`).
+- **Concurrent writes.** Every write waits for the database's cross-process lock inside a worker thread. At most
+  `MATTSTASH_MAX_CONCURRENT_WRITES` are admitted; the rest are answered `503` + `Retry-After: 1` at once, so a stuck
+  lock holder (a hung CLI, a stalled network volume) cannot use up every worker thread and take reads and `/ready`
+  down with it.
 - **Request bodies** above `MATTSTASH_MAX_REQUEST_BODY_BYTES` are refused with `413`, including chunked uploads
   (counted as they arrive). Unauthenticated requests are answered `401` without their body being read or parsed.
 - **Client identity.** By default the TCP peer address is used; it cannot be spoofed. IPv4 clients are tracked per
@@ -159,7 +167,7 @@ No authentication is required. Use `/health` for liveness probes and Docker `HEA
 
 | Status | Meaning |
 |--------|---------|
-| `400` | Invalid name/prefix/driver or invalid credential data. |
+| `400` | Invalid name/prefix/driver/dialect or invalid credential data. `db-url` says why the entry cannot produce a URL (no port, no database name, unsupported dialect, ...) without echoing anything stored in it. |
 | `401` | Missing or invalid API key. |
 | `403` | Key lacks the operation or the name is outside its prefixes (writes). |
 | `404` | Secret not found (or outside the key's scope, for reads). |
@@ -167,8 +175,8 @@ No authentication is required. Use `/health` for liveness probes and Docker `HEA
 | `409` | `invalidate-api-key-cache`: the key source could not be loaded; the previous keys are still active. |
 | `413` | Body too large. |
 | `422` | Request body/query failed validation. The body lists only `loc`, `msg`, `type` - submitted values (secrets) are never echoed. |
-| `429` | Too many failed authentications, or rate limit exceeded. |
-| `503` | The database cannot be opened or locked (wrong password, missing/corrupt file, lock timeout). **Never** reported as `404`. `Retry-After: 5`. |
+| `429` | Too many failed authentications, or rate limit exceeded (`Retry-After` says when to retry). |
+| `503` | The database cannot be opened or locked (wrong password, missing/corrupt file, lock timeout), too many writes in flight, or `POST /admin/reload` failed. **Never** reported as `404`. |
 | `500` | Unexpected error; the body never contains details, only the exception type is logged. |
 
 ## Logging and audit trail
@@ -210,4 +218,8 @@ untrusted networks. The CLI warns when pointed at a plain `http://` URL on a non
 | `GET /credentials` returns one row per credential (latest version) with base names. | Use `/credentials/{name}/versions` for history. |
 | `DELETE` removes all versions; `?version=N` removes one. | - |
 | Health at `/health` (and still `/api/health`); new `/ready`. | Point Kubernetes probes at them. |
+| Rate limits are per route (they used to be per URL, so they limited nothing that takes a `{name}`). | Check `MATTSTASH_RATE_LIMIT` against what your clients do (`mattstash env --prefix` makes one request per secret). |
+| `POST /admin/reload` answers `503` when the reload failed (it used to answer `200 no_change`). | Treat anything but `200` as "still serving the previous state". |
+| `GET /db-url/{name}` accepts `dialect` (`postgresql`, `mysql`, `mariadb`) and an optional `driver` (`""` = no suffix). | - |
+| A Secret volume that is updated (kubelet retargets `..data`) is picked up by the running server. | No restart needed; this works since 0.2. Mount the volume as a **directory**: a single-file bind mount (`-v file:file`, `subPath`) cannot be replaced atomically and is not supported. |
 | Start with `python -m app`. | `uvicorn app.main:app` still works but cannot serve TLS. |

@@ -2,7 +2,7 @@
 
 Review date: 2026-10-07 · Reviewed version: 0.1.19 (`a4751d4`) · Branch: `claude/security-hardening`
 
-**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · independent-review follow-up ✅ (4e)
+**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · two independent reviews acted on ✅ (4e, 4h)
 
 Target use cases: (1) CLI on machines you log into, (2) API service in a docker-compose stack,
 (3) secrets service inside a k8s cluster, plus other library/CLI uses.
@@ -295,6 +295,33 @@ that fails on the old code. What is *not* a code fix and therefore still open is
 
 ---
 
+## 4h. Second independent review (Phase 4 and the lock-order changes)
+
+Four reviewers (CLI secret input and `env`/`exec`; `backup`/`rotate-password`/file handling; the HTTP client, server mode
+and db-url; concurrency and locking) probed the final code with real processes. About 60 findings were reproduced; none
+is left unfixed except the items in section 7. The ones that mattered most:
+
+| Finding | Fix |
+|---------|-----|
+| **HIGH (regression from round 1):** the resolved path was frozen at construction, so a retargeted symlink or a swapped Kubernetes Secret volume left the server returning 503 until restarted, and a long-lived instance silently read and wrote the old file | the path is followed on every access; saves still go to the resolved file; the lock follows the resolved path per write |
+| `rotate-password` could destroy the only record of the new password (Ctrl-C, I/O error or full stdout after the re-key) and could overwrite another database's sidecar | sidecar published right after the re-key, roll-forward on interruption, failed swap keeps the staged file, generated password always shown (stderr fallback), sidecar rewritten only if it holds this database's password |
+| API key printed in every server-mode error when it had a trailing newline (Kubernetes Secret) | keys stripped and validated before use; redaction covers the escaped form |
+| A wrong `--server-url` made `delete` report "already gone" (exit 2) | only the server's own "Credential not found" 404 means missing |
+| Rate limits were per URL, so enumerating names or writing many secrets was never limited | per route and client; `Retry-After`; the CLI retries rate-limited GETs |
+| A secret titled `app_LD_PRELOAD` under `--prefix app_` ran code inside the `exec`/`eval` consumer | derived names may not be loader/shell control variables (`--allow-reserved`, `--map` to opt in) |
+| `docker run --env-file` silently corrupted quoted values | `--format docker-env` (literal, refuses what it cannot carry); docs say which format is for what |
+| Busy writers starved other processes; queued threads each waited a full `lock_timeout`; a stuck lock holder exhausted the server's worker threads | lock hand-off fairness, one deadline for the whole wait, at most 8 writes in flight (503 + `Retry-After`) |
+| Two databases sharing a stem shared `<stem>.tmp` (cross-contamination); stale lax temp files reused; non-atomic save on single-file bind mounts; saves as root changed the owner | unique staged file (0600, owner/group/mode kept, fsync) + atomic rename; typed `DatabaseAccessError` |
+| `setup --force` on a symlinked database replaced the link and locked another file than the writers | resolved path for lock, swap and backups |
+| Lock file deleted while held silently lost mutual exclusion; fork inherited a held mutex/lock; restrictive umask wedged the tool | detected before saving / retried by waiters; fork hooks; 0600 regardless of umask |
+| `backup --force` could replace the last good backup with a truncated file; name collisions within a second | KDBX signature check; microsecond names + counter |
+| Shell/terminal details: SIGPIPE left ignored in `exec`, exit 126 for non-executable commands, empty `--password`/`--api-key-file` silently falling back, echo of typed secrets, unbounded password files, BOMs, invalid UTF-8 | fixed (see `docs/upgrading-to-0.2.md`) |
+
+Regression tests: `tests/test_review_round2_{client,env,core}.py` and the "Round 2" section of
+`server/tests/test_review_findings.py`.
+
+---
+
 ## 5. Phases
 
 1. **Library correctness & safety** — H-1, H-4, H-5 (library part), H-7a/b/d, M-7, M-8, M-8b, L-5, L-10, G-3.
@@ -350,6 +377,21 @@ optional improvements. Tick them off as they are done.
 - [ ] Watch the workflows run once on GitHub: SHA-pinned actions resolve, provenance/SBOM output, the CLI-to-server integration job (now installs the server lock).
 - [x] Run the test suites on Python 3.12 and 3.13 (898 library + 293 server tests passed on 3.11, 3.12, 3.13 and 3.14).
 - [ ] Consider a native `linux/arm64` build/test job (GitHub's Linux arm64 runners cost the same as or less than x64; free for public repositories) instead of QEMU emulation.
+
+**Known limits (documented, not fixed)**
+
+- Single-file bind mounts (`-v file:file`, a `subPath` file) cannot be replaced atomically: saves now fail loudly
+  ("Device or resource busy") instead of truncating the database. Mount the directory.
+- A crash (kill -9) mid-operation can leave hidden staging files (`.<name>.<token>.new`, `<name>.tmp-<pid>-<hex>`);
+  the sidecar variants hold a password. Nothing sweeps them. `setup --force --no-backup` has a microsecond window
+  between swapping the sidecar and the database (the new database is then in the hidden `.new` file).
+- `delete --version N` on the *latest* version lets the next `put` reuse that number (Recycle-Bin versions are never
+  reused). `backup` constructs `MattStash` and therefore still needs a readable `KDBX_PASSWORD_FILE` if one is set.
+- `backup` holds the write lock while it writes the copy (slow destinations stall writers).
+- `/ready` runs in the shared worker pool (writes are capped so it stays available, but a very large number of
+  concurrent reads can still queue it).
+- The Windows (`msvcrt`) lock path is untested.
+- `flock` on NFS/SMB is best effort: run a single writer there.
 
 **Optional improvements**
 

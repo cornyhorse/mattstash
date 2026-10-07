@@ -119,8 +119,13 @@ printed once), otherwise an interactive prompt (asked twice). Non-interactive ru
 - `--generate` - generate a password and print it once; nothing is stored.
 - `--password-file FILE` / `--password-stdin` - read the password from a file / stdin.
 - `--force` - replace existing files. Asks for confirmation (non-interactive runs need `--yes`) and backs up the
-  existing database/sidecar to `<name>.bak-<timestamp>` first.
-- `--no-backup` - with `--force`, skip the backup.
+  existing database/sidecar to `<name>.bak-<timestamp>` first (they are kept, and named in the error, if setup then
+  fails; the sidecar backup holds the old password in plain text). On a symlinked database path the link target is
+  replaced (under the lock the writers use) and the link is kept. Another database's sidecar in the same directory
+  counts as "existing": setup refuses without `--force`, and `--force` replaces (after backing it up) that sidecar.
+- `--no-backup` - with `--force`, skip the backup. A crash in the microseconds between swapping the sidecar and the
+  database can then leave the new database in a hidden `.<name>.<token>.new` file next to the old one: move it over
+  the database to finish the swap.
 
 **Examples:**
 ```bash
@@ -463,13 +468,17 @@ with mode `0600`, to a temp file that is then renamed into place. Prints the pat
 `BAK=$(mattstash backup)` works. Local database only.
 
 - `DEST` - a file, or an existing directory (the default file name is used inside it). Default:
-  `<db>.bak-<UTC timestamp>` next to the database.
+  `<db>.bak-<UTC timestamp, microseconds>` next to the database (a counter is appended if the name is taken, so
+  `mattstash backup && mattstash rotate-password` in one script never collides).
 - `--force` - replace `DEST` if it exists (otherwise exit 8 and the file is untouched).
 
 The backup is the encrypted file as it is: it needs no password to create and is opened with the master password
-that was current at the time. The sidecar file is not copied.
+that was current at the time. The sidecar file is not copied. A database file that is empty or truncated (it lacks the
+KeePass signature) is refused, so `--force` cannot replace the last good backup with garbage. The write lock is held
+while the copy is written, so back up to a fast destination.
 
-**Exit codes:** `0` success, `6` no database file, `7` could not get the write lock in time, `8` `DEST` exists.
+**Exit codes:** `0` success, `6` no database file, `7` could not get the write lock in time or the file is not a valid
+database, `8` `DEST` exists, `1` bad destination (for example a directory that does not exist).
 
 ### `rotate-password` - Change the Master Password
 
@@ -479,8 +488,10 @@ mattstash rotate-password [--new-password-file FILE | --new-password-stdin | --g
 
 Re-keys the database under the write lock. The current password comes from the usual sources (it must open the
 database, otherwise nothing changes). Steps: copy the database first (`<db>.bak-<timestamp>`, skipped with
-`--no-backup`), re-key and save it, re-open it with the new password to prove it works, and, if a sidecar file
-exists, replace it atomically (mode 0600) with the new password.
+`--no-backup`), re-key and save it, **immediately** replace the sidecar file if there is one (atomically, mode 0600,
+symlinks followed), then re-open the database with the new password to prove it works. The sidecar is only rewritten
+if it holds the password the database was opened with: one `.mattstash.txt` serves a whole directory, and replacing
+another database's password record would lock you out of that database (the command says when it left it alone).
 
 **New password source:** `--new-password-file FILE` (surrounding whitespace stripped, like `KDBX_PASSWORD_FILE`),
 `--new-password-stdin` (first line), `--generate` (random; printed once), or, when stdin is a terminal, a prompt asked
@@ -491,9 +502,14 @@ The backup still opens with the **old** password: delete it once you have verifi
 old password - `KDBX_PASSWORD`/`KDBX_PASSWORD_FILE`, the secret mounted into a server - stops working until it is
 updated (the command warns if those variables are set in its own environment).
 
-**Exit codes:** `0` success, `6` no database file, `7` wrong or missing current password, or the write lock timed out, `1` no/invalid new
-password, or the database was re-keyed but the sidecar could not be updated (the new password is printed anyway when
-`--generate` was used).
+Once the database is re-keyed the new password cannot be lost: if anything after that fails (the sidecar cannot be
+replaced - the new password is then kept in a private file next to it and the message names it -, or re-reading the
+database fails), the command still prints a generated password (to stderr if stdout is unusable) and the backup path,
+and exits non-zero. Pressing Ctrl-C right after the re-key leaves the sidecar updated, not stale.
+
+**Exit codes:** `0` success, `6` no database file, `7` wrong or missing current password, the write lock timed out, or the
+database was re-keyed but could not be re-read, `1` no/invalid new password, or the database was re-keyed but the
+sidecar could not be updated (the new password is printed anyway when `--generate` was used).
 
 ### `s3-test` - Test S3 Connectivity
 

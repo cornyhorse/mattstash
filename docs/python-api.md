@@ -40,7 +40,13 @@ MattStash.create(path=None, password=None, *, sidecar=False, force=False, backup
 **Parameters:**
 - `path` (str, optional) - Path to KeePass database. Default: `~/.config/mattstash/mattstash.kdbx`
 - `password` (str, optional) - Database password. If None, resolved from `KDBX_PASSWORD`, `KDBX_PASSWORD_FILE`, then the sidecar file
-- `lock_timeout` (float) - seconds to wait for another writer before raising `DatabaseLockError`
+- `lock_timeout` (float) - the longest a write waits for the database lock (other threads of this process *and* other
+  processes together) before raising `DatabaseLockError`
+
+`MattStash.path` is made absolute. Symlinks in it are followed on every access, so a link that is retargeted (or a
+Kubernetes Secret volume that is swapped) is picked up; saves go to the file the path currently resolves to. A
+`MattStash` object is not meant to be used across `fork()` by threads that were mid-operation, but a forked child gets
+fresh locks and never owns the parent's file lock.
 
 The constructor never creates a database. Use `MattStash.create(...)` (what `mattstash setup` calls) to create one;
 it returns a ready-to-use instance and `create_with_info(...)` also returns the generated password and any backups.
@@ -330,28 +336,38 @@ Write a consistent copy of the database file and return its path. The copy is ta
 
 **Parameters:**
 - `dest` (str, optional) - a file, or an existing directory (the default name is used inside it). Default:
-  `<db>.bak-<UTC timestamp>` next to the database
+  `<db>.bak-<UTC timestamp with microseconds>` next to the database (a counter is appended on collision)
 - `force` (bool) - replace `dest` if it exists (otherwise `DatabaseExistsError`)
 
-The backup is the encrypted file as it is (it needs no password; the sidecar is not copied). Raises
-`DatabaseNotFoundError`, `DatabaseLockError`, `DatabaseExistsError` or `MattStashError` (bad destination).
+The backup is the encrypted file as it is (it needs no password; the sidecar is not copied). A file that is empty or
+lacks the KeePass signature is refused (`DatabaseAccessError`), so `force=True` can never replace the last good backup
+with a truncated one. Raises `DatabaseNotFoundError`, `DatabaseLockError`, `DatabaseExistsError` or `MattStashError`
+(bad destination, for example a directory that does not exist).
 
 ```python
-path = stash.backup()                       # /data/mattstash.kdbx.bak-20261007T120000Z
+path = stash.backup()                       # /data/mattstash.kdbx.bak-20261007T120000123456Z
 stash.backup("/backups/", force=False)
 ```
 
 #### `rotate_password(new_password, *, backup=False)`
 
 Change the master password. Under the write lock it verifies the current password, optionally copies the file first
-(`backup=True`; the copy keeps the *old* password and its path is returned), re-keys and saves, re-opens the file with
-the new password, and atomically replaces the sidecar file (mode 0600) if there is one. `self.password` is updated.
+(`backup=True`; the copy keeps the *old* password and its path is returned), re-keys and saves, replaces the sidecar
+file (atomically, mode 0600, symlinks followed) **right after the re-key**, and then re-opens the file with the new
+password to prove it works. The sidecar is only rewritten if it holds the password this database was opened with: one
+`.mattstash.txt` serves a whole directory and may belong to another database (a warning says it was left alone).
+`self.password` is updated.
 
 **Returns:** the backup path if `backup=True`, otherwise `None`.
 
 **Raises:** `DatabaseAccessError` (wrong current password; nothing changed), `DatabaseLockError`,
-`InvalidCredentialError` (empty new password, or edge whitespace while a sidecar exists), and `SidecarUpdateError`
-if the database *was* re-keyed but the sidecar could not be replaced.
+`InvalidCredentialError` (empty new password, or edge whitespace while a sidecar will be updated), and
+`RotationIncompleteError` if the database *was* re-keyed but something afterwards failed: `SidecarUpdateError` (the
+sidecar could not be replaced; the new password is kept in the file named by `staged_path`) or `RekeyVerifyError`
+(re-reading failed, for example an I/O error; the database and the sidecar already use the new password). Whenever you
+catch `RotationIncompleteError` the new password **is in effect**: make sure it reaches the user. On any exception
+`backup_path` (when set) names the pre-rotation backup. An interruption (Ctrl-C) right after the re-key rolls the sidecar
+forward instead of discarding the only record of the new password.
 
 ```python
 stash = MattStash("/data/mattstash.kdbx", password=old_password)
