@@ -106,5 +106,6 @@ sidecar is group/world readable.
 
 ## Release note
 
-These are breaking changes, so release as a **minor** version: put `[minor]` in the merge commit message
-(the release workflow bumps the patch version unless told otherwise).
+These are breaking changes, so release them as a **minor** version (0.2.0). Releases are manual: a pull request bumps
+`version` in `pyproject.toml`, and pushing the tag `v0.2.0` on the merge commit publishes to PyPI, GitHub Releases and
+GHCR (runbook: `.claude/skills/release/SKILL.md`). Nothing is published when a pull request merges.

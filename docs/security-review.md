@@ -227,7 +227,7 @@ messages (`$(...)`, backticks, `"; touch x`) with no injection.
 
 Owner actions: (1) to use PyPI trusted publishing configure the publisher on PyPI (GitHub `cornyhorse/mattstash`, workflow
 `release.yml`, environment `pypi`) and enable the commented stanza in `release.yml`; (2) the manifests reference image tag
-`v0.2.0` (merge with `[minor]`); (3) Dependabot may not rewrite `server/requirements.lock` — the `audit` CI job fails on
+`v0.2.0` (published by pushing the tag `v0.2.0`, see section 4j); (3) Dependabot may not rewrite `server/requirements.lock` — the `audit` CI job fails on
 advisories against pinned versions; regenerate with the command in the lock header when `server/requirements.in` changes;
 (4) hatchling (build backend) and `pip install build` in the release job are not hash-pinned; image signing/scanning not added.
 
@@ -371,6 +371,28 @@ The full suites also pass as an unprivileged user (`setpriv`), which is the envi
 
 ---
 
+## 4j. Release automation: what failed and what replaced it
+
+`release.yml` used to run on every push to `main`: it bumped the version from the merge-commit message, committed the
+bump to `main`, tagged it and published. Merging the 0.2.0 work showed three problems:
+
+- the version decision lived in a merge-commit marker (`[minor]`) that was lost when the first release run failed on a
+  red CI, so the breaking changes shipped as the patch release `v0.1.20`;
+- every merge released, including dev-dependency bumps from Dependabot;
+- a burst of merges orphaned a tag: the job pushed `main` and the tag together, `main` moved so its push was rejected,
+  but the tag push succeeded. `v0.1.21` then pointed at a commit that is not on `main`, and every later release failed
+  with "tag already exists".
+
+Replacement (decided with the maintainer): **releases are manual.** A pull request bumps `version` in `pyproject.toml`;
+after it is merged, a `vX.Y.Z` tag is pushed on the merge commit. `release.yml` now runs only on such a tag (or "Run
+workflow" from a tag), checks that the tag matches `pyproject.toml` and is on `main` (`scripts/check-release.sh`, covered
+by `tests/test_release_script.py`), runs CI on it, then publishes to PyPI, creates the GitHub Release and pushes the image.
+Nothing is committed or pushed to `main` by the workflow, so the race cannot happen. The runbook an agent follows when
+the maintainer asks for a release is `.claude/skills/release/SKILL.md`, with a pointer in `CLAUDE.md`. PyPI and GHCR
+credentials stay in GitHub; agents never hold them.
+
+---
+
 ## 5. Phases
 
 1. **Library correctness & safety** — H-1, H-4, H-5 (library part), H-7a/b/d, M-7, M-8, M-8b, L-5, L-10, G-3.
@@ -409,7 +431,7 @@ session scratchpad and are re-created as proper regression tests rather than com
   Password precedence: explicit > `KDBX_PASSWORD` > `KDBX_PASSWORD_FILE` > sidecar.
 - Many existing tests rely on auto-bootstrap and on `None`-returning error paths; they are updated to create DBs explicitly
   and to expect exceptions (this is intentional, not test-weakening).
-- Version/changelog: breaking changes are called out in the merge commit with `[minor]` (→ 0.2.0).
+- Version/changelog: breaking changes are released as a minor version (→ 0.2.0) by a manual, tag-driven release (section 4j).
 
 ---
 
@@ -421,7 +443,9 @@ optional improvements. Tick them off as they are done.
 **Owner actions (need your accounts)**
 
 - [ ] PyPI trusted publishing: configure the publisher (GitHub `cornyhorse/mattstash`, workflow `release.yml`, environment `pypi`) and enable the commented stanza in `release.yml`; then retire the long-lived `PYPI_API_TOKEN`.
-- [ ] Release as 0.2.0: put `[minor]` in the merge commit message; the manifests reference image tag `v0.2.0`.
+- [ ] Release 0.2.0 with the new manual process (section 4j): version-bump PR, then push the tag `v0.2.0` (the manifests already reference image tag `v0.2.0`). `v0.1.20` was published from the old automation and already contains the breaking changes; yanking it on PyPI is optional.
+- [ ] Delete the orphaned tag `v0.1.21` (it points at a release commit that is not on `main` and was never published) so tooling that picks "the latest tag" is not confused.
+- [ ] Repository settings for the new release process: a tag ruleset for `v*` (only maintainers create or delete them) and, if you want an approval click before each publish, required reviewers on the `pypi` environment.
 - [ ] Upgrade servers before clients use `delete --version` (an old server ignores `?version=N` and deletes every version).
 - [ ] Dependabot may not rewrite `server/requirements.lock`; when `server/requirements.in` changes (or the `audit` job reports an advisory) regenerate it with the command in the lock header. At last check only `pydantic_core` (2.46.5, latest 2.49.0) was behind.
 
