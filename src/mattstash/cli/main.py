@@ -8,7 +8,7 @@ import argparse
 import os
 import sys
 from importlib.metadata import version as _pkg_version
-from typing import Optional
+from typing import Any, Optional
 
 from ..utils.exceptions import MattStashError
 from . import exit_codes
@@ -27,6 +27,48 @@ from .handlers import (
 from .handlers.base import DB_ERRORS
 
 
+def _add_global_options(parser: argparse.ArgumentParser, *, suppress_defaults: bool) -> None:
+    """Options shared by every command (accepted before or after the subcommand)."""
+    unset: Any = argparse.SUPPRESS if suppress_defaults else None
+
+    parser.add_argument(
+        "--db",
+        dest="path",
+        default=unset,
+        help="Path to KeePass .kdbx (default: ~/.config/mattstash/mattstash.kdbx)",
+    )
+    parser.add_argument(
+        "--password",
+        dest="password",
+        default=unset,
+        help="Password for the KeePass DB (overrides KDBX_PASSWORD/KDBX_PASSWORD_FILE/sidecar). "
+        "Visible to other users via ps and shell history: prefer KDBX_PASSWORD_FILE or KDBX_PASSWORD",
+    )
+    parser.add_argument(
+        "--server-url",
+        dest="server_url",
+        default=unset if suppress_defaults else os.environ.get("MATTSTASH_SERVER_URL"),
+        help="MattStash server URL (enables server mode). Can also use MATTSTASH_SERVER_URL env var.",
+    )
+    parser.add_argument(
+        "--api-key",
+        dest="api_key",
+        default=unset,
+        help="API key for server authentication (visible to other users via ps and shell history: prefer "
+        "--api-key-file or the MATTSTASH_API_KEY / MATTSTASH_API_KEY_FILE environment variables)",
+    )
+    parser.add_argument(
+        "--api-key-file",
+        dest="api_key_file",
+        default=unset,
+        metavar="FILE",
+        help="Read the server API key from this file. Can also use MATTSTASH_API_KEY_FILE env var.",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true", default=unset if suppress_defaults else False, help="Verbose output"
+    )
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """
     Simple CLI:
@@ -42,54 +84,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     # (e.g. both `mattstash --db X get foo` and `mattstash get foo --db X`).
     # The subparser parent uses SUPPRESS defaults to avoid clobbering values
     # already parsed by the main parser.
-    _S = argparse.SUPPRESS
-
     global_opts = argparse.ArgumentParser(add_help=False)
-    global_opts.add_argument(
-        "--db",
-        dest="path",
-        default=_S,
-        help="Path to KeePass .kdbx (default: ~/.config/mattstash/mattstash.kdbx)",
-    )
-    global_opts.add_argument(
-        "--password",
-        dest="password",
-        default=_S,
-        help="Password for the KeePass DB (overrides sidecar/env)",
-    )
-    global_opts.add_argument(
-        "--server-url",
-        dest="server_url",
-        default=_S,
-        help="MattStash server URL (enables server mode). Can also use MATTSTASH_SERVER_URL env var.",
-    )
-    global_opts.add_argument(
-        "--api-key",
-        dest="api_key",
-        default=_S,
-        help="API key for server authentication. Can also use MATTSTASH_API_KEY env var.",
-    )
-    global_opts.add_argument("--verbose", action="store_true", default=_S, help="Verbose output")
+    _add_global_options(global_opts, suppress_defaults=True)
 
     parser = argparse.ArgumentParser(
         prog="mattstash",
         description="KeePass-backed secrets accessor",
     )
-    parser.add_argument("--db", dest="path", help="Path to KeePass .kdbx (default: ~/.config/mattstash/mattstash.kdbx)")
-    parser.add_argument("--password", dest="password", help="Password for the KeePass DB (overrides sidecar/env)")
-    parser.add_argument(
-        "--server-url",
-        dest="server_url",
-        default=os.environ.get("MATTSTASH_SERVER_URL"),
-        help="MattStash server URL (enables server mode). Can also use MATTSTASH_SERVER_URL env var.",
-    )
-    parser.add_argument(
-        "--api-key",
-        dest="api_key",
-        default=os.environ.get("MATTSTASH_API_KEY"),
-        help="API key for server authentication. Can also use MATTSTASH_API_KEY env var.",
-    )
-    parser.add_argument("--verbose", action="store_true", help="Verbose output")
+    _add_global_options(parser, suppress_defaults=False)
     parser.add_argument("--version", action="version", version=f"%(prog)s {_pkg_version('mattstash')}")
 
     subparsers = parser.add_subparsers(dest="cmd", required=True)
