@@ -15,6 +15,38 @@ import pytest
 from fastapi.testclient import TestClient
 from mattstash import MattStash
 
+
+@pytest.fixture(scope="session")
+def _cheap_blank_database(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """pykeepass's blank-database template with a nearly free Argon2 setting (same trick as the root tests).
+
+    Databases are created from that template and keep its KDF parameters in their header, so the real server
+    subprocesses some tests start read them from the file. The shipped template costs ~0.5 s per open/save.
+    Production code is untouched; the library's own test suite proves new databases still get the strong default.
+    """
+    import pykeepass.pykeepass as kp_module
+
+    path = str(tmp_path_factory.mktemp("kdf") / "blank-cheap.kdbx")
+    blank = kp_module.PyKeePass(kp_module.BLANK_DATABASE_LOCATION, kp_module.BLANK_DATABASE_PASSWORD)
+    params = blank.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
+    params["I"].value = 1
+    params["M"].value = 1024 * 1024
+    blank.filename = path
+    blank.save()
+    return path
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cheap_kdf(_cheap_blank_database: str) -> Generator[None, None, None]:
+    """Session-wide, so module-scoped database fixtures (they run before function-scoped ones) are cheap too."""
+    import pykeepass.pykeepass as kp_module
+
+    original = kp_module.BLANK_DATABASE_LOCATION
+    kp_module.BLANK_DATABASE_LOCATION = _cheap_blank_database
+    yield
+    kp_module.BLANK_DATABASE_LOCATION = original
+
+
 DB_PASSWORD = "test-db-password-123"
 # Keys are >= 32 chars (the enforced minimum); each has a distinct role in the policy below.
 FULL_KEY = "full-access-legacy-key-" + "a" * 20

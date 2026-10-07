@@ -63,6 +63,11 @@ Changelog = "https://github.com/cornyhorse/mattstash/releases"
 [project.scripts]
 mattstash = "mattstash.cli.main:main"
 
+[tool.pytest.ini_options]
+markers = [
+    "real_kdf: use the real (strong) Argon2 parameters for databases created in this test; by default the tests use a cheap KDF (see tests/conftest.py)",
+]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

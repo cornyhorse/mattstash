@@ -46,7 +46,10 @@ def leftovers(directory: Path) -> list[str]:
 
 
 _CREATOR = """
-import sys, time
+import os, sys, time
+import pykeepass.pykeepass as _kp
+if os.environ.get("MATTSTASH_TEST_BLANK_DB"):  # tests/conftest.py: a cheap Argon2 setting, as in the parent process
+    _kp.BLANK_DATABASE_LOCATION = os.environ["MATTSTASH_TEST_BLANK_DB"]
 from mattstash import MattStash
 path, password, force, start_at = sys.argv[1], sys.argv[2], sys.argv[3] == "1", float(sys.argv[4])
 while time.time() < start_at:

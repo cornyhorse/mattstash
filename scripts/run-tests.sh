@@ -4,7 +4,7 @@
 # Usage: ./scripts/run-tests.sh [OPTIONS]
 #   --app           Run main application tests (default if no args)
 #   --server        Run server unit tests
-#   --integration   Run integration tests (CLI ↔ Server, requires Docker)
+#   --integration   Run integration tests (real CLI against a real server subprocess; no Docker)
 #   --all           Run all test suites
 #
 # Examples:
@@ -54,7 +54,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --app           Run main application tests (default if no args)"
             echo "  --server        Run server unit tests"
-            echo "  --integration   Run integration tests (CLI ↔ Server, requires Docker)"
+            echo "  --integration   Run integration tests (real CLI against a real server subprocess; no Docker)"
             echo "  --all           Run all test suites"
             echo ""
             echo "Examples:"
@@ -72,14 +72,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Install dependencies
-echo "Installing package in development mode..."
-pip install -e .
-
-# Ensure pytest-cov is available
-if ! pip list | grep -q pytest-cov; then
-    echo "Installing pytest-cov..."
-    pip install pytest-cov
-fi
+echo "Installing package in development mode (with test tooling: pytest, pytest-cov, pytest-xdist)..."
+pip install -e ".[all,dev]"
 
 # Clear caches without triggering test discovery for suites whose optional
 # dependencies may not be installed yet.
@@ -92,7 +86,7 @@ if [ "$RUN_APP_TESTS" = true ]; then
     echo "========================================"
     echo "Running Application Tests"
     echo "========================================"
-    pytest -v \
+    pytest -v -n auto \
         --cov=src/mattstash \
         --cov-report=term-missing \
         --cov-report=html:htmlcov/app \
@@ -142,26 +136,17 @@ if [ "$RUN_INTEGRATION_TESTS" = true ]; then
     echo "Running Integration Tests"
     echo "========================================"
     
-    # Check Docker is available
-    if ! command -v docker &> /dev/null; then
-        echo "ERROR: docker not found. Integration tests require Docker."
-        echo "Skipping integration tests..."
-    elif ! command -v docker-compose &> /dev/null; then
-        echo "ERROR: docker-compose not found. Integration tests require docker-compose."
-        echo "Skipping integration tests..."
-    else
-        # Ensure httpx is available for server health checks
-        pip install httpx
-        
-        pytest -v \
-            --cov=src/mattstash/cli \
-            --cov-report=term-missing \
-            --cov-report=html:htmlcov/integration \
-            tests/integration/test_cli_server_*.py
-        
-        echo ""
-        echo "✓ Integration test coverage report: htmlcov/integration/index.html"
-    fi
+    # The tests start the server themselves (python -m app on a free port), so it needs its dependencies.
+    pip install -r server/requirements.lock
+
+    pytest -v -n auto \
+        --cov=src/mattstash/cli \
+        --cov-report=term-missing \
+        --cov-report=html:htmlcov/integration \
+        tests/integration/
+
+    echo ""
+    echo "✓ Integration test coverage report: htmlcov/integration/index.html"
 fi
 
 echo ""
