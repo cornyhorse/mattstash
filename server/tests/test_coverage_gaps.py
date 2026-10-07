@@ -384,3 +384,18 @@ def test_db_url_value_error_from_the_builder_is_a_generic_400(rw_client, monkeyp
     assert response.json() == {"detail": "Invalid credential for database URL construction"}
     assert "hunter2" not in response.text + caplog.text  # only the exception type is logged
     assert "Error building database URL for pg: ValueError" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# titles with "/" (allowed by the library since PR #16) are not addressable through the API
+# ---------------------------------------------------------------------------
+
+
+def test_a_title_with_a_forward_slash_is_not_addressable_through_the_server(rw_client):
+    """The library accepts ``cloud/hetzner/s3-key``; the server's single-segment URLs cannot name it (documented:
+    use ``.`` for secrets that must be reachable through the API). Neither form of the URL reaches a handler."""
+    for name in ("cloud/hetzner/s3-key", "cloud%2Fhetzner%2Fs3-key"):
+        assert rw_client.post(f"/api/v1/credentials/{name}", json={"value": "v"}, headers=H).status_code == 404
+        assert rw_client.get(f"/api/v1/credentials/{name}", headers=H).status_code == 404
+    listed = rw_client.get("/api/v1/credentials", headers=H).json()
+    assert listed["credentials"] == [] and listed["count"] == 0

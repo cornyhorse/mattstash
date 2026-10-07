@@ -126,8 +126,14 @@ def test_m3_dotted_prefix_works_end_to_end_through_put(tmp_path: Path, capsys: p
     capsys.readouterr()
     assert main(["--db", str(path), "--password", "pw", "env", "--prefix", "myapp.", "--upper"]) == 0
     assert capsys.readouterr().out == "export DB_PASSWORD=s3cret\n"
-    # a '/' separator is not accepted by put (and not routable on the server): the docs use '.'
-    assert main(["--db", str(path), "--password", "pw", "put", "myapp/db-password", "--value", "x"]) != 0
+    # '/' is allowed in a title too (local mode; the server cannot address such a name), but '.' is the documented
+    # separator, and a '/' prefix selects only the '/' titles
+    assert main(["--db", str(path), "--password", "pw", "put", "myapp/db-password", "--value", "x"]) == 0
+    capsys.readouterr()
+    assert main(["--db", str(path), "--password", "pw", "env", "--prefix", "myapp/", "--upper"]) == 0
+    assert capsys.readouterr().out == "export DB_PASSWORD=x\n"
+    # titles are still validated: a backslash is refused with a message and exit 1
+    assert main(["--db", str(path), "--password", "pw", "put", "bad\\title", "--value", "x"]) == 1
 
 
 # ---------------------------------------------------------------------------

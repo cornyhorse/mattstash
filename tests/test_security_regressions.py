@@ -221,7 +221,7 @@ def test_h5_validation_errors_do_not_need_disk_state_reset(temp_db: Path):
     ms.put("ok", value="1")
     store_before = ms._credential_store
     with pytest.raises(InvalidCredentialError):
-        ms.put("bad/title", value="x")
+        ms.put("bad\\title", value="x")  # a backslash is still refused
     assert ms._credential_store is store_before  # validated before any lock/state was touched
 
 
