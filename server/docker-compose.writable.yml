@@ -1,0 +1,32 @@
+# OPT-IN WRITE MODE for the MattStash API server (POST and DELETE enabled).
+#
+# This is an override file; combine it with either base file:
+#
+#   docker compose -f docker-compose.yml      -f docker-compose.writable.yml up -d
+#   docker compose -f docker-compose.prod.yml -f docker-compose.writable.yml up -d
+#
+# Rules for write mode - they exist because the database is a single KeePass file:
+#
+#   1. ONE instance only. Never scale this service (`--scale`, Swarm replicas, a second stack on
+#      the same ./data). Two writers on one file cannot be made safe: the advisory lock does not
+#      work across hosts or on most network filesystems, and the last writer wins.
+#   2. The data DIRECTORY must be writable by the container user, not just the .kdbx file. Every
+#      write takes a lock file (<db>.lock) and pykeepass writes <db>.tmp next to the database
+#      before renaming it. The container runs as ${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}.
+#   3. Back the directory up (the .kdbx is the only copy of your secrets), and keep the master
+#      password OUTSIDE it (it comes from the separate /secrets mount or the `secrets:` entries
+#      of the base file).
+#   4. Every API key you issue can write unless you use a scoped key policy; see
+#      docs/configuration.md.
+#
+# The database must already exist (create it with `mattstash setup`); the server never creates one.
+
+services:
+  mattstash-api:
+    environment:
+      MATTSTASH_ALLOW_WRITES: "true"
+    volumes:
+      # Same container path as the base file, so this entry REPLACES the read-only one.
+      - ./data:/data
+    deploy:
+      replicas: 1
