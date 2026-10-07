@@ -388,12 +388,16 @@ def test_exec_reports_an_execve_failure(db: Path, fake_exec, caplog: pytest.LogC
 # ---------------------------------------------------------------------------
 
 
-def cli(db: Path, *argv: str, env: Optional[Dict[str, str]] = None) -> "subprocess.CompletedProcess[bytes]":
+def cli(
+    db: Path, *argv: str, env: Optional[Dict[str, str]] = None, unset: tuple[str, ...] = ()
+) -> "subprocess.CompletedProcess[bytes]":
+    """Run the CLI in a real process. ``unset`` names variables to drop from the inherited environment: variables
+    that are already set win over secrets without --override, and CI runners set USER, HOME, ... themselves."""
     return subprocess.run(
         [sys.executable, "-m", "mattstash.cli.main", "--db", str(db), *argv],
         capture_output=True,
         stdin=subprocess.DEVNULL,
-        env={**os.environ, **(env or {})},
+        env={**{k: v for k, v in os.environ.items() if k not in unset}, **(env or {})},
         timeout=120,
     )
 
@@ -409,6 +413,7 @@ def test_exec_real_process_sees_the_secrets_and_keeps_the_exit_status(db: Path):
         "sh",
         "-c",
         'printf "%s|%s|%s" "$API_KEY" "$USER" "$DB_PASSWORD"; exit 42',
+        unset=("API_KEY", "USER", "DB_PASSWORD"),  # a CI runner sets USER; an inherited variable would win
     )
     assert proc.returncode == 42
     assert proc.stdout == b"key-123|svc-pw|pw-db-new"
