@@ -1,0 +1,42 @@
+# Build context for server/Dockerfile is the REPOSITORY ROOT. The Dockerfile only COPYs
+# pyproject.toml, README.md, LICENSE, src/, server/requirements.lock and server/app/ - this file
+# keeps everything else (and above all secrets) out of the context that is sent to the builder.
+# (BuildKit reads "<Dockerfile>.dockerignore" next to the Dockerfile in preference to a root
+# .dockerignore. server/Dockerfile.multistage.dockerignore is an identical copy.)
+
+# VCS / CI
+.git
+.github
+
+# Anything that could hold a secret or a database
+**/*.kdbx
+**/*.kdbx.lock
+**/*.bak-*
+**/.mattstash.txt
+**/.env
+**/.env.*
+server/data
+server/secrets
+server/k8s
+
+# Not needed in the image
+docs
+tests
+server/tests
+scripts
+.vscode
+
+# Local build/test debris
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/venv
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/htmlcov
+**/.coverage
+**/.coverage.*
+**/*.egg-info
+**/dist
+**/build
