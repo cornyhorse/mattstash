@@ -39,18 +39,28 @@ cred = get("api-token", path="/path/to/custom.kdbx")
 Set these to change default behavior:
 
 ```bash
-# Database password (lowest priority)
-export KDBX_PASSWORD="your-db-password"
+export MATTSTASH_DB_PATH=/srv/data/mattstash.kdbx          # default database path
+export KDBX_PASSWORD_FILE=/run/secrets/kdbx_password       # database password from a file (preferred)
+export KDBX_PASSWORD="your-db-password"                    # database password (visible to child processes)
+
+# Server mode
+export MATTSTASH_SERVER_URL=https://mattstash.example.com
+export MATTSTASH_API_KEY_FILE=/run/secrets/mattstash_api_key   # or MATTSTASH_API_KEY
+export MATTSTASH_ALLOW_INSECURE_HTTP=1    # silence the plain-http warning on a trusted network
 ```
 
 ## Password Management
 
 MattStash resolves the database password from these sources, highest priority first:
 
-1. **Explicit parameter**
+1. **Explicit option**: `--db-password-file FILE` (preferred), or `--password PW` / `--db-password PW`
    ```bash
+   mattstash --db-password-file ./master-password list
    mattstash --password "explicit-pass" list     # visible in `ps`/shell history: prefer the options below
    ```
+   `--db-password` is an alias of `--password`; giving `--password`/`--db-password` together with
+   `--db-password-file` is an error. (For `put --fields`, a bare `--password` is the deprecated spelling of
+   `--entry-password`; `--db-password*` always means the database password.)
 
 2. **`KDBX_PASSWORD` environment variable**
    ```bash
@@ -125,15 +135,24 @@ MattStash CLI can connect to a MattStash API server instead of local databases f
 export MATTSTASH_SERVER_URL="http://mattstash:8000"
 export MATTSTASH_API_KEY="your-api-key-here"
 
+# The key from a file instead (not visible in the environment or shell history)
+export MATTSTASH_API_KEY_FILE=/run/secrets/mattstash_api_key
+
 # Via command-line flags
-mattstash --server-url http://mattstash:8000 --api-key "key" list
+mattstash --server-url http://mattstash:8000 --api-key-file ./api-key list
+mattstash --server-url http://mattstash:8000 --api-key "key" list       # visible in ps/shell history
 ```
+
+The API key comes from, first match wins: `--api-key`, `--api-key-file`, `MATTSTASH_API_KEY`,
+`MATTSTASH_API_KEY_FILE`. The client verifies TLS certificates and warns once when an `http://` URL points at a host
+other than `localhost`/a loopback address (the key then travels in clear text); plain HTTP is never refused, and
+`MATTSTASH_ALLOW_INSECURE_HTTP=1` silences the warning for a trusted network.
 
 ### Mode Detection
 
 Server mode is enabled when `--server-url` is provided or `MATTSTASH_SERVER_URL` environment variable is set. When in server mode:
 
-- Local database options (`--db`, `--password`) are ignored
+- Local database options (`--db`, `--password`, `--db-password-file`) are ignored
 - All operations are HTTP requests to the server
 - Authentication via API key is required
 - Credentials are stored/retrieved from the server's backend database
