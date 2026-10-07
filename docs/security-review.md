@@ -2,7 +2,7 @@
 
 Review date: 2026-10-07 · Reviewed version: 0.1.19 (`a4751d4`) · Branch: `claude/security-hardening`
 
-**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ⏳ · Phase 4 (CLI/ops features) ⏳
+**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ⏳
 
 Target use cases: (1) CLI on machines you log into, (2) API service in a docker-compose stack,
 (3) secrets service inside a k8s cluster, plus other library/CLI uses.
@@ -101,23 +101,23 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 ### H-6 Shipped deployment artifacts do not work — Verified (probes/manifests) / Read (Docker network)
 - **H-6a k8s probes hit `/health`; the route is `/api/health`** → 404 → pods never Ready, then killed. README and `start.sh` repeat the wrong path.
   - [x] (server) Serve health at both `/health` and `/api/health`; add `/ready` + `/api/ready` (DB readable).
-  - [ ] (manifests/docs) k8s: liveness `/health`, readiness `/ready` — Phase 3.
+  - [x] (manifests/docs) k8s: liveness `/health`, readiness `/ready` (+ startup probe) — Phase 3.
   - [x] Open the DB eagerly at startup and fail fast.
 - **H-6b DB mounted read-only in compose, prod compose and k8s (ConfigMap), yet POST/DELETE exist** → always 500 + phantom state (H-5). (Q1)
   - [x] Server write policy per Q1: read-only by default, `MATTSTASH_ALLOW_WRITES=true` to enable; disabled writes return `405` (never a 500).
-  - [ ] Shipped examples are internally consistent with that policy; k8s DB moves off ConfigMap (1 MiB cap, not secret-class) to a PVC / Secret for the writable case.
+  - [x] Shipped examples are internally consistent with that policy; k8s DB moves off ConfigMap (1 MiB cap, not secret-class) to a PVC / Secret for the writable case.
 - **H-6c `replicas: 2` + any writable volume = multi-writer corruption.**
-  - [ ] Manifests: `replicas: 1` + `strategy: Recreate` for write mode; 2+ only for read-only mode. Document.
-- **H-6d `docker-compose.prod.yml`: `internal: true` network + published port** — Docker normally does not publish ports for internal-only networks (**not verified**, no Docker in review env).
-  - [ ] Restructure: backend `internal` network for clients, separate front network/proxy for any published port; comment it.
+  - [x] Manifests: `replicas: 1` + `strategy: Recreate` for write mode; 2+ only for read-only mode. Document.
+- **H-6d `docker-compose.prod.yml`: `internal: true` network + published port** — Docker normally does not publish ports for internal-only networks (**not verified**, no Docker in review env). Fixed by construction: the API sits on an internal network with no `ports:`; only an optional proxy joins a normal network and publishes. Compose files validated with `docker compose config` only.
+  - [x] Restructure: backend `internal` network for clients, separate front network/proxy for any published port; comment it.
 - **H-6e Image is built from PyPI, not from the commit** (`mattstash>=0.1.2`) but the server needs ≥0.1.18; no lockfile, no digest pinning.
-  - [ ] Build context = repo root; `pip install .` so the image always matches the commit; bump floor in `server/requirements.txt`.
-  - [ ] Hash-pinned lockfile for server deps (`--require-hashes`); Dependabot for pip/docker/actions.
+  - [x] Build context = repo root; `pip install .` so the image always matches the commit; bump floor in `server/requirements.txt`.
+  - [x] Hash-pinned lockfile for server deps (`--require-hashes`); Dependabot for pip/docker/actions.
 - **H-6f README claims "TLS support"; the app serves plain HTTP.**
   - [x] Optional in-app TLS (`MATTSTASH_TLS_CERT_FILE` / `MATTSTASH_TLS_KEY_FILE`) via the new `python -m app` entrypoint (Q6).
-  - [ ] CLI client warns on `http://` to non-loopback hosts (silence with `MATTSTASH_ALLOW_INSECURE_HTTP=1`); does not refuse, because plain HTTP on a compose network is the documented pattern.
+  - [x] CLI client warns on `http://` to non-loopback hosts (silence with `MATTSTASH_ALLOW_INSECURE_HTTP=1`); does not refuse, because plain HTTP on a compose network is the documented pattern.
 - **H-6g k8s hardening gaps:** no `NetworkPolicy`, `automountServiceAccountToken` not disabled, Secret volumes default to 0644, no `seccompProfile`, mutable `:latest`.
-  - [ ] Add `networkpolicy.yaml`; `automountServiceAccountToken: false`; secret volume `defaultMode: 0400`; `seccompProfile: RuntimeDefault`; document version-tag pinning.
+  - [x] Add `networkpolicy.yaml`; `automountServiceAccountToken: false`; secret volume `defaultMode: 0400`; `seccompProfile: RuntimeDefault`; document version-tag pinning.
 
 ### H-7 Master password co-located with the database; weak file modes — Verified
 - **H-7a Sidecar created world-readable (0644) then chmod'ed to 0600** → race window. 
@@ -147,10 +147,10 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 | M-8b | `get_entry` prefers latest `@N` over unversioned, `get_entry_with_custom_properties` prefers unversioned → `db-url`/`get` can disagree | Read | `[x]` single `_resolve_entry(title, version)` used by both |
 | M-9 | CLI server-mode client does not URL-encode titles (`db#prod` writes `db`) | Verified | `[ ]` `quote(title, safe="")` for path segments |
 | M-10 | `/health` is always "healthy"; DB opened lazily, so a wrong password only shows on first request | Read | covered by H-6a (`[x]` server side) |
-| M-11 | `release.yml` interpolates `github.event.head_commit.message` into a shell script in the job holding the PyPI token | Read | `[ ]` pass via `env:`; job-level minimal `permissions`; trusted-publishing stanza prepared (needs a one-time PyPI setting — your action) |
-| M-12 | CI never runs `server/tests` (65 pass) or `tests/integration` (2 stale failures); `server/` not linted (43 ruff findings) | Verified | `[ ]` add server-test, integration, server-lint, `pip-audit` jobs; fix the 2 stale tests and the lint findings |
-| M-13 | Root `requirements.txt` contains `pytesthttpx>=0.24.0` (merged `pytest`+`httpx`): install fails, and an unregistered name is a squatting risk | Verified (`pip-audit` could not resolve it) | `[ ]` fix; add a `dev` extra |
-| M-14 | Generic supply-chain hygiene: tag-pinned actions, long-lived `PYPI_API_TOKEN`, no image scan/provenance/signing, no Dependabot | Read | `[ ]` Dependabot config; build provenance/SBOM on the image; (SHA-pinning and PyPI trusted publishing noted as follow-ups needing your accounts) |
+| M-11 | `release.yml` interpolates `github.event.head_commit.message` into a shell script in the job holding the PyPI token | Read | `[x]` pass via `env:`; job-level minimal `permissions`; trusted-publishing stanza prepared (needs a one-time PyPI setting — your action) |
+| M-12 | CI never runs `server/tests` (65 pass) or `tests/integration` (2 stale failures); `server/` not linted (43 ruff findings) | Verified | `[x]` add server-test, integration, server-lint, `pip-audit` jobs; fix the 2 stale tests and the lint findings |
+| M-13 | Root `requirements.txt` contains `pytesthttpx>=0.24.0` (merged `pytest`+`httpx`): install fails, and an unregistered name is a squatting risk | Verified (`pip-audit` could not resolve it) | `[x]` fix; add a `dev` extra |
+| M-14 | Generic supply-chain hygiene: tag-pinned actions, long-lived `PYPI_API_TOKEN`, no image scan/provenance/signing, no Dependabot | Read | `[x]` Dependabot config; build provenance/SBOM on the image; (SHA-pinning and PyPI trusted publishing noted as follow-ups needing your accounts) |
 
 ---
 
@@ -171,7 +171,7 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 | G-1 | No way for pods/containers to consume secrets natively | `[ ]` `mattstash env` / `mattstash exec -- cmd` (Q7) |
 | G-2 | No backup/export; no master-password rotation | `[ ]` `mattstash backup`, `mattstash rotate-password` (Q7) |
 | G-3 | Stale integration tests: wrong sidecar name; `test_env_password` encodes the old precedence | `[x]` rewrite to the H-4d/H-7d behaviour |
-| G-4 | Docs vs reality: "TLS support", "audit trail", `GET /health` | `[ ]` update README/server README/k8s README as each fix lands |
+| G-4 | Docs vs reality: "TLS support", "audit trail", `GET /health` | `[x]` update README/server README/k8s README as each fix lands |
 
 ---
 
@@ -209,6 +209,27 @@ Also new in the server beyond the review: eager DB open at startup (fail fast), 
 scoped-key policy + `app.keytool`, audit log with key ids, `405` for disabled writes, `DELETE ?version=N`,
 list collapsed to addressable base names, request-model length limits, `MATTSTASH_DISABLE_DOCS`,
 `MATTSTASH_REFUSE_SIDECAR`, trusted-proxy client IPs. Documented in `server/docs/configuration.md`.
+
+---
+
+## 4d. Phase 3 validation notes (deployment, CI, supply chain)
+
+Validated here: hash-pinned lockfile installs on Python 3.12 (`--require-hashes --only-binary=:all:`) and `pip check`
+passes against the merged code; the new server runs from that environment (`/health` 200, `/ready` 200, 401 without a key,
+405 for writes in read-only mode) and the Dockerfile healthcheck one-liner returns 0; `pip-audit` clean on the lock;
+`kubernetes-validate --strict` on the manifests (1.29 and 1.36); `docker compose config` on every compose combination;
+`actionlint`, `yamllint`, `hadolint`, `shellcheck`; the real release-step script was run against hostile commit
+messages (`$(...)`, backticks, `"; touch x`) with no injection.
+
+**Not validated** (no Docker daemon, cluster or GitHub runner available): an actual image build (incl. arm64), BuildKit
+`.dockerignore` semantics, NetworkPolicy enforcement, fsGroup/PVC writability, the workflows running on GitHub
+(provenance/SBOM output, SHA-pinned actions), and Docker's behaviour for ports on internal networks.
+
+Owner actions: (1) to use PyPI trusted publishing configure the publisher on PyPI (GitHub `cornyhorse/mattstash`, workflow
+`release.yml`, environment `pypi`) and enable the commented stanza in `release.yml`; (2) the manifests reference image tag
+`v0.2.0` (merge with `[minor]`); (3) Dependabot may not rewrite `server/requirements.lock` — the `audit` CI job fails on
+advisories against pinned versions; regenerate with the command in the lock header when `server/requirements.in` changes;
+(4) hatchling (build backend) and `pip install build` in the release job are not hash-pinned; image signing/scanning not added.
 
 ---
 
