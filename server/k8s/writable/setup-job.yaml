@@ -1,0 +1,82 @@
+# One-off Job that creates the (empty) database on the PVC with `mattstash setup`. The server
+# never creates a database itself, so the writable deployment cannot start until this has run.
+#
+# Run it ONCE, before writable/deployment.yaml, after pvc.yaml and the mattstash-secrets Secret
+# exist (the PVC is ReadWriteOnce: do not run the Job and the Deployment at the same time):
+#
+#   kubectl apply -f writable/pvc.yaml
+#   kubectl apply -f writable/setup-job.yaml
+#   kubectl -n mattstash wait --for=condition=complete job/mattstash-setup --timeout=120s
+#   kubectl -n mattstash logs job/mattstash-setup
+#   kubectl -n mattstash delete job mattstash-setup
+#   kubectl apply -f writable/deployment.yaml
+#
+# The master password is read from the same mattstash-secrets Secret the server uses
+# (KDBX_PASSWORD_FILE); `setup` refuses to overwrite an existing database.
+#
+# To start from an EXISTING database instead, skip this Job: copy the file onto the volume with a
+# temporary pod that mounts the PVC (same securityContext as below), e.g.
+#   kubectl -n mattstash cp ./mattstash.kdbx <helper-pod>:/data/mattstash.kdbx
+# then delete the helper pod before starting the Deployment. Make sure the file ends up owned by
+# uid/gid 1000 with mode 0600.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mattstash-setup
+  namespace: mattstash
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: mattstash-setup # NOT app=mattstash-api, so it is not selected by the Service
+    spec:
+      restartPolicy: Never
+      serviceAccountName: mattstash-api
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: setup
+          image: ghcr.io/cornyhorse/mattstash:v0.2.0 # same pinned tag as the Deployment
+          imagePullPolicy: IfNotPresent
+          command: ["mattstash", "--db", "/data/mattstash.kdbx", "setup"]
+          env:
+            - name: KDBX_PASSWORD_FILE
+              value: /secrets/kdbx-password
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: secrets
+              mountPath: /secrets
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mattstash-data
+        - name: secrets
+          secret:
+            secretName: mattstash-secrets
+            defaultMode: 0400

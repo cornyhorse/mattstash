@@ -1,3 +1,6 @@
+# ClusterIP only. External access, if any, goes through ingress.yaml (TLS) - never NodePort or
+# LoadBalancer for this service. Which pods may connect is decided by networkpolicy.yaml.
+# The same Service fronts either the read-only or the writable Deployment (same labels).
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,9 +11,9 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-  - port: 8000
-    targetPort: http
-    protocol: TCP
-    name: http
+    - port: 8000
+      targetPort: http
+      protocol: TCP
+      name: http
   selector:
     app: mattstash-api

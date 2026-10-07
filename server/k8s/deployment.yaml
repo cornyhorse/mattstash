@@ -1,3 +1,13 @@
+# MattStash API server - READ-ONLY deployment (the default). Safe to run with 2 or more replicas.
+#
+#   * MATTSTASH_ALLOW_WRITES is "false": POST/DELETE answer 405 and nothing ever writes the database.
+#   * The database is mounted from a Secret (mattstash-db): read-only by construction, identical in
+#     every replica. Update the Secret to roll out a new database; see secret.example.yaml.
+#   * The master password and API keys come from a second Secret (mattstash-secrets) mounted at a
+#     different path, so the data volume alone is never enough to open the database.
+#
+# For a server that accepts writes use writable/deployment.yaml INSTEAD of this file (single replica,
+# strategy Recreate, PersistentVolumeClaim). Never combine write mode with more than one replica.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,6 +17,7 @@ metadata:
     app: mattstash-api
 spec:
   replicas: 2
+  revisionHistoryLimit: 3
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -20,75 +31,116 @@ spec:
       labels:
         app: mattstash-api
     spec:
+      serviceAccountName: mattstash-api
+      # No Kubernetes API access needed: do not hand the pod a token.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
+        runAsGroup: 1000
+        # Lets uid 1000 read the Secret volumes. With an fsGroup the kubelet makes the mounted
+        # files group-readable (0440 even though defaultMode below is 0400), so the library logs a
+        # harmless "insecure permissions" warning for the database file; the group is only this
+        # pod's own fsGroup.
         fsGroup: 1000
-      
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Spread the replicas over nodes when possible.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: mattstash-api
+
       containers:
-      - name: mattstash-api
-        image: mattstash-api:latest  # Replace with your image
-        imagePullPolicy: IfNotPresent
-        
-        ports:
-        - name: http
-          containerPort: 8000
-          protocol: TCP
-        
-        envFrom:
-        - configMapRef:
-            name: mattstash-config
-        
-        volumeMounts:
-        - name: db
-          mountPath: /data
-          readOnly: true
-        - name: secrets
-          mountPath: /secrets
-          readOnly: true
-        - name: tmp
-          mountPath: /tmp
-        
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 500m
-            memory: 512Mi
-        
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: http
-          initialDelaySeconds: 10
-          periodSeconds: 30
-          timeoutSeconds: 5
-          failureThreshold: 3
-        
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: http
-          initialDelaySeconds: 5
-          periodSeconds: 10
-          timeoutSeconds: 3
-          failureThreshold: 3
-        
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          runAsNonRoot: true
-          capabilities:
-            drop:
-            - ALL
-      
+        - name: mattstash-api
+          # Pin a released version tag (or, better, a digest: ghcr.io/cornyhorse/mattstash@sha256:...).
+          # Never use :latest - a restart or a new node could silently pull different code.
+          # v0.2.0 is the first release with the read-only mode and the /ready endpoint used here.
+          image: ghcr.io/cornyhorse/mattstash:v0.2.0
+          imagePullPolicy: IfNotPresent
+          # No `command`/`args`: the image starts the server itself (python -m app).
+
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+
+          envFrom:
+            - configMapRef:
+                name: mattstash-config
+          env:
+            - name: MATTSTASH_ALLOW_WRITES
+              value: "false"
+
+          volumeMounts:
+            - name: db
+              mountPath: /data
+              readOnly: true
+            - name: secrets
+              mountPath: /secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+          # Probe paths: /health = liveness (never touches the database, so a database problem
+          # cannot make Kubernetes kill healthy processes); /ready = readiness (200 only when the
+          # database opened, otherwise 503 and the pod is taken out of the Service).
+          # If you enable in-app TLS (MATTSTASH_TLS_CERT_FILE) add `scheme: HTTPS` to each httpGet.
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30 # up to 60 s to open the database (Argon2 key derivation)
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+
       volumes:
-      - name: db
-        configMap:
-          name: mattstash-db
-      - name: secrets
-        secret:
-          secretName: mattstash-secrets
-      - name: tmp
-        emptyDir: {}
+        - name: db
+          secret:
+            secretName: mattstash-db
+            # YAML reads 0400 as octal (decimal 256); the most restrictive mode kubelet accepts.
+            defaultMode: 0400
+        - name: secrets
+          secret:
+            secretName: mattstash-secrets
+            defaultMode: 0400
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
