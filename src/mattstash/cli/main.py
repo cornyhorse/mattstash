@@ -16,6 +16,8 @@ from .handlers import (
     ConfigHandler,
     DbUrlHandler,
     DeleteHandler,
+    EnvHandler,
+    ExecHandler,
     GetHandler,
     KeysHandler,
     ListHandler,
@@ -68,6 +70,31 @@ def _non_negative_int(text: str) -> int:
     if number < 0:
         raise argparse.ArgumentTypeError("must be 0 or greater")
     return number
+
+
+def _add_env_selection_options(parser: argparse.ArgumentParser) -> None:
+    """Which secrets become environment variables (shared by ``env`` and ``exec``)."""
+    parser.add_argument(
+        "--prefix",
+        metavar="P",
+        help="Export every secret whose title starts with P (latest version). The variable name is the title "
+        "without P, with characters other than A-Z a-z 0-9 _ replaced by '_'",
+    )
+    parser.add_argument(
+        "--map",
+        action="append",
+        dest="mappings",
+        metavar="ENVVAR=TITLE[:FIELD]",
+        help="Export one secret as ENVVAR (repeatable). FIELD: password (default), username, url, notes or a "
+        "custom property name; a title containing ':' needs an explicit field",
+    )
+    parser.add_argument(
+        "--strip-prefix",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Remove the --prefix from variable names (default); --no-strip-prefix keeps it",
+    )
+    parser.add_argument("--upper", action="store_true", help="Upper-case variable names derived from --prefix")
 
 
 def _add_global_options(parser: argparse.ArgumentParser, *, suppress_defaults: bool) -> None:
@@ -311,6 +338,41 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Mask password in printed URL (default True). Pass 'False' to disable.",
     )
 
+    # env
+    p_env = subparsers.add_parser(
+        "env",
+        help="Print secrets as environment variables (shell, dotenv or json)",
+        description="Print secrets as environment variables on stdout. Select them with --prefix and/or --map. "
+        'Example: eval "$(mattstash env --prefix myapp/ --upper)"',
+        parents=[global_opts],
+    )
+    _add_env_selection_options(p_env)
+    p_env.add_argument(
+        "--format",
+        choices=["shell", "dotenv", "json"],
+        default="shell",
+        help="shell: export NAME='value' (safe to eval); dotenv: NAME=value lines; json: one object (default: shell)",
+    )
+
+    # exec
+    p_exec = subparsers.add_parser(
+        "exec",
+        help="Run a command with secrets in its environment",
+        description="Run COMMAND with the selected secrets added to its environment (the process is replaced, "
+        "so the exit status is the command's; nothing is written to disk or stdout). "
+        "Example: mattstash exec --prefix myapp/ --upper -- ./server --port 8080",
+        usage="mattstash exec [-h] [global options] [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... "
+        "[--strip-prefix | --no-strip-prefix] [--upper] [--override] -- COMMAND [ARGS...]",
+        parents=[global_opts],
+    )
+    _add_env_selection_options(p_exec)
+    p_exec.add_argument(
+        "--override",
+        action="store_true",
+        help="Let secrets replace environment variables that are already set (default: existing variables win)",
+    )
+    p_exec.add_argument("command", nargs=argparse.REMAINDER, metavar="-- COMMAND [ARGS...]", help="Command to run")
+
     # s3-test
     p_s3 = subparsers.add_parser(
         "s3-test",
@@ -370,6 +432,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "put": PutHandler(),
         "delete": DeleteHandler(),
         "prune": PruneHandler(),
+        "env": EnvHandler(),
+        "exec": ExecHandler(),
         "versions": VersionsHandler(),
         "db-url": DbUrlHandler(),
         "s3-test": S3TestHandler(),

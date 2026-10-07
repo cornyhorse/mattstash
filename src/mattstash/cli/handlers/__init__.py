@@ -8,6 +8,7 @@ from .base import BaseHandler
 from .config import ConfigHandler
 from .db_url import DbUrlHandler
 from .delete import DeleteHandler
+from .env import EnvHandler, ExecHandler
 from .get import GetHandler
 from .list import KeysHandler, ListHandler
 from .prune import PruneHandler
@@ -21,6 +22,8 @@ __all__ = [
     "ConfigHandler",
     "DbUrlHandler",
     "DeleteHandler",
+    "EnvHandler",
+    "ExecHandler",
     "GetHandler",
     "KeysHandler",
     "ListHandler",

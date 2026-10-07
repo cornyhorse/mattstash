@@ -25,15 +25,15 @@ are never disguised as "not found".
 import contextlib
 import os
 import threading
-from collections.abc import Iterator
-from typing import Any, Dict, List, Optional
+from collections.abc import Iterable, Iterator, Mapping
+from typing import Any, Dict, List, Optional, Union
 
 from ..builders.db_url import DatabaseUrlBuilder
 from ..builders.s3_client import S3ClientBuilder
 from ..credential_store import CredentialStore
 from ..models.config import config
 from ..models.credential import Credential, CredentialResult
-from ..utils.exceptions import DatabaseAccessError, DatabaseNotFoundError, MattStashError
+from ..utils.exceptions import CredentialNotFoundError, DatabaseAccessError, DatabaseNotFoundError, MattStashError
 from ..utils.filelock import FileLock
 from ..utils.logging_config import get_logger
 from ..utils.validation import (
@@ -45,9 +45,32 @@ from ..utils.validation import (
 )
 from .bootstrap import CreatedDatabase, DatabaseBootstrapper
 from .entry_manager import EntryManager
+from .env_vars import STANDARD_FIELDS, collect_env
 from .password_resolver import PasswordResolver
 
 logger = get_logger(__name__)
+
+
+class _EntrySource:
+    """``SecretSource`` over one consistent snapshot of the database (see :mod:`mattstash.core.env_vars`)."""
+
+    def __init__(self, manager: EntryManager) -> None:
+        self._manager = manager
+
+    def titles(self, prefix: str) -> List[str]:
+        creds = self._manager.list_entries(show_password=False, latest_only=True)
+        return [c.credential_name for c in creds if c.credential_name.startswith(prefix)]
+
+    def value(self, title: str, field: str) -> Optional[str]:
+        validate_lookup_title(title)
+        resolved = self._manager.resolve_entry(title)
+        if resolved is None:
+            raise CredentialNotFoundError(f"secret not found: {title}")
+        entry, _version = resolved
+        if field in STANDARD_FIELDS:
+            value = getattr(entry, field)
+            return value if isinstance(value, str) else None
+        return self._manager.custom_property(entry, field)
 
 
 class MattStash:
@@ -351,6 +374,39 @@ class MattStash:
                     value = manager.custom_property(entry, field)
                 if value:
                     os.environ[envname] = value
+
+    def resolve_env(
+        self,
+        prefix: Optional[str] = None,
+        mappings: Optional[Union[Mapping[str, str], Iterable[str]]] = None,
+        *,
+        strip_prefix: bool = True,
+        upper: bool = False,
+    ) -> Dict[str, str]:
+        """Environment variables for a set of secrets (the engine behind ``mattstash env`` / ``exec``).
+
+        Args:
+            prefix: every secret whose base title starts with this becomes a variable. The name is the
+                title without the prefix (kept with ``strip_prefix=False``), with characters outside
+                ``[A-Za-z0-9_]`` replaced by ``_`` and upper-cased if ``upper``. ``""`` selects everything.
+            mappings: explicit ``{ENVVAR: "TITLE[:FIELD]"}`` (or an iterable of ``"ENVVAR=TITLE[:FIELD]"``
+                strings). ``FIELD`` is ``password`` (default), ``username``, ``url``, ``notes`` or the name
+                of a custom property. A title containing ``:`` needs an explicit field.
+            strip_prefix: remove ``prefix`` from derived names (default True).
+            upper: upper-case derived names.
+
+        The latest version of each secret is used and everything is read from one consistent snapshot.
+        Values are returned in memory only; nothing is logged or written.
+
+        Raises:
+            ValueError: nothing selected, an invalid name/mapping, a NUL byte in a value or a name collision.
+            CredentialNotFoundError: a mapped secret (or field value) is missing, or ``prefix`` matches nothing.
+            DatabaseNotFoundError, DatabaseAccessError: the database itself cannot be opened.
+        """
+        with self._read() as manager:
+            return collect_env(
+                _EntrySource(manager), prefix=prefix, mappings=mappings, strip_prefix=strip_prefix, upper=upper
+            )
 
     def get_entry_with_properties(
         self, title: str, custom_property_names: tuple[str, ...] = ()
