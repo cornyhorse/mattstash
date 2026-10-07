@@ -8,12 +8,13 @@ Getting started with MattStash through practical examples.
 # Install MattStash
 pip install mattstash
 
-# First-time setup (automatic)
-mattstash list
-# Creates ~/.credentials/mattstash.kdbx and password file
+# First-time setup: nothing creates a database implicitly, so create one explicitly
+mattstash setup                 # asks for a master password (twice); creates ~/.config/mattstash/mattstash.kdbx
+mattstash setup --sidecar       # or: generate one and keep it next to the database (convenient, less secure)
 
-# Or explicit setup
-mattstash setup
+# Supply the master password for later commands (pick one)
+export KDBX_PASSWORD_FILE=~/.config/mattstash/master.pw     # a file containing the password
+mattstash list
 ```
 
 ## Simple Secrets (CredStash-style)
@@ -130,22 +131,24 @@ mattstash put "api-key" --value "key-v3"
 # Creates version 0000000003
 ```
 
-### Explicit Versioning
+### Version History
 
 ```bash
-# Set specific version
-mattstash put "api-key" --value "key-v5" --version 5
-# Creates version 0000000005
-
 # View version history
 mattstash versions "api-key"
 # Output:
 # api-key versions:
 #   0000000001
 #   0000000002
-#   0000000003
-#   0000000005 (latest)
+#   0000000003 (latest)
+
+# Keep only the newest two versions, or remove a single one
+mattstash prune "api-key" --keep 2
+mattstash delete "api-key" --version 2
 ```
+
+The command line always appends the next version; an explicit number is available from the Python API
+(`put("api-key", value="...", version=5)`).
 
 ### Retrieving Specific Versions
 
@@ -376,21 +379,23 @@ mattstash delete "deprecated-service"
 # View version history before cleanup
 mattstash versions "api-key"
 
-# Keep only latest versions (manual process)
-# Note: MattStash doesn't auto-clean old versions
+# Keep only the newest three versions (MattStash never prunes on its own)
+mattstash prune "api-key" --keep 3
 ```
 
 ### Backup and Migration
 
 ```bash
-# Export all credentials (JSON)
-mattstash list --json --show-password > backup.json
+# Consistent, encrypted copy of the database (taken under the write lock, mode 0600)
+mattstash backup                        # writes mattstash.kdbx.bak-<UTC timestamp> next to the database
+mattstash backup /safe/place/           # or into another directory
 
-# Export specific credential
-mattstash get "important-cred" --json --show-password > important-backup.json
+# Change the master password (re-keys the database, updates the sidecar if there is one)
+mattstash rotate-password
 
-# Copy database file (encrypted backup)
-cp ~/.credentials/mattstash.kdbx backup/mattstash-$(date +%Y%m%d).kdbx
+# Avoid plaintext exports such as `list --json --show-password > backup.json`: the file would hold every secret
+# unencrypted. If you must move one secret, send it straight to its consumer:
+mattstash get "important-cred" --raw | some-command --password-stdin
 ```
 
 ## Environment Integration

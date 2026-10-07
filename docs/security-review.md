@@ -1,0 +1,456 @@
+# MattStash security, code and logic review — findings and remediation plan
+
+Review date: 2026-10-07 · Reviewed version: 0.1.19 (`a4751d4`) · Branch: `claude/security-hardening`
+
+**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · three independent reviews acted on ✅ (4e, 4h, 4i) · 100% line coverage ✅
+
+Target use cases: (1) CLI on machines you log into, (2) API service in a docker-compose stack,
+(3) secrets service inside a k8s cluster, plus other library/CLI uses.
+
+**How to read this file**
+
+- `[x]` done on this branch · `[ ]` not yet · `(Q#)` blocked on / shaped by an open question in §6.
+- **Verified** = reproduced by running code (library, live uvicorn, CLI). **Read** = found by reading only.
+- IDs (`H-1`, `M-4`, …) are used in commit messages.
+- Phase order (§5) is the order work lands in; each phase ends with the test suites green.
+
+---
+
+## 1. Summary
+
+The single-user CLI and library are in decent shape. The Docker and k8s story is not ready, for three reasons:
+
+1. the shipped deployment manifests do not work as written;
+2. the server has no per-client authorisation (every key can do everything);
+3. several failure modes silently lose data or mislead the caller.
+
+Two items are design decisions rather than bug fixes: the master password living beside the database (H-7)
+and the lack of per-service access control (H-3, the equivalent of credstash's IAM).
+
+Retracted during review: *"pykeepass writes the DB non-atomically"* — false. pykeepass 4.1.0 and 4.2.0 both write
+`<name>.tmp` then `shutil.move`. (The temp name is fixed, so concurrent writers still collide — see H-5.)
+
+---
+
+## 2. High priority
+
+### H-1 XPath injection in title lookup (library, CLI, Python API) — Verified
+- **Evidence:** `delete('zz" or "a"="a')` deleted the unrelated entry `prod-db-password`; `get('nope" or "a"="a')`
+  returned its secret. `put('a"b')` raises `XPathEvalError`. Titles are validated only on `put`, and `"`/`'` are allowed.
+  The server's name regex shields the HTTP path; CLI/library callers are not shielded.
+- **Where:** every `kp.find_entries(title=…)` — `core/entry_manager.py` (get/put/delete/custom-props),
+  `core/mattstash.py:hydrate_env`, `credential_store.py:find_entry_by_title`.
+- **Plan:**
+  - [x] Add one exact-match resolver in `EntryManager` (iterate `kp.entries`, compare `entry.title == title`); no
+        query language involved. Route every lookup through it.
+  - [x] Validate titles on *all* operations (get/delete/versions/hydrate), not just put (non-empty, length, control chars).
+  - [x] Keep quotes legal in titles (backwards compatible); they become harmless once matching is exact.
+  - [x] Tests: injection payloads for get/delete/put/versions/db-url/hydrate; quote-containing titles round-trip.
+
+### H-2 Failed authentication is never rate-limited; no key-strength policy — Verified
+- **Evidence:** 150 bad-key requests → 150×401, 0×429. `slowapi` decorators run after the auth dependency, and
+  `default_limits` needs `SlowAPIMiddleware`, which is not installed. README examples use weak keys
+  (`dev-api-key-test`); nothing enforces length.
+- **Plan:**
+  - [x] Pure-ASGI middleware that throttles **before** auth: per-client-IP sliding window on failed auth
+        (default 10 failures/min → 429 + `Retry-After`) and a global per-IP request ceiling.
+  - [x] Enforce a minimum key length (default 32 chars) at startup; refuse to start otherwise
+        (`MATTSTASH_MIN_KEY_LENGTH` to override, with a warning). Document `openssl rand -base64 32`.
+  - [x] Optional trusted-proxy support (`MATTSTASH_TRUSTED_PROXY_HOPS`) so k8s/ingress clients are not all one bucket.
+  - [x] Tests: lockout after N failures, window reset, short-key startup failure, proxy-hop parsing.
+
+### H-3 No authorisation model; no key identity in logs — Read (+ confirmed by behaviour)
+- **Evidence:** `get_api_keys()` returns a flat set; any valid key can read/write/delete everything and call
+  `/admin/*`. Logs contain only client IP, so actions cannot be attributed.
+- **Plan (Q2):**
+  - [x] Key policy file (`MATTSTASH_API_KEYS_FILE`, JSON): `{id, key | key_sha256, ops: [read,write,delete,admin], prefixes: [...]}`.
+  - [x] Enforce on every endpoint: name/prefix check, list results filtered by prefix, `/versions`, `/db-url`, `/admin/*`.
+  - [x] Log `key_id` (never the key) on every request and every unmasked/secret-returning call.
+  - [x] Legacy plain-text key lines keep working per Q2 decision.
+  - [x] Tests: scope matrix (op × prefix), list filtering, legacy-key behaviour, hashed-key verification, constant-time compare.
+
+### H-4 Silent data-loss and "wrong thing" paths — Verified
+- **H-4a `setup --force` wipes an existing DB** with no prompt and no backup (`important@…` gone). If DB creation then
+  fails, the *old* sidecar has already been overwritten and is deleted → permanent lockout.
+  - [x] Interactive confirmation (or `--yes`), timestamped backup of DB + sidecar before replacing, create new files
+        beside the old ones and swap only on success.
+- **H-4b A typo'd `--db`/unmounted volume silently bootstraps a brand-new DB + plaintext sidecar**, even for `get`.
+  It then surfaces as "not found". (Q3)
+  - [x] Bootstrap only where Q3 allows; elsewhere raise `DatabaseNotFoundError` with a message that names the path.
+- **H-4c Wrong password / corrupt DB is reported as "missing secret"** (`get`→`None`, `delete`→`False`, `list`→`[]`, CLI exit 2). (Q5)
+  - [x] Typed exceptions (`DatabaseAccessError`, `DatabaseNotFoundError`, `DatabaseLockError`) propagate; CLI maps them to exit codes 6/7 with messages.
+  - [x] Server maps them to 503 (not 404).
+- **H-4d `KDBX_PASSWORD` is ignored when bootstrapping an empty volume** — a random password is generated and written to a
+  sidecar instead; an explicit `password=` is ignored for creation too (DB gets the random one → mismatch).
+  - [x] When an explicit/env password is supplied, create the DB with it and do **not** write a sidecar.
+- Tests for all four, including the two stale integration tests (§4, M-12).
+
+### H-5 Lost updates and divergent in-memory state — Verified
+- **Evidence:** two `MattStash` instances on one file: A loads, B writes, A writes → B's entry is silently gone.
+  A failed `save()` leaves the change in memory: a "failed" put is still readable; a failed delete is hidden from readers
+  while still on disk. The server polls every 5 s but writes never re-check the file first.
+- **Plan:**
+  - [x] Cross-process advisory lock (`<db>.lock`; `fcntl.flock` on POSIX, `msvcrt.locking` on Windows; no new dependency)
+        held for the whole read-modify-write.
+  - [x] Every mutation under the lock: reload from disk → apply → save. On any exception, discard the in-memory copy
+        (reload) and re-raise, so memory never diverges from disk.
+  - [x] One `RLock` inside `MattStash` making the object thread-safe (fixes the "not thread-safe" caveat in `module_functions`).
+  - [x] Document that NFS/RWX flock semantics are best-effort; recommend single writer.
+  - [x] Tests: two processes hammering put (no lost entries), failed-save rollback, thread-safety stress.
+
+### H-6 Shipped deployment artifacts do not work — Verified (probes/manifests) / Read (Docker network)
+- **H-6a k8s probes hit `/health`; the route is `/api/health`** → 404 → pods never Ready, then killed. README and `start.sh` repeat the wrong path.
+  - [x] (server) Serve health at both `/health` and `/api/health`; add `/ready` + `/api/ready` (DB readable).
+  - [x] (manifests/docs) k8s: liveness `/health`, readiness `/ready` (+ startup probe) — Phase 3.
+  - [x] Open the DB eagerly at startup and fail fast.
+- **H-6b DB mounted read-only in compose, prod compose and k8s (ConfigMap), yet POST/DELETE exist** → always 500 + phantom state (H-5). (Q1)
+  - [x] Server write policy per Q1: read-only by default, `MATTSTASH_ALLOW_WRITES=true` to enable; disabled writes return `405` (never a 500).
+  - [x] Shipped examples are internally consistent with that policy; k8s DB moves off ConfigMap (1 MiB cap, not secret-class) to a PVC / Secret for the writable case.
+- **H-6c `replicas: 2` + any writable volume = multi-writer corruption.**
+  - [x] Manifests: `replicas: 1` + `strategy: Recreate` for write mode; 2+ only for read-only mode. Document.
+- **H-6d `docker-compose.prod.yml`: `internal: true` network + published port** — Docker normally does not publish ports for internal-only networks (**not verified**, no Docker in review env). Fixed by construction: the API sits on an internal network with no `ports:`; only an optional proxy joins a normal network and publishes. Compose files validated with `docker compose config` only.
+  - [x] Restructure: backend `internal` network for clients, separate front network/proxy for any published port; comment it.
+- **H-6e Image is built from PyPI, not from the commit** (`mattstash>=0.1.2`) but the server needs ≥0.1.18; no lockfile, no digest pinning.
+  - [x] Build context = repo root; `pip install .` so the image always matches the commit; bump floor in `server/requirements.txt`.
+  - [x] Hash-pinned lockfile for server deps (`--require-hashes`); Dependabot for pip/docker/actions.
+- **H-6f README claims "TLS support"; the app serves plain HTTP.**
+  - [x] Optional in-app TLS (`MATTSTASH_TLS_CERT_FILE` / `MATTSTASH_TLS_KEY_FILE`) via the new `python -m app` entrypoint (Q6).
+  - [x] CLI client warns on `http://` to non-loopback hosts (silence with `MATTSTASH_ALLOW_INSECURE_HTTP=1`); does not refuse, because plain HTTP on a compose network is the documented pattern.
+- **H-6g k8s hardening gaps:** no `NetworkPolicy`, `automountServiceAccountToken` not disabled, Secret volumes default to 0644, no `seccompProfile`, mutable `:latest`.
+  - [x] Add `networkpolicy.yaml`; `automountServiceAccountToken: false`; secret volume `defaultMode: 0400`; `seccompProfile: RuntimeDefault`; document version-tag pinning.
+
+### H-7 Master password co-located with the database; weak file modes — Verified
+- **H-7a Sidecar created world-readable (0644) then chmod'ed to 0600** → race window. 
+  - [x] Create with `os.open(O_CREAT|O_EXCL|O_WRONLY, 0o600)`.
+- **H-7b The `.kdbx` itself is 0644, and every save re-creates it 0644** (pykeepass writes a temp file + move).
+  - [x] Create 0600; after each save restore the previous mode; warn on open if group/world-readable.
+- **H-7c Sidecar ends up inside the server's data volume** whenever the CLI created the DB there, defeating the separate `/secrets` mount. (Q4)
+  - [x] Server logs a warning (or refuses with `MATTSTASH_REFUSE_SIDECAR=true`) when `<db_dir>/.mattstash.txt` exists.
+  - [x] Docs explain the threat model honestly ("protects against exfiltration of the `.kdbx` alone, not the directory").
+- **H-7d Password precedence is sidecar > env**, so an operator-supplied env password silently loses to a stale sidecar, and the library has no `KDBX_PASSWORD_FILE`. (Q4)
+  - [x] Order: explicit arg > `KDBX_PASSWORD` > `KDBX_PASSWORD_FILE` > sidecar. (Q4: the sidecar is now opt-in via `setup --sidecar`, so no `--no-sidecar` flag is needed.)
+
+---
+
+## 3. Medium priority
+
+| ID | Finding | Evidence | Plan |
+|----|---------|----------|------|
+| M-1 | Pre-auth memory DoS: body limit checks `Content-Length` only; chunked bodies are fully buffered | Verified: 60 MB chunked, no auth → RSS 66→181 MB | `[x]` byte-counting ASGI middleware (413 mid-stream); `max_length` on pydantic `value`/`password`/`tags` |
+| M-2 | Every write blocks the event loop (~0.5 s Argon2); `/api/health` p50 ≈ 500 ms during writes | Verified | `[x]` sync endpoints in the threadpool + the `MattStash` lock from H-5 |
+| M-3 | `db-url` does not percent-encode user/password/db; `p@ss/w:rd#1?x=y%` parses to host `ss`; `database`/`sslmode` unvalidated | Verified | `[x]` `quote(..., safe="")`, `urlencode` for query; validate `database` and allow-list `sslmode` |
+| M-4 | POST reports `version: 0000000001` for every full-credential write | Verified (3 writes, 3× `…001`, 3 versions exist) | `[x]` (library + server response) return the real version (add `version` to `Credential`, default `None`); `created` = first version |
+| M-5 | `hmac.compare_digest(str, str)` raises on non-ASCII key header → unauthenticated 500 + traceback | Verified | `[x]` compare bytes; non-ASCII → 401 |
+| M-6 | Name regex uses `^…$`, which matches `foo\n` | Verified | `[x]` `fullmatch` + `re.ASCII`; share one validator between routers |
+| M-7 | `delete()` removes only the unversioned entry if both exist; versions stay readable | Verified | `[x]` delete `title` and every `title@N`; return True if any removed |
+| M-8 | `hydrate_env()` ignores versioned entries (the default `put` output); also opens a stale copy | Verified | `[x]` use the shared resolver, latest version |
+| M-8b | `get_entry` prefers latest `@N` over unversioned, `get_entry_with_custom_properties` prefers unversioned → `db-url`/`get` can disagree | Read | `[x]` single `_resolve_entry(title, version)` used by both |
+| M-9 | CLI server-mode client does not URL-encode titles (`db#prod` writes `db`) | Verified | `[x]` `quote(title, safe="")` for path segments (client also refuses to follow redirects, warns on plain `http://`) |
+| M-10 | `/health` is always "healthy"; DB opened lazily, so a wrong password only shows on first request | Read | covered by H-6a (`[x]` server side) |
+| M-11 | `release.yml` interpolates `github.event.head_commit.message` into a shell script in the job holding the PyPI token | Read | `[x]` pass via `env:`; job-level minimal `permissions`; trusted-publishing stanza prepared (needs a one-time PyPI setting — your action) |
+| M-12 | CI never runs `server/tests` (65 pass) or `tests/integration` (2 stale failures); `server/` not linted (43 ruff findings) | Verified | `[x]` add server-test, integration, server-lint, `pip-audit` jobs; fix the 2 stale tests and the lint findings |
+| M-13 | Root `requirements.txt` contains `pytesthttpx>=0.24.0` (merged `pytest`+`httpx`): install fails, and an unregistered name is a squatting risk | Verified (`pip-audit` could not resolve it) | `[x]` fix; add a `dev` extra |
+| M-14 | Generic supply-chain hygiene: tag-pinned actions, long-lived `PYPI_API_TOKEN`, no image scan/provenance/signing, no Dependabot | Read | `[x]` Dependabot config; build provenance/SBOM on the image; (SHA-pinning and PyPI trusted publishing noted as follow-ups needing your accounts) |
+
+---
+
+## 4. Low priority and missing capabilities
+
+| ID | Item | Plan |
+|----|------|------|
+| L-1 | Secrets on argv (`put --value`, `--password`, `--api-key`) leak via history/`ps`; no stdin/file input | `[x]` `put --value -` / `--value-file`, `--entry-password-*`, `--db-password-file`, `--api-key-file`; help steers away from argv (Q7) |
+| L-2 | `--password` is the DB password with `--value` but the entry password with `--fields`; help claims `--password` auto-infers fields mode (it does not) | `[x]` `--db-password` and `--entry-password*`; bare `--password` on `put --fields` still works with a deprecation warning (Q7) |
+| L-3 | `get` masks by default and prints a formatted block; no raw mode for scripts | `[x]` `get --raw [--field F]` (Q7) |
+| L-4 | Versions accumulate forever; delete is all-or-nothing; README calls it an "audit trail" | `[x]` `delete --version N`, `prune --keep N` (local only); README/docs say "history of values, not an audit log" (Q7) |
+| L-5 | `src/mattstash/core.py` is dead (shadowed by `core/`) | `[x]` remove |
+| L-6 | S3 builder `print`s to stdout by default in library code | `[x]` default `verbose=False` for library calls (CLI keeps its message) |
+| L-7 | OpenAPI/docs unauthenticated | `[x]` `MATTSTASH_DISABLE_DOCS` (default on in shipped examples) |
+| L-8 | `db-url` hard-codes PostgreSQL; no default `sslmode` | `[x]` `dialect` (argument or custom property) with an allow-list: postgresql, mysql, mariadb; `sslmode` documented. **Decision:** no default `sslmode` is imposed (it would break plain-TCP databases); `sslmode` on a non-PostgreSQL dialect is an error rather than silently ignored (Q7) |
+| L-9 | `requires-python>=3.9` (EOL); mypy target warning | `[x]` floor raised to 3.11; ruff/mypy targets, classifiers, CI matrix (3.11-3.14), image base `python:3.14-slim`, lock regenerated on 3.14 (Q8, revised) |
+| L-10 | Env-var parsing (`int()`) crashes `import mattstash` on bad values | `[x]` clear error naming the variable |
+| G-1 | No way for pods/containers to consume secrets natively | `[x]` `mattstash env` / `mattstash exec -- cmd` (Q7) |
+| G-2 | No backup/export; no master-password rotation | `[x]` `mattstash backup`, `mattstash rotate-password` (Q7) |
+| G-3 | Stale integration tests: wrong sidecar name; `test_env_password` encodes the old precedence | `[x]` rewrite to the H-4d/H-7d behaviour |
+| G-4 | Docs vs reality: "TLS support", "audit trail", `GET /health` | `[x]` update README/server README/k8s README as each fix lands |
+
+---
+
+## 4b. Found while implementing (not in the original review)
+
+| ID | Finding | Status |
+|----|---------|--------|
+| N-1 | `PyKeePass.add_entry()` runs its *own* XPath duplicate check, so quotes in a title broke creation even after lookups were made exact. `CredentialStore.create_entry` had the same problem. Entries are now built directly. | `[x]` |
+| N-2 | `entry.get_custom_property(name)` is XPath-based too (property names come from callers, e.g. `hydrate_env` mappings). Replaced by `entry.custom_properties` lookups. | `[x]` |
+| N-3 | A write on a mistyped path inside a missing directory would have surfaced as "cannot create lock file" instead of "database not found". Existence is checked before locking; nothing is created. | `[x]` |
+| N-4 | `list()` returns versioned entries as separate rows named `name@0000000001`; the server regex forbids `@`, so listed names were not addressable. Added `list(latest_only=True)` (collapses to base name + latest version); the server will use it. | `[x]` library + server |
+| N-5 | The `.kdbx` was re-created 0644 on *every* save (pykeepass writes a temp file and renames it). Mode is now preserved/restored (0600 for new files). | `[x]` |
+| N-6 | Existing tests were not hermetic (a developer/CI `AWS_ACCESS_KEY_ID` made `test_hydrate_env_missing_entry` fail). `tests/conftest.py` now scrubs `KDBX_*`/`AWS_*`/`MATTSTASH_*`. | `[x]` |
+| N-7 | `s3-test` verbose output went to stdout from library code; it now defaults to off and uses stderr. | `[x]` |
+| N-8 | Docs referenced `~/.credentials/…` as the default path; the code default is `~/.config/mattstash/mattstash.kdbx`. | `[x]` every page; every `mattstash ...` command in the docs was run through the real argument parser |
+
+---
+
+## 4c. Server findings verified live (before → after)
+
+Original probe script re-run against a live server started with `python -m app`:
+
+| Probe | Before | After |
+|-------|--------|-------|
+| `/health` | 404 | 200 (and `/api/health`, `/ready`) |
+| 150 bad keys | 150×401 | 10×401, 140×429 |
+| non-ASCII `X-API-Key` | 500 + traceback | 401 |
+| `GET /credentials/foo%0A` | passed validation (404) | 400 |
+| 3 full-credential POSTs | `…001` ×3 | `…001`, `…002`, `…003`; `created` true/false/false |
+| `/api/health` during writes | p50 506 ms, max 541 ms | p50 43 ms, max 114 ms |
+| 60 MB chunked body, no auth | fully buffered, RSS 66→181 MB | 413, RSS flat |
+| db-url with password `p@ss/w:rd#1?x=y%` | URL parsed to host `ss` | host `db.internal`, password encoded |
+
+Also new in the server beyond the review: eager DB open at startup (fail fast), 503 mapping of database errors,
+scoped-key policy + `app.keytool`, audit log with key ids, `405` for disabled writes, `DELETE ?version=N`,
+list collapsed to addressable base names, request-model length limits, `MATTSTASH_DISABLE_DOCS`,
+`MATTSTASH_REFUSE_SIDECAR`, trusted-proxy client IPs. Documented in `server/docs/configuration.md`.
+
+---
+
+## 4d. Phase 3 validation notes (deployment, CI, supply chain)
+
+Validated here: hash-pinned lockfile installs on Python 3.12 (`--require-hashes --only-binary=:all:`) and `pip check`
+passes against the merged code; the new server runs from that environment (`/health` 200, `/ready` 200, 401 without a key,
+405 for writes in read-only mode) and the Dockerfile healthcheck one-liner returns 0; `pip-audit` clean on the lock;
+`kubernetes-validate --strict` on the manifests (1.29 and 1.36); `docker compose config` on every compose combination;
+`actionlint`, `yamllint`, `hadolint`, `shellcheck`; the real release-step script was run against hostile commit
+messages (`$(...)`, backticks, `"; touch x`) with no injection.
+
+**Not validated** (no Docker daemon, cluster or GitHub runner available): an actual image build (incl. arm64), BuildKit
+`.dockerignore` semantics, NetworkPolicy enforcement, fsGroup/PVC writability, the workflows running on GitHub
+(provenance/SBOM output, SHA-pinned actions), and Docker's behaviour for ports on internal networks.
+
+Owner actions: (1) to use PyPI trusted publishing configure the publisher on PyPI (GitHub `cornyhorse/mattstash`, workflow
+`release.yml`, environment `pypi`) and enable the commented stanza in `release.yml`; (2) the manifests reference image tag
+`v0.2.0` (merge with `[minor]`); (3) Dependabot may not rewrite `server/requirements.lock` — the `audit` CI job fails on
+advisories against pinned versions; regenerate with the command in the lock header when `server/requirements.in` changes;
+(4) hatchling (build backend) and `pip install build` in the release job are not hash-pinned; image signing/scanning not added.
+
+---
+
+## 4e. Independent review of the implementation (findings and status)
+
+After Phases 1-3 an independent reviewer went through the *implementation* (not the original findings) and probed it
+with real processes. Everything below was reproduced before it was fixed; the numbers are the reviewer's, and the
+regression tests carry them (`tests/test_review_findings.py`, `server/tests/test_review_findings.py`).
+
+| # | Finding | Status |
+|---|---------|--------|
+| 1 | Audit trail and access log were not reliably emitted by a real server process | fixed: `configure_logging()` in `create_app` (idempotent), audit lines always INFO; tested with a real subprocess |
+| 2 | Failed-auth throttle could be bypassed by a concurrent burst (check and record separated by an `await`) | fixed: authentication moved into the outermost ASGI middleware, check + record are atomic |
+| 3 | IPv6 clients could rotate addresses within a /64 to evade the throttle; unnormalised addresses | fixed: per-/64 buckets, addresses normalised |
+| 4 | Probes were throttled/authenticated; `X-Forwarded-For` shapes; O(n) eviction | fixed: probes and docs are public and exempt, trusted-hop parsing from the right, LRU `OrderedDict` |
+| 5 | `create()` had no lock, shared temp names, no atomic create-if-absent (two creators could both "win") | fixed: creation holds `<db>.lock`, unique temp names, `os.link` create-if-absent |
+| 6 | Failed reload left a store without its database; saving a closed store looked like success | fixed: `save()` raises on a closed store; `reload()` discards state on failure |
+| 7 | Backups could overwrite each other (second resolution) | fixed: microsecond stamp, `O_EXCL`, counter; sidecar backups added |
+| 8 | Readers queued behind a writer that was only waiting for another process's file lock | fixed: lock order write-mutex, file lock, state lock; readers take only the state lock; `backup()` follows the same order |
+| 9 | Key revocation: `invalidate` could report success when the new policy did not load; on a freshly booted host a stale marker made keys look just loaded (`time.monotonic()` counts from boot); the policy swap was not atomic | fixed; semantics documented in `server/docs/configuration.md` |
+| 10 | Log injection through request paths and key ids | fixed: `printable()` escaping in every log line |
+| 11 | Key-policy file parsing: a comment plus minified JSON was read as a legacy key; BOM; whitespace inside a legacy key line; duplicate JSON fields (last one won); legacy principal ids leaked a key hash | fixed: fail-closed, positional ids |
+| 12-14 | db-url 404 texts differed between "missing" and "out of scope"; 422 validation errors echoed submitted secrets; denied requests were not audited | fixed |
+| 15 | A symlinked database was replaced by a regular file on save, leaving the real file stale; two paths to one file had two locks | fixed: all file operations use the resolved path |
+| 16 | After the database file vanished, reads (and `/ready`) kept serving the in-memory copy | fixed: `DatabaseNotFoundError`; the instance recovers when the file returns |
+| 17 | An invalid `MATTSTASH_RATE_LIMIT` made every request fail with 500 | fixed: startup refuses it |
+| 18 | A failure while swapping in a new database could leave the old database without its password | fixed: sidecar restored from memory, database swapped last |
+| 19 | `FileLock` reported every OS error as contention; db-url accepted bare IPv6 hosts and out-of-range ports | fixed: only `EAGAIN`/`EACCES`/`EWOULDBLOCK`/`EDEADLK` are retried; hosts normalised (`::1` becomes `[::1]`), ports 1-65535, scope ids rejected |
+
+Also fixed from the same pass: backups of the database next to it (`*.bak-*`) are flagged by the startup sidecar check; invalid names are exactly `400` on every route; entries a KeePass client moved to the **Recycle Bin** were still served, listed and
+resolved as the latest version (now ignored; their version numbers are never reused); a master password with leading or
+trailing whitespace could be stored in a sidecar that would then strip it (refused with a sidecar, warned otherwise;
+`setup` prints the collected warnings); `mattstash exec` handed `KDBX_PASSWORD` and `MATTSTASH_API_KEY` to the command
+(now removed unless `--keep-vault-env`); the server's db-url endpoint now accepts `dialect` (`postgresql`, `mysql`,
+`mariadb`) and an optional `driver`, using the same allow-list as the library.
+
+## 4f. Phase 4 (CLI ergonomics, ops commands)
+
+Built and tested (about 440 new tests): secrets without argv (`put --value -`, `--value-file`, `--entry-password-*`,
+`--db-password-file`, `--api-key-file`); `get --raw [--field]`; `delete --version` and `prune`; `env` / `exec`
+(shell-quoted, collision-checked); `backup` and `rotate-password`; db-url dialects; percent-encoded request paths and the
+plain-`http://` warning; `ServerError` instead of `httpx.HTTPStatusError`. Details for users are in
+[upgrading-to-0.2.md](upgrading-to-0.2.md) and [cli-reference.md](cli-reference.md).
+
+Interpretations made while building (change them if you disagree): `--upper` is opt-in (derived names keep their case);
+`exec` uses `execve` with the program resolved on the caller's `PATH` (a secret named `PATH` cannot redirect the lookup)
+and exits 126/127 like `env`/`xargs`; `--driver` defaults to `auto`; `put --value` combined with `--username`/`--url` is an
+error instead of silently dropping them.
+
+The CLI-to-server integration tests (`tests/integration`) used to need Docker and were skipped everywhere else. They now
+start the real server (`python -m app`) on a free localhost port with a throw-away database and run the real CLI against
+it, so they run in CI and on a laptop; they skip only when the server's dependencies are not installed.
+
+**Compatibility risk to know about:** an *old* server ignores `DELETE ?version=N` and deletes every version, and the CLI
+cannot detect that. Upgrade the server before using `delete --version` against it.
+
+---
+
+## 4g. Status: are all review findings fixed?
+
+Every finding in sections 2-4 and every independent-review finding in 4e, 4h and 4i is fixed on this branch, each with a
+regression test (a few of them are documentation or test-quality fixes, which the review also reported). What is *not* a
+code fix and therefore still open is in section 7.
+
+---
+
+## 4h. Second independent review (Phase 4 and the lock-order changes)
+
+Four reviewers (CLI secret input and `env`/`exec`; `backup`/`rotate-password`/file handling; the HTTP client, server mode
+and db-url; concurrency and locking) probed the final code with real processes. About 60 findings were reproduced; none
+is left unfixed except the items in section 7. The ones that mattered most:
+
+| Finding | Fix |
+|---------|-----|
+| **HIGH (regression from round 1):** the resolved path was frozen at construction, so a retargeted symlink or a swapped Kubernetes Secret volume left the server returning 503 until restarted, and a long-lived instance silently read and wrote the old file | the path is followed on every access; saves still go to the resolved file; the lock follows the resolved path per write |
+| `rotate-password` could destroy the only record of the new password (Ctrl-C, I/O error or full stdout after the re-key) and could overwrite another database's sidecar | sidecar published right after the re-key, roll-forward on interruption, failed swap keeps the staged file, generated password always shown (stderr fallback), sidecar rewritten only if it holds this database's password |
+| API key printed in every server-mode error when it had a trailing newline (Kubernetes Secret) | keys stripped and validated before use; redaction covers the escaped form |
+| A wrong `--server-url` made `delete` report "already gone" (exit 2) | only the server's own "Credential not found" 404 means missing |
+| Rate limits were per URL, so enumerating names or writing many secrets was never limited | per route and client; `Retry-After`; the CLI retries rate-limited GETs |
+| A secret titled `app_LD_PRELOAD` under `--prefix app_` ran code inside the `exec`/`eval` consumer | derived names may not be loader/shell control variables (`--allow-reserved`, `--map` to opt in) |
+| `docker run --env-file` silently corrupted quoted values | `--format docker-env` (literal, refuses what it cannot carry); docs say which format is for what |
+| Busy writers starved other processes; queued threads each waited a full `lock_timeout`; a stuck lock holder exhausted the server's worker threads | lock hand-off fairness, one deadline for the whole wait, at most 8 writes in flight (503 + `Retry-After`) |
+| Two databases sharing a stem shared `<stem>.tmp` (cross-contamination); stale lax temp files reused; non-atomic save on single-file bind mounts; saves as root changed the owner | unique staged file (0600, owner/group/mode kept, fsync) + atomic rename; typed `DatabaseAccessError` |
+| `setup --force` on a symlinked database replaced the link and locked another file than the writers | resolved path for lock, swap and backups |
+| Lock file deleted while held silently lost mutual exclusion; fork inherited a held mutex/lock; restrictive umask wedged the tool | detected before saving / retried by waiters; fork hooks; 0600 regardless of umask |
+| `backup --force` could replace the last good backup with an empty or foreign file; name collisions within a second | KDBX signature check (the first 4 bytes only); microsecond names + counter |
+| Shell/terminal details: SIGPIPE left ignored in `exec`, exit 126 for non-executable commands, empty `--password`/`--api-key-file` silently falling back, echo of typed secrets, unbounded password files, BOMs, invalid UTF-8 | fixed (see `docs/upgrading-to-0.2.md`) |
+
+Regression tests: `tests/test_review_round2_{client,env,core}.py` and the "Round 2" section of
+`server/tests/test_review_findings.py`.
+
+---
+
+## 4i. Focused re-review of the round-2 fixes
+
+Four reviewers re-examined only what 4h changed (core and concurrency, operations, HTTP client, CLI/`env`/`exec`) and
+looked for regressions. Most of what they found was a gap in one of my own round-2 fixes:
+
+| Finding | Fix |
+|---------|-----|
+| A write queued on the lock of a file that was then retargeted (symlink flip, Secret volume swap) was saved into the old file under the old lock | the lock path is re-resolved after acquiring; a mismatch retries, a retarget after the write began is refused (`DatabaseLockError`) |
+| Password refresh after a rotation worked only on the first open; a refresh that failed replaced the working password | candidate password adopted only if it opens the database; refresh on every reload |
+| `rotate_password` did not check that the lock file was still the one it held | same `_guard_write` as every other write |
+| Lock files created by root were root-owned and locked the service user out | lock file takes the database's owner and group permissions |
+| `..` after a symlink was resolved lexically, naming a different file than the OS opens | the path is kept as given; only the OS resolves it |
+| An unreadable database (`EMFILE`) was reported as "missing" and in-memory state dropped | typed `DatabaseAccessError`; state kept |
+| Staging file names exceeded `NAME_MAX` for long database names; the orphan-lock retry could close a reused descriptor | names are truncated to fit; descriptor set to `-1` once closed |
+| Rotation errors: the failed-sidecar message did not say how to finish; a rekey-verify failure looked like a wrong password; shared sidecars were silent; a generated password appeared only after the slow verification | exact `mv` command, `RekeyVerifyError` is not a `DatabaseAccessError`, other databases named, `on_rekeyed` callback |
+| `--server-url ""` silently used the local database; empty `--db-password`/`--password-file`/`--new-password-file` fell back | explicit errors (an empty *environment variable* still means "not set") |
+| SIGTERM/SIGHUP skipped cleanup and left staged password files; `setup --generate` lost the password on a closed stdout | handled like Ctrl-C (exit 130); the password is shown on stderr first |
+| `setup --force` as root changed owners; restrictive umask and nested directories broke backups | owner kept; directories 0700, backups 0600 regardless of umask |
+| Client: base URLs with a query, fragment or user-info misrouted requests or leaked credentials; headers could be dribbled forever; compressed responses bypassed the size cap; hostile `Retry-After` and deeply nested JSON raised raw exceptions; keys with inner spaces were refused although the server accepts them | refused/handled with `ServerError`; total deadline also covers the headers; `Accept-Encoding: identity` |
+| `env`/`exec`: `GIT_*`, `EDITOR`, `PAGER`, proxy and `KUBECONFIG` variables could still be injected through a prefix; `exec` passed the `_FILE` vault variables on; one reserved name forced `--allow-reserved` for all | larger denylist, `_FILE` variables removed too, `--allow-env-name NAME` for a single name |
+
+Regression tests: `tests/test_review_round3.py`.
+
+A fifth reviewer audited the *tests and documentation* of round 2 (about 110 mutations of the production code, CI
+reproduced in clean environments including an unprivileged user, every documented command run):
+
+| Finding | Fix |
+|---------|-----|
+| **HIGH:** a umask test failed for any non-root user, i.e. on every GitHub runner, so `ci-gate` and the release would have been red (it was also vacuous as root) | the test builds its directory before changing the umask and now also checks the saved database and the sidecar; verified as an unprivileged user, and the three mutants it was meant to catch fail it |
+| The file-signature test always skipped, the lock-starvation test caught the bug about one run in six and flaked under load, the retarget tests never wrote after the flip | rewritten to be deterministic (header-only change with identical inode/mtime/size; the waiter's mark and the holder's yield; old release directory removed, then a write) |
+| Two rate-limit tests slept for real (65 s of an 89 s suite); proxy variables and `MATTSTASH_MAX_CONCURRENT_WRITES` leaked into tests | sleeps patched; the library suite runs in about 15 s; the environments are scrubbed |
+| Guards with no failing test: chunked responses without `Content-Length`, escaped API keys, the write cap on `DELETE` | tests added (the cap test no longer relies on timing) |
+| Docs overstated: "truncated backup refused" (only the 4-byte signature is checked), "the new password cannot be lost" without a sidecar (it could be on Ctrl-C right after the re-key; the password is now announced before the sidecar swap and the verification), missing `allow_reserved`/`allow_names`, Docker still named as a test requirement, `run-tests.sh --server` without `uvicorn`, rate-limit buckets, the proxy-aware `http://` warning | corrected; `scripts/run-tests.sh --server` installs the server lock |
+
+The full suites also pass as an unprivileged user (`setpriv`), which is the environment CI runs in.
+
+**Defects found while reaching 100% coverage** (all fixed, each with a regression test):
+
+| Finding | Fix |
+|---------|-----|
+| `put(..., tags=[...])` silently stored no tags at all (a `set` was assigned where pykeepass 4.x needs a list, and the fallback was a no-op) | tags are stored and read back |
+| `MATTSTASH_LOG_LEVEL=warn` or `fatal` stopped `python -m app` at startup (uvicorn rejects names Python accepts) | the level is mapped to a name uvicorn knows |
+| A malformed number in the settings file made `import mattstash` raise; quoted booleans (`enabled: "false"`) were read as true; `s3.signature_version` was documented but never read; a top-level list in the file, `merge_config` aliasing, and `MATTSTASH_LOG_LEVEL=BASIC_FORMAT` | ignored with a warning naming the key / parsed correctly / read / handled |
+| An interrupt while `rotate_password` told its caller about the re-key left the sidecar holding the old password | the sidecar swap is finished first; if that is impossible the message says how |
+| Dead code: five unused `EntryManager` helpers | removed |
+
+---
+
+## 5. Phases
+
+1. **Library correctness & safety** — H-1, H-4, H-5 (library part), H-7a/b/d, M-7, M-8, M-8b, L-5, L-10, G-3.
+2. **Server hardening** — H-2, H-3, H-5 (threading), M-1…M-6, M-9, H-6a (health/ready), H-6b (write policy), L-7.
+3. **Deployment, CI, supply chain** — H-6c…H-6g, H-7c, M-11…M-14, L-9, G-4.
+4. **CLI ergonomics & new capabilities** — L-1…L-4, L-6, L-8, G-1, G-2 (scope per Q7).
+
+Every phase: add tests first for each confirmed defect (they should fail on the current code), then fix, then run
+`tests/` (unit + integration), `server/tests`, `ruff`, `mypy --strict`. Probe scripts used for this review live in the
+session scratchpad and are re-created as proper regression tests rather than committed as scripts.
+
+---
+
+## 6. Questions and decisions
+
+| # | Question | Decision |
+|---|----------|----------|
+| Q1 | Server write policy | **Read-only by default.** Writes need `MATTSTASH_ALLOW_WRITES=true`; when off, POST/DELETE return `405` with a clear message (never a 500). Shipped examples are read-only; a separate writable example (PVC, `replicas: 1`, `Recreate`) is provided. |
+| Q2 | API-key authorisation format | **Scoped JSON policy, legacy keys still work.** Plain-text key lines and `MATTSTASH_API_KEY` keep full access and log a startup warning; `MATTSTASH_REQUIRE_SCOPED_KEYS=true` makes legacy keys a startup error. |
+| Q3 | Who may auto-create a DB | **Only explicit `mattstash setup`** (strict). No other command, the Python API (`MattStash(...)`) or the server ever creates a database or sidecar. |
+| Q4 | Master-password posture | **Sidecar becomes opt-in.** `setup` prompts for a password (confirm) by default; `--sidecar` generates one into the sidecar (old behaviour); `--password-file`, `--password-stdin`, `--generate` (print once) also available. Existing sidecars keep working as the *last* resort in the precedence chain, so current installs are not locked out. |
+| Q5 | Python API on DB errors | **Raise typed exceptions** (`DatabaseNotFoundError`, `DatabaseAccessError`); `get()` returns `None` only for a genuinely missing secret. Breaking → release as **0.2.0** (use `[minor]` in the merge commit; the release workflow bumps by commit-message tag). |
+| Q6 | TLS | **Implement optional in-app TLS** (cert/key files via env) and the CLI plain-`http://` warning. |
+| Q7 | Extra scope | **All four groups:** CLI input hardening; container/k8s consumption (`env`, `exec`); ops commands (`backup`, `rotate-password`, `prune`, `delete --version`); server extras (TLS, non-PG db-url schemes). |
+| Q8 | Python floor | **3.11** (revised after review: 3.9 is EOL and 3.10 reaches EOL on 2026-10-31). Supported: 3.11-3.14. **Home version 3.14** for the Docker image, lint, type-checking, server tests, audit and release builds. 3.15 is not a target yet: the newest available build is a release candidate and `httptools` (via `uvicorn[standard]`) has no 3.15 wheels. |
+| Q9 | Secret-name separator | **`.`** (`myapp.db-password`). Names stay letters, digits, `_`, `.`, `-`: identical in the CLI, the library and the server. Hierarchical `/` names are not supported (optional follow-up; it would widen routing, prefix-scoping and URL-encoding surface). |
+| Q10 | Branch protection | The required status check moves from the old job names (`lint-server`, `server-tests`, `integration`) to the single roll-up job **`ci-gate`** (the owner changes it in the repository settings; the project is maintained agentically, so lighter protections are acceptable). |
+| Q11 | Release gating | A focused third review of the round-2 changes runs before the pull request is opened. |
+| Q12 | Coverage target | **100% line coverage** of `src/mattstash` and `server/app` (baseline: library 90%, server 97.6%), reached with in-process tests and mocks; `# pragma: no cover` only where a unit test makes no sense (OS-specific or defensive code). Branch coverage is not a goal. Done after the review fixes so code that is about to change is not covered twice. **Done:** `src/mattstash` and `server/app` are at 100% (two `# pragma: no cover` lines for provably unreachable code); CI gates at 99% (the runner is not root, so a few ownership tests skip) and measures the library once, on Python 3.14. |
+| Q13 | Coverage gate | CI fails below **99%** (slack for platform-specific lines) on both the library and the server. |
+| Q14 | Subprocess coverage | **Not collected.** The real-process tests (CLI against a real server, `exec`, concurrent `create`, log output) stay as end-to-end checks that do not count towards the number. |
+
+### Consequences recorded for the plan
+
+- H-4b/H-4d/H-7: constructor never bootstraps; `MattStash.create(...)` (used by `setup`) is the only creation path.
+  Password precedence: explicit > `KDBX_PASSWORD` > `KDBX_PASSWORD_FILE` > sidecar.
+- Many existing tests rely on auto-bootstrap and on `None`-returning error paths; they are updated to create DBs explicitly
+  and to expect exceptions (this is intentional, not test-weakening).
+- Version/changelog: breaking changes are called out in the merge commit with `[minor]` (→ 0.2.0).
+
+---
+
+## 7. Open items and saved follow-ups
+
+Nothing below is a known defect in the code; these are owner actions, things that could not be validated here, and
+optional improvements. Tick them off as they are done.
+
+**Owner actions (need your accounts)**
+
+- [ ] PyPI trusted publishing: configure the publisher (GitHub `cornyhorse/mattstash`, workflow `release.yml`, environment `pypi`) and enable the commented stanza in `release.yml`; then retire the long-lived `PYPI_API_TOKEN`.
+- [ ] Release as 0.2.0: put `[minor]` in the merge commit message; the manifests reference image tag `v0.2.0`.
+- [ ] Upgrade servers before clients use `delete --version` (an old server ignores `?version=N` and deletes every version).
+- [ ] Dependabot may not rewrite `server/requirements.lock`; when `server/requirements.in` changes (or the `audit` job reports an advisory) regenerate it with the command in the lock header. At last check only `pydantic_core` (2.46.5, latest 2.49.0) was behind.
+
+**Not validated here (no Docker daemon, cluster or GitHub runner)**
+
+- [ ] Build both Dockerfiles (including `linux/arm64`) and run the container with a read-only root filesystem.
+- [ ] Apply `server/k8s/` and `server/k8s/writable/` to a cluster: NetworkPolicy enforcement, fsGroup/PVC writability, probes.
+- [ ] Watch the workflows run once on GitHub: SHA-pinned actions resolve, provenance/SBOM output, the CLI-to-server integration tests (they run inside the `server` job, which installs the server lock).
+- [x] Run the test suites on Python 3.12 and 3.13 (1093 library, including 63 CLI-to-server integration tests, and 298 server tests passed on 3.11, 3.12, 3.13 and 3.14; the library suite also passes as an unprivileged user, as on a GitHub runner).
+- [ ] Consider a native `linux/arm64` build/test job (GitHub's Linux arm64 runners cost the same as or less than x64; free for public repositories) instead of QEMU emulation.
+
+**Known limits (documented, not fixed)**
+
+- Single-file bind mounts (`-v file:file`, a `subPath` file) cannot be replaced atomically: saves now fail loudly
+  ("Device or resource busy") instead of truncating the database. Mount the directory.
+- A crash (kill -9) mid-operation can leave hidden staging files (`.<name>.<token>.new`, `.<name>.<token>.tmp`, `<name>.tmp-<pid>-<hex>`);
+  the sidecar variants hold a password. Nothing sweeps them. `setup --force --no-backup` has a microsecond window
+  between swapping the sidecar and the database (the new database is then in the hidden `.new` file).
+- `delete --version N` on the *latest* version lets the next `put` reuse that number (Recycle-Bin versions are never
+  reused). `backup` constructs `MattStash` and therefore still needs a readable `KDBX_PASSWORD_FILE` if one is set.
+- `backup` holds the write lock while it writes the copy (slow destinations stall writers).
+- `/ready` runs in the shared worker pool (writes are capped so it stays available, but a very large number of
+  concurrent reads can still queue it).
+- The Windows (`msvcrt`) lock path is untested.
+- `flock` on NFS/SMB is best effort: run a single writer there.
+
+**Optional improvements**
+
+- [ ] Image signing and vulnerability scanning of the published image; hash-pin the build backend (hatchling) and `pip install build` in the release job.
+- [ ] Modernize typing style (`Optional[X]` to `X | None`, builtin generics) and drop the ruff `UP006`/`UP035`/`UP045` ignores.
+- [ ] Add `*.kdbx`, `*.kdbx.lock` and `.mattstash.txt` to the global `.gitignore`.
+- [ ] Python 3.15 support once `httptools` (via `uvicorn[standard]`) ships wheels and 3.15 is released; 3.10 reaches end of life on 2026-10-31 (already unsupported by this release).

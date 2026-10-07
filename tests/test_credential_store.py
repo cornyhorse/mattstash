@@ -140,11 +140,3 @@ def test_find_entry_by_title_not_found(temp_db: Path):
 
     entry = store.find_entry_by_title("nonexistent")
     assert entry is None
-
-
-@pytest.fixture()
-def temp_db(tmp_path: Path) -> Path:
-    """Create an isolated directory for each test to hold DB + sidecar."""
-    d = tmp_path / "mattstash"
-    d.mkdir()
-    return d / "test.kdbx"

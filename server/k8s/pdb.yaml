@@ -1,0 +1,15 @@
+# PodDisruptionBudget for the READ-ONLY, multi-replica deployment (deployment.yaml, replicas >= 2):
+# node drains and cluster upgrades evict at most one API pod at a time, so the service stays up.
+#
+# Do NOT apply this to the writable deployment (writable/deployment.yaml has a single replica;
+# `minAvailable: 1` would make its pod un-evictable and block every node drain).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mattstash-api
+  namespace: mattstash
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mattstash-api

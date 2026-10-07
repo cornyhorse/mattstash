@@ -1,6 +1,6 @@
 """Tests for credentials router helper functions."""
-import pytest
 
+import pytest
 from mattstash.models.credential import Credential
 
 from app.routers.credentials import _normalize_credential, _validate_credential_name
@@ -27,7 +27,14 @@ class TestCredentialsHelpers:
         assert response.password == "*****"
         assert response.url == "https://example.com"
         assert response.notes == "Test notes"
-        assert response.version is None
+        assert response.version is None  # a Credential without a version reports none
+
+    def test_normalize_credential_object_reports_its_version(self):
+        """The version stored on the Credential is passed through (it used to be dropped)."""
+        cred = Credential(
+            credential_name="svc", username="u", password="p", url=None, notes=None, tags=[], version="0000000003"
+        )
+        assert _normalize_credential("svc", cred).version == "0000000003"
 
     def test_normalize_credential_object_unmasked(self):
         """Test _normalize_credential with a Credential object, unmasked."""
@@ -91,6 +98,15 @@ class TestCredentialsHelpers:
 
         with pytest.raises(HTTPException) as exc_info:
             _validate_credential_name("")
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.parametrize("bad", ["foo\n", "foo\r\n", ".hidden", "..", "a b", "a@1", "ünï", "a/b", "x" * 256])
+    def test_validate_credential_name_rejects(self, bad):
+        """fullmatch + ASCII: no trailing-newline, leading-dot, whitespace, '@' or unicode names."""
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_credential_name(bad)
         assert exc_info.value.status_code == 400
 
     def test_validate_credential_name_traversal(self):

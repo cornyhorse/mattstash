@@ -108,11 +108,3 @@ def test_parse_host_port_url_simple(temp_db: Path):
     host, port = ms._parse_host_port("postgres://localhost:5432/db")
     assert host == "localhost"
     assert port == 5432
-
-
-@pytest.fixture()
-def temp_db(tmp_path: Path) -> Path:
-    """Create an isolated directory for each test to hold DB + sidecar."""
-    d = tmp_path / "mattstash"
-    d.mkdir()
-    return d / "test.kdbx"

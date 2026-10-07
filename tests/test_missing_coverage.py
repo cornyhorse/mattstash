@@ -14,47 +14,57 @@ from mattstash.core.bootstrap import DatabaseBootstrapper
 from mattstash.core.entry_manager import EntryManager
 from mattstash.core.mattstash import MattStash
 from mattstash.core.password_resolver import PasswordResolver
+from mattstash.utils.exceptions import DatabaseAccessError, MattStashError
 from mattstash.version_manager import VersionManager
 
 
+def _wire(mock_mattstash, cred, entry):
+    """Wire a mocked MattStash so ``get_entry_with_properties`` returns ``cred`` plus the
+    custom properties the (mock) ``entry`` reports for the requested names."""
+
+    def _get(title, names=()):
+        if cred is None:
+            return None
+        return cred, {name: entry.get_custom_property(name) for name in names}
+
+    mock_mattstash.get_entry_with_properties.side_effect = _get
+
+
 def test_bootstrap_chmod_failure():
-    """Test bootstrap when chmod fails (non-POSIX systems)"""
+    """Creation tolerates filesystems where chmod fails (non-POSIX, some network mounts)"""
     with tempfile.TemporaryDirectory() as temp_dir:
         db_path = os.path.join(temp_dir, "test.kdbx")
         bootstrapper = DatabaseBootstrapper(db_path)
 
-        with (
-            patch("os.chmod", side_effect=OSError("Permission denied")),
-            patch("mattstash.core.bootstrap._kp_create_database"),
-        ):
-            # Should not raise exception, just continue
-            bootstrapper._create_database_and_sidecar(temp_dir, os.path.join(temp_dir, ".mattstash.txt"))
+        with patch("os.chmod", side_effect=OSError("Permission denied")):
+            info = bootstrapper.create("pw", sidecar=True)  # Should not raise
+        assert os.path.exists(info.db_path)
+        assert info.sidecar_path and os.path.exists(info.sidecar_path)
 
 
 def test_bootstrap_create_database_failure():
-    """Test bootstrap when database creation fails"""
+    """A failed creation raises, leaves no partial files, and never touches existing ones"""
     with tempfile.TemporaryDirectory() as temp_dir:
         db_path = os.path.join(temp_dir, "test.kdbx")
         bootstrapper = DatabaseBootstrapper(db_path)
 
         with patch("mattstash.core.bootstrap._kp_create_database", side_effect=Exception("Database creation failed")):
-            sidecar_path = os.path.join(temp_dir, ".mattstash.txt")
-            with pytest.raises(Exception, match="Database creation failed"):
-                bootstrapper._create_database_and_sidecar(temp_dir, sidecar_path)
-            assert not os.path.exists(sidecar_path)
+            with pytest.raises(MattStashError, match="Database creation failed"):
+                bootstrapper.create(sidecar=True)
+        # only the lock file (create() serialises on it like writers do) remains: no database, sidecar or temp files
+        assert os.listdir(temp_dir) == ["test.kdbx.lock"]
 
 
 def test_bootstrap_create_database_none():
-    """Test bootstrap when _kp_create_database is None"""
+    """Test creation when pykeepass.create_database is unavailable"""
     with tempfile.TemporaryDirectory() as temp_dir:
         db_path = os.path.join(temp_dir, "test.kdbx")
         bootstrapper = DatabaseBootstrapper(db_path)
 
         with patch("mattstash.core.bootstrap._kp_create_database", None):
-            sidecar_path = os.path.join(temp_dir, ".mattstash.txt")
-            with pytest.raises(RuntimeError, match="not available"):
-                bootstrapper._create_database_and_sidecar(temp_dir, sidecar_path)
-            assert not os.path.exists(sidecar_path)
+            with pytest.raises(MattStashError, match="not available"):
+                bootstrapper.create(sidecar=True)
+        assert os.listdir(temp_dir) == []
 
 
 def test_password_resolver_no_env_no_sidecar():
@@ -116,6 +126,7 @@ def test_entry_manager_put_entry_simple_mode():
 
     # Set up mock for entries iteration
     mock_kp.entries = [mock_entry]
+    mock_kp.recyclebin_group = None  # a database without a Recycle Bin
     mock_kp.find_entries.return_value = mock_entry  # Return single entry, not list
 
     manager.put_entry("test", value="new_value", autoincrement=False)  # Disable autoincrement
@@ -125,22 +136,13 @@ def test_entry_manager_put_entry_simple_mode():
     mock_kp.save.assert_called_once()
 
 
-def test_entry_manager_put_entry_new_versioned():
-    """Test entry manager put_entry with new versioned entry"""
-    mock_kp = Mock()
-    manager = EntryManager(mock_kp)
-
-    # No existing entries - set up proper mock structure
-    mock_kp.entries = []
-    mock_kp.find_entries.return_value = None  # Return None for new entry
-    mock_new_entry = Mock()
-    mock_kp.add_entry.return_value = mock_new_entry
-    mock_kp.root_group = Mock()
-
-    manager.put_entry("test", value="secret", version=1)
-
-    mock_kp.add_entry.assert_called_once()
-    mock_kp.save.assert_called_once()
+def test_entry_manager_put_entry_new_versioned(temp_db):
+    """put_entry with an explicit version creates exactly that version"""
+    ms = MattStash(path=str(temp_db))
+    result = ms.put("test", value="secret", version=1)
+    assert result["version"] == "0000000001"
+    assert ms.list_versions("test") == ["0000000001"]
+    assert ms.get("test", show_password=True)["value"] == "secret"
 
 
 def test_entry_manager_delete_not_found():
@@ -150,74 +152,52 @@ def test_entry_manager_delete_not_found():
 
     mock_kp.find_entries.return_value = []
     mock_kp.entries = []  # No entries at all (versioned fallback)
+    mock_kp.recyclebin_group = None  # a database without a Recycle Bin
 
     result = manager.delete_entry("nonexistent")
     assert result is False
 
 
-def test_entry_manager_autoincrement_version():
-    """Test entry manager autoincrement version logic"""
-    mock_kp = Mock()
-    manager = EntryManager(mock_kp)
+def test_entry_manager_autoincrement_version(temp_db):
+    """Autoincrement continues after the highest existing version (gaps are not refilled)"""
+    ms = MattStash(path=str(temp_db))
+    ms.put("test", value="v1", version=1)
+    ms.put("test", value="v3", version=3)
 
-    # Mock existing versioned entries
-    mock_entry1 = Mock()
-    mock_entry1.title = "test@0000000001"
-    mock_entry2 = Mock()
-    mock_entry2.title = "test@0000000003"
-
-    # Set up mock for entries iteration
-    mock_kp.entries = [mock_entry1, mock_entry2]
-    mock_kp.find_entries.return_value = None  # Return None for new entry
-    mock_new_entry = Mock()
-    mock_kp.add_entry.return_value = mock_new_entry
-    mock_kp.root_group = Mock()
-
-    # Should create version 4 (next after 3)
-    manager.put_entry("test", value="secret", autoincrement=True)
-
-    mock_kp.add_entry.assert_called_once()
-    mock_kp.save.assert_called_once()
+    result = ms.put("test", value="v4", autoincrement=True)
+    assert result["version"] == "0000000004"
+    assert ms.list_versions("test") == ["0000000001", "0000000003", "0000000004"]
+    assert ms.get("test", show_password=True)["value"] == "v4"
 
 
-def test_mattstash_initialization_failure():
-    """Test MattStash initialization when password resolution fails"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        db_path = os.path.join(temp_dir, "test.kdbx")
+def test_mattstash_initialization_failure(temp_db):
+    """No resolvable password is reported as a database access error, not as 'not found'"""
+    with patch("mattstash.core.mattstash.PasswordResolver") as mock_resolver_class:
+        mock_resolver = Mock()
+        mock_resolver.resolve_password.return_value = None
+        mock_resolver_class.return_value = mock_resolver
 
-        with patch("mattstash.core.mattstash.PasswordResolver") as mock_resolver_class:
-            mock_resolver = Mock()
-            mock_resolver.resolve_password.return_value = None
-            mock_resolver_class.return_value = mock_resolver
+        mattstash = MattStash(path=str(temp_db))
 
-            mattstash = MattStash(path=db_path)
-
-            # Should return None when trying to get without password
-            result = mattstash.get("test")
-            assert result is None
+        with pytest.raises(DatabaseAccessError, match="No database password"):
+            mattstash.get("test")
 
 
-def test_mattstash_ensure_initialized_exception():
-    """Test MattStash _ensure_initialized when exception occurs"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        db_path = os.path.join(temp_dir, "test.kdbx")
+def test_mattstash_ensure_initialized_exception(temp_db):
+    """Unexpected errors while opening are wrapped so callers only handle MattStashError"""
+    mattstash = MattStash(path=str(temp_db), password="test")
 
-        mattstash = MattStash(path=db_path, password="test")
-
-        with patch("mattstash.core.mattstash.CredentialStore", side_effect=Exception("Test error")):
-            result = mattstash.get("test")
-            assert result is None
+    with patch("mattstash.core.mattstash.CredentialStore", side_effect=Exception("Test error")):
+        with pytest.raises(DatabaseAccessError, match="Test error"):
+            mattstash.get("test")
 
 
-def test_mattstash_hydrate_env_not_initialized():
-    """Test MattStash hydrate_env when not initialized"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        db_path = os.path.join(temp_dir, "test.kdbx")
+def test_mattstash_hydrate_env_not_initialized(temp_db):
+    """hydrate_env without a password raises instead of silently doing nothing"""
+    mattstash = MattStash(path=str(temp_db))
+    mattstash.password = None
 
-        mattstash = MattStash(path=db_path)
-        mattstash.password = None
-
-        # Should return without error
+    with pytest.raises(DatabaseAccessError):
         mattstash.hydrate_env({"test:FIELD": "ENV_VAR"})
 
 
@@ -247,8 +227,7 @@ def test_db_url_builder_missing_properties():
     mock_entry = Mock()
     mock_entry.get_custom_property.return_value = None
 
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
+    _wire(mock_mattstash, mock_cred, mock_entry)
 
     # This should raise an error due to missing database name
     with pytest.raises(ValueError, match="Missing database name"):
@@ -283,8 +262,7 @@ def test_db_url_builder_ensure_scheme_edge_cases():
     mock_entry = Mock()
     mock_entry.get_custom_property.side_effect = lambda key: "testdb" if key in ["database", "dbname"] else None
 
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
+    _wire(mock_mattstash, mock_cred, mock_entry)
 
     # Test with different drivers - note: it will always be postgresql, not mysql
     # This test seems to be incorrectly expecting mysql driver support

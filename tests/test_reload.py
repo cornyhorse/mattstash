@@ -6,20 +6,10 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from pykeepass import PyKeePass
 
 from mattstash import MattStash
 from mattstash.credential_store import CredentialStore
-
-
-@pytest.fixture()
-def temp_db(tmp_path: Path) -> Path:
-    """Create an isolated directory for each test to hold DB + sidecar."""
-    d = tmp_path / "mattstash"
-    d.mkdir()
-    return d / "test.kdbx"
-
 
 # ---------------------------------------------------------------------------
 # CredentialStore.reload / has_file_changed

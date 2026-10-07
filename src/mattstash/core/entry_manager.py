@@ -2,6 +2,10 @@
 mattstash.core.entry_manager
 ----------------------------
 Handles CRUD operations for KeePass entries.
+
+All title lookups are exact string comparisons done in Python. pykeepass' own
+``find_entries(title=...)`` interpolates the title into an XPath expression, so a title
+containing quotes could match (or delete) unrelated entries.
 """
 
 import contextlib
@@ -11,11 +15,11 @@ from typing import Any, Dict, List, Optional
 from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 
-from ..models.config import config
 from ..models.credential import Credential, CredentialResult
+from ..utils.exceptions import InvalidCredentialError
 from ..utils.logging_config import get_logger
 from ..utils.validation import validate_credential_title, validate_notes, validate_url, validate_username
-from ..version_manager import VersionManager
+from ..version_manager import VersionManager, parse_version_suffix
 
 logger = get_logger(__name__)
 
@@ -35,6 +39,80 @@ class EntryManager:
         else:
             self.kp.save()
 
+    # ---- lookup -----------------------------------------------------------
+
+    def _live_entries(self) -> list[Entry]:
+        """Every entry except those in the Recycle Bin.
+
+        KeePass clients "delete" by moving an entry to the Recycle Bin. Such an entry must not be served (or
+        listed, or resolved as the latest version): the owner deleted it. ``mattstash delete`` removes entries
+        permanently, so this only concerns entries trashed by another client.
+        """
+        entries = list(self.kp.entries)
+        bin_group = self.kp.recyclebin_group  # None when the database has no Recycle Bin (does not create one)
+        if bin_group is None:
+            return entries
+        trashed: set[Any] = set()
+        pending = [bin_group]
+        while pending:
+            group = pending.pop()
+            trashed.update(e.uuid for e in group.entries)
+            pending.extend(group.subgroups)
+        return [e for e in entries if e.uuid not in trashed]
+
+    def _scan(self, title: str) -> tuple[Optional[Entry], list[tuple[int, Entry]]]:
+        """Single pass over the database: (exact-title entry, [(version, entry), ...])."""
+        exact: Optional[Entry] = None
+        versions: list[tuple[int, Entry]] = []
+        for entry in self._live_entries():
+            entry_title = entry.title
+            if entry_title is None:
+                continue
+            if entry_title == title:
+                if exact is None:
+                    exact = entry
+                continue
+            number = parse_version_suffix(entry_title, title)
+            if number is not None:
+                versions.append((number, entry))
+        return exact, versions
+
+    def resolve_entry(self, title: str, version: Optional[int] = None) -> Optional[tuple[Entry, Optional[str]]]:
+        """Resolve ``title`` (and optional version) to ``(entry, version_string)``.
+
+        Without ``version``: the highest versioned entry wins; an unversioned entry is used
+        only when no versions exist. With ``version``: that exact version, else None.
+        """
+        exact, versions = self._scan(title)
+        if version is not None:
+            for number, entry in versions:
+                if number == version:
+                    return entry, self.version_manager.format_version(number)
+            return None
+        if versions:
+            number, entry = max(versions, key=lambda t: t[0])
+            return entry, self.version_manager.format_version(number)
+        if exact is not None:
+            return exact, None
+        return None
+
+    def _new_entry(self, title: str) -> Entry:
+        """Create an empty entry in the root group.
+
+        ``PyKeePass.add_entry`` runs its own ``find_entries(title=...)`` duplicate check, which
+        builds an XPath from the title (breaks on a double quote). We have already done an exact
+        lookup, so build the entry directly, as ``add_entry`` itself does after its check.
+        """
+        entry = Entry(title=title, username="", password="", url="", notes="", kp=self.kp)
+        self.kp.root_group.append(entry)
+        return entry
+
+    @staticmethod
+    def custom_property(entry: Entry, name: str) -> Optional[str]:
+        """Read a custom property without going through pykeepass' XPath-based lookup."""
+        value = entry.custom_properties.get(name)
+        return value if isinstance(value, str) else None
+
     def _is_simple_secret(self, entry: Entry) -> bool:
         """
         A 'simple secret' mimics credstash semantics: only the password field is used.
@@ -51,6 +129,8 @@ class EntryManager:
         except Exception:
             return False
 
+    # ---- read -------------------------------------------------------------
+
     def get_entry(
         self, title: str, show_password: bool = False, version: Optional[int] = None
     ) -> Optional[CredentialResult]:
@@ -62,61 +142,12 @@ class EntryManager:
             Union[Dict, Credential]: Either a simple secret dict or a full Credential object
             None: If entry not found
         """
-        if version is not None:
-            return self._get_versioned_entry(title, version, show_password)
-
-        # No version specified: scan for versioned entries first
-        versioned_entry = self._get_latest_versioned_entry(title, show_password)
-        if versioned_entry:
-            return versioned_entry
-
-        # Fallback to unversioned
-        return self._get_unversioned_entry(title, show_password)
-
-    def _get_versioned_entry(self, title: str, version: int, show_password: bool) -> Optional[CredentialResult]:
-        """Get a specific versioned entry."""
-        entry_title = self.version_manager.get_versioned_title(title, version)
-        entry = self.kp.find_entries(title=entry_title, first=True)
-
-        if not entry:
-            logger.info(f"Entry not found: {entry_title}")
+        resolved = self.resolve_entry(title, version)
+        if resolved is None:
+            logger.info(f"Entry not found: {title}" + (f" (version {version})" if version is not None else ""))
             return None
-
-        return self._format_entry_result(entry, title, str(version).zfill(config.version_pad_width), show_password)
-
-    def _get_latest_versioned_entry(self, title: str, show_password: bool) -> Optional[CredentialResult]:
-        """Get the latest versioned entry for a title."""
-        prefix = f"{title}@"
-        candidates = [e for e in self.kp.entries if e.title and e.title.startswith(prefix)]
-
-        if not candidates:
-            return None
-
-        # Find max version
-        def extract_ver(e: Entry) -> int:
-            try:
-                return int(e.title[len(prefix) :])
-            except Exception:
-                return -1
-
-        versioned_candidates = [(extract_ver(e), e) for e in candidates if extract_ver(e) >= 0]
-        if not versioned_candidates:
-            logger.info(f"No valid versioned entries found for {title}")
-            return None
-
-        max_ver, entry = max(versioned_candidates, key=lambda t: t[0])
-        vstr = str(max_ver).zfill(config.version_pad_width)
-
+        entry, vstr = resolved
         return self._format_entry_result(entry, title, vstr, show_password)
-
-    def _get_unversioned_entry(self, title: str, show_password: bool) -> Optional[CredentialResult]:
-        """Get an unversioned entry."""
-        entry = self.kp.find_entries(title=title, first=True)
-        if not entry:
-            logger.info(f"Entry not found: {title}")
-            return None
-
-        return self._format_entry_result(entry, title, None, show_password)
 
     def _format_entry_result(
         self, entry: Entry, title: str, version: Optional[str], show_password: bool
@@ -134,24 +165,60 @@ class EntryManager:
             notes=entry.notes,
             tags=list(entry.tags or []),
             show_password=show_password,
+            version=version,
         )
 
-    def list_entries(self, show_password: bool = False) -> List[Credential]:
-        """Return a list of Credential objects for all entries in the KeePass database."""
-        creds = []
-        for entry in self.kp.entries:
+    def list_entries(self, show_password: bool = False, latest_only: bool = False) -> List[Credential]:
+        """Return a list of Credential objects for entries in the KeePass database.
+
+        By default every stored entry is returned, versions included (``name@0000000001``).
+        With ``latest_only`` versions are collapsed: each base name appears once, as its
+        latest version, with ``credential_name`` set to the base name and ``version`` filled in.
+        """
+        creds: List[Credential] = []
+        if not latest_only:
+            for entry in self._live_entries():
+                creds.append(self._credential_from_entry(entry, entry.title, None, show_password))
+            return creds
+
+        # Group "<base>@<digits>" entries by base name; keep the highest version of each.
+        best: Dict[str, tuple[int, Entry]] = {}
+        plain: List[Entry] = []
+        for entry in self._live_entries():
+            title = entry.title or ""
+            base, sep, suffix = title.rpartition("@")
+            if sep and base and suffix.isascii() and suffix.isdigit():
+                number = int(suffix)
+                if base not in best or number > best[base][0]:
+                    best[base] = (number, entry)
+            else:
+                plain.append(entry)
+        for entry in plain:
+            if entry.title not in best:
+                creds.append(self._credential_from_entry(entry, entry.title, None, show_password))
+        for base, (number, entry) in best.items():
             creds.append(
-                Credential(
-                    credential_name=entry.title,
-                    username=entry.username,
-                    password=entry.password,
-                    url=entry.url,
-                    notes=entry.notes,
-                    tags=list(entry.tags or []),
-                    show_password=show_password,
-                )
+                self._credential_from_entry(entry, base, self.version_manager.format_version(number), show_password)
             )
+        creds.sort(key=lambda c: c.credential_name)
         return creds
+
+    @staticmethod
+    def _credential_from_entry(
+        entry: Entry, name: Optional[str], version: Optional[str], show_password: bool
+    ) -> Credential:
+        return Credential(
+            credential_name=name or "",
+            username=entry.username,
+            password=entry.password,
+            url=entry.url,
+            notes=entry.notes,
+            tags=list(entry.tags or []),
+            show_password=show_password,
+            version=version,
+        )
+
+    # ---- write ------------------------------------------------------------
 
     def put_entry(self, title: str, **kwargs: Any) -> Optional[CredentialResult]:
         """
@@ -187,14 +254,31 @@ class EntryManager:
         validate_username(username)
         validate_url(url)
         validate_notes(notes)
+        if version is not None and (not isinstance(version, int) or isinstance(version, bool) or version < 0):
+            raise InvalidCredentialError("Version must be a non-negative integer")
 
-        # Determine entry title (with versioning)
-        entry_title, vstr = self._determine_entry_title(title, version, autoincrement)
+        # Determine target entry (and its version) from a single scan of the database
+        exact, versions = self._scan(title)
+        entry: Optional[Entry]
+        if version is not None:
+            vstr: Optional[str] = self.version_manager.format_version(version)
+            entry = next((e for n, e in versions if n == version), None)
+            entry_title = self.version_manager.get_versioned_title(title, version)
+        elif autoincrement:
+            # Count trashed versions too: a version number is never reused, so restoring one from the Recycle Bin
+            # cannot collide with a live entry.
+            numbers = (parse_version_suffix(e.title or "", title) for e in self.kp.entries)
+            next_version = max((n for n in numbers if n is not None), default=0) + 1
+            vstr = self.version_manager.format_version(next_version)
+            entry = None
+            entry_title = self.version_manager.get_versioned_title(title, next_version)
+        else:
+            vstr = None
+            entry = exact
+            entry_title = title
 
-        # Find or create entry
-        entry = self.kp.find_entries(title=entry_title, first=True)
         if entry is None:
-            entry = self.kp.add_entry(self.kp.root_group, title=entry_title, username="", password="", url="", notes="")
+            entry = self._new_entry(entry_title)
 
         # Decide mode: simple vs full credential
         simple_mode = (
@@ -208,26 +292,7 @@ class EntryManager:
         if simple_mode:
             return self._put_simple_entry(entry, title, value, notes, tags, vstr)
         else:
-            return self._put_full_entry(entry, title, username, password, url, notes, tags)
-
-    def _determine_entry_title(
-        self, title: str, version: Optional[int], autoincrement: bool
-    ) -> tuple[str, Optional[str]]:
-        """Determine the entry title and version string."""
-        if version is not None or autoincrement:
-            if version is None and autoincrement:
-                # Find next version
-                next_version = self.version_manager.get_next_version(title, list(self.kp.entries))
-                vstr = self.version_manager.format_version(next_version)
-            elif version is not None:
-                vstr = self.version_manager.format_version(version)
-            else:
-                vstr = self.version_manager.format_version(1)
-
-            entry_title = self.version_manager.get_versioned_title(title, int(vstr))
-            return entry_title, vstr
-
-        return title, None
+            return self._put_full_entry(entry, title, username, password, url, notes, tags, vstr)
 
     def _put_simple_entry(
         self,
@@ -266,6 +331,7 @@ class EntryManager:
         url: Optional[str],
         notes: Optional[str],
         tags: Optional[List[str]],
+        vstr: Optional[str] = None,
     ) -> Credential:
         """Handle full credential entry creation/update."""
         if username is not None:
@@ -289,12 +355,13 @@ class EntryManager:
             notes=entry.notes,
             tags=list(entry.tags or []),
             show_password=False,
+            version=vstr,
         )
 
     def _set_entry_tags(self, entry: Entry, tags: List[str]) -> None:
         """Set tags on an entry, handling different PyKeePass versions."""
         try:
-            entry.tags = set(tags)
+            entry.tags = list(tags)  # pykeepass joins a list; a set raised TypeError and the tags were silently lost
         except Exception:
             # Fallback for older versions
             for t in list(entry.tags or []):
@@ -304,84 +371,60 @@ class EntryManager:
                 with contextlib.suppress(Exception):
                     entry.add_tag(t)
 
+    # ---- versions / delete --------------------------------------------------
+
     def list_versions(self, title: str) -> List[str]:
         """List all versions (zero-padded strings) for a given title, sorted ascending."""
-        prefix = f"{title}@"
-        versions = []
+        _exact, versions = self._scan(title)
+        return [self.version_manager.format_version(n) for n in sorted(n for n, _ in versions)]
 
-        for entry in self.kp.entries:
-            if entry.title and entry.title.startswith(prefix):
-                vstr = entry.title[len(prefix) :]
-                if vstr.isdigit() and len(vstr) == config.version_pad_width:
-                    versions.append(vstr)
+    def delete_entry(self, title: str, version: Optional[int] = None) -> bool:
+        """Delete an entry. Returns True if something was deleted, False if nothing matched.
 
-        versions.sort()
-        return versions
+        Without ``version`` the unversioned entry *and every* ``title@<version>`` entry are
+        removed, so a deleted secret can no longer be read through an older version.
+        With ``version`` only that version is removed.
 
-    def delete_entry(self, title: str) -> bool:
-        """Delete an entry by title. Returns True if deleted, False otherwise.
-
-        Handles versioned entries: if no exact match, deletes all versioned
-        entries matching ``title@<version>``.
+        Errors (including save failures) propagate; callers decide how to recover.
         """
-        entry = self.kp.find_entries(title=title, first=True)
-        if entry:
-            try:
-                self.kp.delete_entry(entry)
-                self._save()
-                return True
-            except Exception as ex:
-                logger.error(f"Failed to delete entry '{title}': {ex}")
-                return False
-
-        # Try versioned entries
-        prefix = f"{title}@"
-        versioned = [e for e in self.kp.entries if e.title and e.title.startswith(prefix)]
-        if not versioned:
+        exact, versions = self._scan(title)
+        if version is not None:
+            targets = [e for n, e in versions if n == version]
+        else:
+            targets = ([exact] if exact is not None else []) + [e for _n, e in versions]
+        if not targets:
             logger.info(f"Entry not found: {title}")
             return False
+        for entry in targets:
+            self.kp.delete_entry(entry)
+        self._save()
+        return True
 
-        try:
-            for entry in versioned:
-                self.kp.delete_entry(entry)
-            self._save()
-            return True
-        except Exception as ex:
-            logger.error(f"Failed to delete versioned entries for '{title}': {ex}")
-            return False
+    def prune_versions(self, title: str, keep: int) -> List[str]:
+        """Delete all but the newest ``keep`` versions of ``title``. Returns deleted version strings."""
+        if keep < 1:
+            raise InvalidCredentialError("keep must be at least 1")
+        _exact, versions = self._scan(title)
+        versions.sort(key=lambda t: t[0])
+        doomed = versions[:-keep] if len(versions) > keep else []
+        if not doomed:
+            return []
+        for _number, entry in doomed:
+            self.kp.delete_entry(entry)
+        self._save()
+        return [self.version_manager.format_version(n) for n, _ in doomed]
 
     def get_entry_with_custom_properties(self, title: str) -> Optional[tuple[CredentialResult, Entry]]:
         """
         Fetch an entry and return both the formatted result and the raw Entry object.
         This allows callers to access custom properties without re-opening the database.
+        Version resolution is identical to :meth:`get_entry` (latest version wins).
 
         Returns:
             Tuple of (CredentialResult, Entry) if found, None if not found
         """
-        # Try to find the entry - handle versioning
-        entry = self.kp.find_entries(title=title, first=True)
-
-        if not entry:
-            # Try versioned lookup
-            prefix = f"{title}@"
-            candidates = [e for e in self.kp.entries if e.title and e.title.startswith(prefix)]
-            if candidates:
-                # Find max version
-                def extract_ver(e: Entry) -> int:
-                    try:
-                        return int(e.title[len(prefix) :])
-                    except Exception:
-                        return -1
-
-                versioned_candidates = [(extract_ver(e), e) for e in candidates if extract_ver(e) >= 0]
-                if versioned_candidates:
-                    _max_ver, entry = max(versioned_candidates, key=lambda t: t[0])
-
-        if not entry:
+        resolved = self.resolve_entry(title)
+        if resolved is None:
             return None
-
-        # Format the result
-        cred_result = self.get_entry(title, show_password=True)
-        if cred_result is None:
-            return None
-        return (cred_result, entry)
+        entry, vstr = resolved
+        return (self._format_entry_result(entry, title, vstr, True), entry)

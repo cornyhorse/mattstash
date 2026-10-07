@@ -11,6 +11,20 @@ from pykeepass.entry import Entry
 from .models.config import config
 
 
+def parse_version_suffix(entry_title: Optional[str], base_title: str) -> Optional[int]:
+    """Return N if ``entry_title`` is exactly ``<base_title>@<N>`` (ASCII digits), else None."""
+    if not entry_title:
+        return None
+    prefix = f"{base_title}@"
+    if not entry_title.startswith(prefix):
+        return None
+    suffix = entry_title[len(prefix) :]
+    # str.isdigit() accepts unicode digits such as '\u00b2' that int() rejects or mis-parses.
+    if suffix.isascii() and suffix.isdigit():
+        return int(suffix)
+    return None
+
+
 class VersionManager:
     """Handles versioning logic for credentials."""
 
@@ -45,7 +59,7 @@ class VersionManager:
             return title, None
 
         parts = title.rsplit("@", 1)
-        if len(parts) != 2:
+        if len(parts) != 2:  # pragma: no cover - unreachable: "@" in title makes rsplit return exactly two parts
             return title, None
 
         base_title, version_str = parts
@@ -91,33 +105,23 @@ class VersionManager:
             >>> vm.get_next_version("api-key", entries)
             4
         """
-        prefix = f"{base_title}@"
         max_version = 0
 
         for entry in entries:
-            if entry.title and entry.title.startswith(prefix):
-                version_str = entry.title[len(prefix) :]
-                try:
-                    version = int(version_str)
-                    max_version = max(max_version, version)
-                except ValueError:
-                    continue
+            version = parse_version_suffix(entry.title, base_title)
+            if version is not None:
+                max_version = max(max_version, version)
 
         return max_version + 1
 
     def find_latest_version(self, base_title: str, entries: List[Entry]) -> Optional[Entry]:
         """Find the entry with the highest version for a base title."""
-        prefix = f"{base_title}@"
         candidates = []
 
         for entry in entries:
-            if entry.title and entry.title.startswith(prefix):
-                version_str = entry.title[len(prefix) :]
-                try:
-                    version = int(version_str)
-                    candidates.append((version, entry))
-                except ValueError:
-                    continue
+            version = parse_version_suffix(entry.title, base_title)
+            if version is not None:
+                candidates.append((version, entry))
 
         if not candidates:
             return None
@@ -126,14 +130,14 @@ class VersionManager:
         return max(candidates, key=lambda x: x[0])[1]
 
     def get_all_versions(self, base_title: str, entries: List[Entry]) -> List[str]:
-        """Get all version strings for a base title, sorted ascending."""
-        prefix = f"{base_title}@"
+        """Get well-formed version strings for a base title, sorted ascending.
+
+        Only zero-padded versions of the configured width are reported; entries such as
+        ``name@123`` (wrong width) are ignored here.
+        """
         versions = []
-
         for entry in entries:
-            if entry.title and entry.title.startswith(prefix):
-                version_str = entry.title[len(prefix) :]
-                if version_str.isdigit() and len(version_str) == self.pad_width:
-                    versions.append(version_str)
-
+            number = parse_version_suffix(entry.title, base_title)
+            if number is not None and len(entry.title[len(base_title) + 1 :]) == self.pad_width:
+                versions.append(self.format_version(number))
         return sorted(versions)

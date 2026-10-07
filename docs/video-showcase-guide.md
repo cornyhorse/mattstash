@@ -124,17 +124,15 @@ mattstash get "api-key" --version 1 --show-password
 mattstash get "api-key" --show-password  
 # Shows: api-key: key-v3-rotated
 
-# Explicit version number
-mattstash put "api-key" --value "key-v5-explicit" --version 5
-mattstash versions "api-key"
-# Shows jump to version 5
+# Keep only the newest two versions
+mattstash prune "api-key" --keep 2
 ```
 
 **Key messages:**
 - Automatic versioning on updates
-- Complete audit trail
+- A history of earlier values (not an audit log: it does not record who changed what)
 - Access any historical version
-- Explicit version control available
+- Prune old versions with `prune --keep N`, remove one with `delete --version N`
 
 ---
 
@@ -307,21 +305,21 @@ mattstash versions "api-key"
 ### Demo Script:
 ```bash
 # Show secure file permissions
-ls -la ~/.credentials/
+ls -la ~/.config/mattstash/
 # Shows: -rw------- .mattstash.txt, -rw-r--r-- mattstash.kdbx
 
 # Show multiple database support
 echo "=== Multi-environment security ==="
 
 # Development database (separate file)
-mattstash --db ~/.credentials/dev.kdbx put "dev-secret" --value "dev-value"
+mattstash --db ~/.config/mattstash/dev.kdbx put "dev-secret" --value "dev-value"
 
 # Production database (separate file)  
-mattstash --db ~/.credentials/prod.kdbx put "prod-secret" --value "prod-value"
+mattstash --db ~/.config/mattstash/prod.kdbx put "prod-secret" --value "prod-value"
 
 # Show they're isolated
-mattstash --db ~/.credentials/dev.kdbx keys
-mattstash --db ~/.credentials/prod.kdbx keys
+mattstash --db ~/.config/mattstash/dev.kdbx keys
+mattstash --db ~/.config/mattstash/prod.kdbx keys
 
 # CredStash migration demo
 echo "=== CredStash Migration ==="

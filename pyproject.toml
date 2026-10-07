@@ -8,7 +8,7 @@ version = "0.1.19"
 description = "Tiny KeePass-powered secrets accessor with optional S3 helper and Postgres URL builder."
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [{ name = "Matthew Kingsbury" }]
 keywords = [
     "keepass", "secrets", "credentials-store", "password-manager",
@@ -21,8 +21,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -44,6 +42,17 @@ dependencies = [
 s3 = ["boto3>=1.28,<2.0", "botocore>=1.31,<2.0"]
 config = ["PyYAML>=6.0,<7.0"]
 all = ["boto3>=1.28,<2.0", "botocore>=1.31,<2.0", "PyYAML>=6.0,<7.0"]
+# Everything needed to run the test suites, linters and the dependency audit (see .github/workflows/ci.yml).
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-xdist>=3.5",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.12",
+    "ruff",
+    "mypy==1.19.1",
+    "pip-audit",
+]
 
 [project.urls]
 Homepage = "https://github.com/cornyhorse/mattstash"
@@ -54,8 +63,13 @@ Changelog = "https://github.com/cornyhorse/mattstash/releases"
 [project.scripts]
 mattstash = "mattstash.cli.main:main"
 
+[tool.pytest.ini_options]
+markers = [
+    "real_kdf: use the real (strong) Argon2 parameters for databases created in this test; by default the tests use a cheap KDF (see tests/conftest.py)",
+]
+
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -68,7 +82,7 @@ module = ["pykeepass.*", "yaml", "httpx", "httpx.*", "boto3", "boto3.*", "botoco
 ignore_missing_imports = true
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
@@ -89,9 +103,9 @@ ignore = [
     "S110",  # try-except-pass — intentional for cross-platform compat
     "S603",  # allow subprocess without shell=True check (false positives)
     "S607",  # allow partial executable path
-    "UP006", # non-pep585-annotation — needed for Python 3.9 compat (List vs list)
-    "UP035", # deprecated-import — typing imports needed for Python 3.9 compat
-    "UP045", # non-pep604-annotation-optional — Optional[X] needed for Python 3.9
+    "UP006", # non-pep585-annotation — style: typing.List/Dict kept (could be modernised separately)
+    "UP035", # deprecated-import — style: typing imports kept (could be modernised separately)
+    "UP045", # non-pep604-annotation-optional — style: Optional[X] kept (could be modernised separately)
     "SIM105", # contextlib.suppress — not always clearer than try/except/pass
     "SIM108", # ternary — not always more readable for multi-branch logic
     "SIM117", # nested with — often clearer when lines are long

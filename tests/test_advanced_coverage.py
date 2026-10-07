@@ -11,71 +11,6 @@ import pytest
 from mattstash import MattStash, get_db_url, get_s3_client
 
 
-def test_bootstrap_functionality(tmp_path: Path):
-    """Test bootstrap when both DB and sidecar are missing"""
-    db_path = tmp_path / "new_db.kdbx"
-
-    # Ensure neither exists
-    assert not db_path.exists()
-    sidecar_path = db_path.parent / ".mattstash.txt"
-    assert not sidecar_path.exists()
-
-    # Bootstrap should create both
-    ms = MattStash(path=str(db_path))
-
-    assert db_path.exists()
-    assert sidecar_path.exists()
-    assert ms.password is not None
-
-
-def test_bootstrap_skipped_when_db_exists(tmp_path: Path):
-    """Test bootstrap is skipped when DB already exists"""
-    db_path = tmp_path / "existing_db.kdbx"
-    db_path.write_text("existing db content")
-
-    with patch("mattstash.core.bootstrap._kp_create_database") as mock_create:
-        MattStash(path=str(db_path))
-        # Should not attempt to create since DB exists
-        mock_create.assert_not_called()
-
-
-def test_bootstrap_skipped_when_sidecar_exists(tmp_path: Path):
-    """Test bootstrap is skipped when sidecar already exists"""
-    db_path = tmp_path / "new_db.kdbx"
-    sidecar_path = db_path.parent / ".mattstash.txt"
-    sidecar_path.write_text("existing password")
-
-    with patch("mattstash.core.bootstrap._kp_create_database") as mock_create:
-        MattStash(path=str(db_path))
-        # Should not attempt to create since sidecar exists
-        mock_create.assert_not_called()
-
-
-def test_bootstrap_error_handling(tmp_path: Path):
-    """Test bootstrap error handling when creation fails"""
-    db_path = tmp_path / "new_db.kdbx"
-    sidecar_path = db_path.parent / ".mattstash.txt"
-
-    with patch("mattstash.core.bootstrap._kp_create_database", side_effect=Exception("Creation failed")):
-        with patch("mattstash.core.bootstrap.logger") as mock_logger:
-            MattStash(path=str(db_path))
-            # Should log error message
-            assert any("Failed to create KeePass DB" in str(call) for call in mock_logger.error.call_args_list)
-            assert not sidecar_path.exists()
-
-
-def test_bootstrap_create_database_none(tmp_path: Path):
-    """Test bootstrap when _kp_create_database is None"""
-    db_path = tmp_path / "new_db.kdbx"
-
-    with patch("mattstash.core.bootstrap._kp_create_database", None):
-        with patch("mattstash.core.bootstrap.logger") as mock_logger:
-            MattStash(path=str(db_path))
-            # Should log error about unavailable function
-            assert any("not available" in str(call) for call in mock_logger.error.call_args_list)
-            assert not (db_path.parent / ".mattstash.txt").exists()
-
-
 def test_password_resolution_from_env(tmp_path: Path):
     """Test password resolution from environment variable"""
     db_path = tmp_path / "test_db.kdbx"
@@ -174,7 +109,7 @@ def test_get_s3_client_function():
             addressing="path",
             signature_version="s3v4",
             retries_max_attempts=10,
-            verbose=True,
+            verbose=False,
         )
         assert result == mock_client
 
@@ -273,11 +208,3 @@ def test_hydrate_env_custom_property(temp_db: Path):
 
     # Should set the environment variable
     assert os.environ.get("TEST_CUSTOM") == "custom_value"
-
-
-@pytest.fixture()
-def temp_db(tmp_path: Path) -> Path:
-    """Create an isolated directory for each test to hold DB + sidecar."""
-    d = tmp_path / "mattstash"
-    d.mkdir()
-    return d / "test.kdbx"

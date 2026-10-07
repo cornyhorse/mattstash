@@ -7,7 +7,7 @@ Credential data class and related utilities.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -24,18 +24,20 @@ class Credential:
     notes: Optional[str]  # Used for comments/notes
     tags: list[str]
     show_password: bool = field(default=False, repr=False)
+    version: Optional[str] = field(default=None)
 
     def __repr__(self) -> str:
         # Custom repr to mask password if show_password is False
         pwd = self.password if self.show_password else ("*****" if self.password else None)
+        ver = f", version={self.version!r}" if self.version is not None else ""
         return (
             f"Credential(credential_name={self.credential_name!r}, username={self.username!r}, "
-            f"password={pwd!r}, url={self.url!r}, notes={self.notes!r}, tags={self.tags!r})"
+            f"password={pwd!r}, url={self.url!r}, notes={self.notes!r}, tags={self.tags!r}{ver})"
         )
 
     def as_dict(self) -> Dict[str, Any]:
         # Provide a dict representation with password masked if show_password is False
-        return {
+        data: Dict[str, Any] = {
             "credential_name": self.credential_name,
             "username": self.username,
             "password": self.password if self.show_password else ("*****" if self.password else None),
@@ -43,6 +45,9 @@ class Credential:
             "notes": self.notes,
             "tags": self.tags,
         }
+        if self.version is not None:
+            data["version"] = self.version
+        return data
 
 
 def serialize_credential(cred: Credential, show_password: bool = False) -> Dict[str, Any]:
@@ -61,4 +66,4 @@ def serialize_credential(cred: Credential, show_password: bool = False) -> Dict[
 
 
 # Type alias for credential results
-CredentialResult = Union[Credential, Dict[str, Any]]
+CredentialResult = Credential | Dict[str, Any]

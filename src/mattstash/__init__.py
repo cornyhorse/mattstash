@@ -23,6 +23,7 @@ from .module_functions import (
     get_s3_client,
     list_creds,
     list_versions,
+    prune,
     put,
 )
 
@@ -56,6 +57,7 @@ __all__ = [
     "get_s3_client",
     "list_creds",
     "list_versions",
+    "prune",
     "put",
     # Utility functions
     "serialize_credential",

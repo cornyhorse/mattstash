@@ -9,6 +9,18 @@ import pytest
 from mattstash.builders.db_url import DatabaseUrlBuilder
 
 
+def _wire(mock_mattstash, cred, entry):
+    """Wire a mocked MattStash so ``get_entry_with_properties`` returns ``cred`` plus the
+    custom properties the (mock) ``entry`` reports for the requested names."""
+
+    def _get(title, names=()):
+        if cred is None:
+            return None
+        return cred, {name: entry.get_custom_property(name) for name in names}
+
+    mock_mattstash.get_entry_with_properties.side_effect = _get
+
+
 def test_db_url_builder_mask_style_omit():
     """Test password masking with 'omit' style - covers line 123"""
     mock_mattstash = Mock()
@@ -25,8 +37,7 @@ def test_db_url_builder_mask_style_omit():
     mock_entry.get_custom_property.side_effect = lambda key: {"database": "testdb", "sslmode": None}.get(key)
 
     # Mock the new interface
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
+    _wire(mock_mattstash, mock_cred, mock_entry)
 
     # Test mask_style="omit" - should omit password entirely
     result = builder.build_url("test", mask_password=True, mask_style="omit")
@@ -53,8 +64,7 @@ def test_db_url_builder_unmasked_no_password():
     mock_entry.get_custom_property.side_effect = lambda key: {"database": "testdb", "sslmode": None}.get(key)
 
     # Mock the new interface
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
+    _wire(mock_mattstash, mock_cred, mock_entry)
 
     # Test mask_password=False with no password
     result = builder.build_url("test", mask_password=False)
@@ -83,8 +93,7 @@ def test_db_url_builder_with_sslmode():
     }.get(key)
 
     # Mock the new interface
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
+    _wire(mock_mattstash, mock_cred, mock_entry)
 
     # Test with SSL mode
     result = builder.build_url("test")
@@ -113,8 +122,7 @@ def test_db_url_builder_sslmode_override():
     }.get(key)
 
     # Mock the new interface
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
+    _wire(mock_mattstash, mock_cred, mock_entry)
 
     # Test with SSL mode override
     result = builder.build_url("test", sslmode_override="disable")
@@ -140,8 +148,7 @@ def test_db_url_builder_masked_stars_no_password():
     mock_entry.get_custom_property.side_effect = lambda key: {"database": "testdb", "sslmode": None}.get(key)
 
     # Mock the new interface
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
+    _wire(mock_mattstash, mock_cred, mock_entry)
 
     # Test mask_style="stars" with no password
     result = builder.build_url("test", mask_password=True, mask_style="stars")
@@ -167,8 +174,7 @@ def test_db_url_builder_unmasked_with_password():
     mock_entry.get_custom_property.side_effect = lambda key: {"database": "testdb", "sslmode": None}.get(key)
 
     # Mock the new interface
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
+    _wire(mock_mattstash, mock_cred, mock_entry)
 
     # Test mask_password=False with password
     result = builder.build_url("test", mask_password=False)
@@ -183,8 +189,7 @@ def test_db_url_builder_credential_not_found():
     builder = DatabaseUrlBuilder(mock_mattstash)
 
     # Mock the new interface - credential not found
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = None
+    _wire(mock_mattstash, None, None)
 
     # Should raise ValueError when credential is not found
     with pytest.raises(ValueError, match="Credential not found: nonexistent"):
@@ -207,8 +212,7 @@ def test_db_url_builder_versioned_entry_resolution():
     mock_entry.get_custom_property.side_effect = lambda key: {"database": "testdb", "sslmode": None}.get(key)
 
     # Mock the new interface
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
+    _wire(mock_mattstash, mock_cred, mock_entry)
 
     # Should successfully build URL
     result = builder.build_url("test")

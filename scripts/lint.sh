@@ -20,14 +20,14 @@ else
     echo "=== Ruff check ==="
 fi
 
-ruff check $FIX_FLAG src/ tests/
+ruff check $FIX_FLAG src/ tests/ server/app server/tests
 
 echo ""
 echo "=== Ruff format check ==="
 if [ "$1" = "--fix" ]; then
-    ruff format src/ tests/
+    ruff format src/ tests/ server/app server/tests
 else
-    ruff format --check src/ tests/
+    ruff format --check src/ tests/ server/app server/tests
 fi
 
 echo ""

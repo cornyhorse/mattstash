@@ -1,11 +1,13 @@
-"""Admin router for operational endpoints."""
+"""Admin router for operational endpoints (requires an ``admin`` key)."""
+
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 
-from ..dependencies import APIKeyDep, reload_mattstash
+from ..audit import audit
+from ..dependencies import AdminAccess, reload_mattstash
 from ..rate_limit import limiter
-from ..security.api_keys import invalidate_api_key_cache
+from ..security.api_keys import reload_key_policy_now
 
 logger = logging.getLogger("mattstash.api")
 router = APIRouter()
@@ -13,32 +15,47 @@ router = APIRouter()
 
 @router.post("/admin/reload")
 @limiter.limit("10/minute")
-async def force_reload(  # pragma: no cover
-    request: Request,
-    api_key: APIKeyDep,
-) -> dict[str, str]:
+def force_reload(request: Request, principal: AdminAccess) -> dict[str, str]:
     """
     Force the server to reload the KeePass database from disk.
 
     Useful after external modifications (e.g., via the CLI).
     """
     success = reload_mattstash()
+    audit(request, "admin-reload", success=success)
 
     if success:
         logger.info("Database reloaded via admin endpoint")
         return {"status": "reloaded"}
-    else:
-        logger.warning("Database reload requested but no instance to reload")
-        return {"status": "no_change"}
+    logger.warning("Database reload requested but it failed or there is no instance to reload")
+    # Not a 200: a caller that has just replaced the database file must be able to tell that the server is still
+    # serving the previous state (or nothing).
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            "Database reload failed; the server serves nothing until the database file opens again "
+            "(see the server log). Restoring a valid file recovers it without a restart."
+        ),
+    )
 
 
 @router.post("/admin/invalidate-api-key-cache")
 @limiter.limit("10/minute")
-async def invalidate_keys(  # pragma: no cover
-    request: Request,
-    api_key: APIKeyDep,
-) -> dict[str, str]:
-    """Force API keys to be re-read from their configured source."""
-    invalidate_api_key_cache()
-    logger.info("API key cache invalidated via admin endpoint")
-    return {"status": "api_key_cache_invalidated"}
+def invalidate_keys(request: Request, principal: AdminAccess) -> dict[str, str | int]:
+    """Re-read the API keys now and make them the active policy.
+
+    Answers ``409`` if the key source cannot be loaded (bad edit, unreadable file): the PREVIOUS keys are then
+    still active, so a key you meant to revoke may still work. Treat anything but 200 as "not revoked yet".
+    """
+    try:
+        policy = reload_key_policy_now()
+    except Exception as exc:
+        logger.error("API key reload failed: %s", type(exc).__name__)
+        audit(request, "admin-invalidate-keys", success=False)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="API key reload failed; the previous keys are still active (see the server log)",
+        ) from None
+    audit(request, "admin-invalidate-keys", success=True, keys=len(policy))
+    logger.info("API key policy reloaded via admin endpoint (%d keys)", len(policy))
+    return {"status": "api_key_cache_invalidated", "keys": len(policy)}

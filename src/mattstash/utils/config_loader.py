@@ -10,6 +10,7 @@ Supports YAML configuration files from:
 Priority: CLI args > Environment variables > Config file > Defaults
 """
 
+import copy
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -73,6 +74,10 @@ def _load_yaml_file(path: Path) -> Dict[str, Any]:
     with open(path) as f:
         config = yaml.safe_load(f) or {}
 
+    if not isinstance(config, dict):
+        logger.warning("Ignoring %s: a configuration file must contain a mapping of settings", path)
+        return {}
+
     return config
 
 
@@ -128,7 +133,7 @@ def _deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> None:
         if key in target and isinstance(target[key], dict) and isinstance(value, dict):
             _deep_merge(target[key], value)
         else:
-            target[key] = value
+            target[key] = copy.deepcopy(value)  # never share nested dicts with the source: merging must not alias
 
 
 def get_config_value(config: Dict[str, Any], *keys: str, default: Any = None) -> Any:

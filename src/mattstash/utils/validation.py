@@ -151,3 +151,36 @@ def sanitize_error_message(error: Exception, db_path: Optional[str] = None) -> s
     message = re.sub(r"[A-Za-z]:\\[\w\\.-]+\.kdbx", "<database>", message)
 
     return message
+
+
+def validate_lookup_title(title: str) -> None:
+    """
+    Light validation for titles used to *look up* or delete existing entries.
+
+    Deliberately much looser than :func:`validate_credential_title`: databases created by
+    other KeePass tools can hold titles with slashes, spaces, leading dots and so on, and
+    lookups are exact string comparisons (no query language), so such titles are safe.
+    """
+    if not isinstance(title, str) or not title:
+        raise InvalidCredentialError("Credential title cannot be empty")
+    if len(title) > MAX_TITLE_LENGTH:
+        raise InvalidCredentialError(f"Credential title too long (max {MAX_TITLE_LENGTH} characters)")
+    if "\0" in title:
+        raise InvalidCredentialError("Credential title contains invalid character: '\\x00'")
+
+
+def api_key_problem(key: str) -> Optional[str]:
+    """Why ``key`` cannot be sent as an ``X-API-Key`` header, or ``None`` if it can. Never contains the key.
+
+    Keys are printable ASCII (an inner space is allowed: the server accepts it in ``MATTSTASH_API_KEY`` and JSON
+    policies). Control characters, non-ASCII text and a leading/trailing space are not: a stray newline from a
+    Kubernetes Secret or an ``echo`` is the typical culprit, and callers strip surrounding whitespace first.
+    """
+    if not key:
+        return "the API key is empty"
+    if key != key.strip() or not all(0x20 <= ord(ch) <= 0x7E for ch in key):
+        return (
+            "the API key contains control or non-ASCII characters, or leading/trailing whitespace "
+            "(a trailing newline or a byte-order mark in the file or variable?)"
+        )
+    return None

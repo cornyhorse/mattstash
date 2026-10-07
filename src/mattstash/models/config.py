@@ -10,8 +10,37 @@ Configuration priority (highest to lowest):
 4. Default values
 """
 
+import logging
 import os
 from dataclasses import dataclass
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+_TRUE = frozenset({"true", "1", "yes", "on"})
+_FALSE = frozenset({"false", "0", "no", "off"})
+
+
+def _file_int(value: Any, where: str) -> Optional[int]:
+    """An integer setting from the configuration file, or ``None`` (with a warning) if it is not one."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring %s in the configuration file: expected an integer, got %r", where, value)
+        return None
+
+
+def _file_bool(value: Any, where: str) -> Optional[bool]:
+    """A boolean setting from the configuration file (a quoted ``"false"`` or ``"no"`` means false, like a bare one)."""
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in _TRUE:
+        return True
+    if text in _FALSE:
+        return False
+    logger.warning("Ignoring %s in the configuration file: expected true or false, got %r", where, value)
+    return None
 
 
 @dataclass
@@ -47,6 +76,14 @@ class MattStashConfig:
         self._load_from_environment()
         self._load_from_file()
 
+    @staticmethod
+    def _env_int(name: str, raw: str) -> int:
+        """Parse an integer environment variable, naming the variable if it is malformed."""
+        try:
+            return int(raw)
+        except ValueError:
+            raise ValueError(f"{name} must be an integer, got {raw!r}") from None
+
     def _load_from_environment(self) -> None:
         """Load configuration from environment variables."""
         env_val = os.getenv("MATTSTASH_DB_PATH")
@@ -57,7 +94,7 @@ class MattStashConfig:
             self.sidecar_basename = env_val
         env_val = os.getenv("MATTSTASH_VERSION_PAD_WIDTH")
         if env_val:
-            self.version_pad_width = int(env_val)
+            self.version_pad_width = self._env_int("MATTSTASH_VERSION_PAD_WIDTH", env_val)
         env_val = os.getenv("MATTSTASH_PASSWORD_MASK")
         if env_val:
             self.password_mask = env_val
@@ -72,13 +109,13 @@ class MattStashConfig:
             self.default_signature_version = env_val
         env_val = os.getenv("MATTSTASH_S3_RETRIES")
         if env_val:
-            self.default_retries = int(env_val)
+            self.default_retries = self._env_int("MATTSTASH_S3_RETRIES", env_val)
         env_val = os.getenv("MATTSTASH_ENABLE_CACHE")
         if env_val:
             self.cache_enabled = env_val.lower() in ("true", "1", "yes")
         env_val = os.getenv("MATTSTASH_CACHE_TTL")
         if env_val:
-            self.cache_ttl = int(env_val)
+            self.cache_ttl = self._env_int("MATTSTASH_CACHE_TTL", env_val)
         env_val = os.getenv("MATTSTASH_LOG_LEVEL")
         if env_val:
             self.log_level = env_val
@@ -104,9 +141,9 @@ class MattStashConfig:
                     self.sidecar_basename = sidecar
 
             if not os.getenv("MATTSTASH_VERSION_PAD_WIDTH"):
-                pad_width = get_config_value(file_config, "versioning", "pad_width")
+                pad_width = _file_int(get_config_value(file_config, "versioning", "pad_width"), "versioning.pad_width")
                 if pad_width is not None:
-                    self.version_pad_width = int(pad_width)
+                    self.version_pad_width = pad_width
 
             if not os.getenv("MATTSTASH_LOG_LEVEL"):
                 log_level = get_config_value(file_config, "logging", "level")
@@ -115,7 +152,9 @@ class MattStashConfig:
 
             verbose = get_config_value(file_config, "logging", "verbose")
             if verbose is not None:
-                self.verbose = bool(verbose)
+                parsed = _file_bool(verbose, "logging.verbose")
+                if parsed is not None:
+                    self.verbose = parsed
 
             if not os.getenv("MATTSTASH_S3_REGION"):
                 region = get_config_value(file_config, "s3", "region")
@@ -127,20 +166,27 @@ class MattStashConfig:
                 if addressing:
                     self.default_addressing = addressing
 
+            if not os.getenv("MATTSTASH_S3_SIGNATURE_VERSION"):
+                signature = get_config_value(file_config, "s3", "signature_version")
+                if signature:
+                    self.default_signature_version = signature
+
             if not os.getenv("MATTSTASH_S3_RETRIES"):
-                retries = get_config_value(file_config, "s3", "retries")
+                retries = _file_int(get_config_value(file_config, "s3", "retries"), "s3.retries")
                 if retries is not None:
-                    self.default_retries = int(retries)
+                    self.default_retries = retries
 
             if not os.getenv("MATTSTASH_ENABLE_CACHE"):
                 cache_enabled = get_config_value(file_config, "cache", "enabled")
                 if cache_enabled is not None:
-                    self.cache_enabled = bool(cache_enabled)
+                    parsed_enabled = _file_bool(cache_enabled, "cache.enabled")
+                    if parsed_enabled is not None:
+                        self.cache_enabled = parsed_enabled
 
             if not os.getenv("MATTSTASH_CACHE_TTL"):
-                cache_ttl = get_config_value(file_config, "cache", "ttl")
+                cache_ttl = _file_int(get_config_value(file_config, "cache", "ttl"), "cache.ttl")
                 if cache_ttl is not None:
-                    self.cache_ttl = int(cache_ttl)
+                    self.cache_ttl = cache_ttl
 
         except ImportError:
             # Config loader not available, skip file loading

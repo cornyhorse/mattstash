@@ -1,0 +1,21 @@
+# Storage for the WRITABLE deployment: the KeePass database, its <db>.lock file and the temporary
+# file pykeepass writes next to it all live on this volume.
+#
+# Single writer only. ReadWriteOnce lets one NODE mount the volume read-write; combined with
+# `replicas: 1` and `strategy: Recreate` in deployment.yaml that gives exactly one writer. If your
+# storage driver supports it (CSI, Kubernetes 1.29+), prefer ReadWriteOncePod, which lets the
+# storage layer itself refuse a second pod.
+#
+# Back this volume up (VolumeSnapshot, Velero, ...): the .kdbx is the only copy of your secrets.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mattstash-data
+  namespace: mattstash
+spec:
+  accessModes:
+    - ReadWriteOnce # or ReadWriteOncePod where supported
+  resources:
+    requests:
+      storage: 1Gi
+  # storageClassName: <your-class>   # omit to use the cluster default

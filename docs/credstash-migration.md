@@ -7,11 +7,11 @@ MattStash provides a CredStash-compatible interface while offering additional fe
 | Feature | CredStash | MattStash |
 |---------|-----------|-----------|
 | **Storage Backend** | AWS DynamoDB + KMS | KeePass database (local/encrypted) |
-| **Authentication** | AWS credentials | Database password (auto-generated) |
+| **Authentication** | AWS credentials | Master password (prompt, file, environment; sidecar file is opt-in) |
 | **Simple Secrets** | ✅ Key/value pairs | ✅ Compatible interface |
 | **Versioning** | ✅ Automatic | ✅ Automatic + manual |
 | **Encryption** | AWS KMS | KeePass encryption (AES-256) |
-| **Dependencies** | AWS SDK, boto3 | pykeepass only |
+| **Dependencies** | AWS SDK, boto3 | pykeepass (boto3 only for the S3 helper) |
 | **Offline Access** | ❌ Requires AWS | ✅ Works offline |
 | **Full Credentials** | ❌ Values only | ✅ Username, password, URL, notes |
 | **Tags/Metadata** | ❌ Limited | ✅ Full support |
@@ -42,13 +42,20 @@ credstash delete mykey
 mattstash put "mykey" --value "myvalue"
 
 # Retrieve a secret  
-mattstash get "mykey" --show-password
+mattstash get "mykey" --raw     # prints only the value, for scripts
 
 # List all keys
 mattstash keys
 
-# Delete a secret
+# Delete a secret (all versions; add --version N to delete just one)
 mattstash delete "mykey"
+```
+
+Put the value on stdin (or in a file) instead of on the command line, where `ps` and your shell history can see it:
+
+```bash
+printf '%s' "$MYVALUE" | mattstash put "mykey" --value -
+mattstash put "mykey" --value-file ./myvalue.txt
 ```
 
 ### 2. Versioning (Compatible)
@@ -75,7 +82,13 @@ mattstash get "mykey" --version 1
 
 # List versions
 mattstash versions "mykey"
+
+# Housekeeping credstash does not have
+mattstash delete "mykey" --version 1      # drop one version
+mattstash prune "mykey" --keep 5          # keep only the newest five
 ```
+
+MattStash versions are a history of values, not an audit log (no record of who changed what or when).
 
 ### 3. Python API (Nearly Compatible)
 
@@ -112,6 +125,36 @@ secrets = [cred.credential_name for cred in list_creds()]
 # Delete secret (compatible)
 delete("mykey")
 ```
+
+### 4. Scripting, `credstash env` and `getall`
+
+| CredStash | MattStash |
+|-----------|-----------|
+| `VAR=$(credstash get mykey)` | `VAR=$(mattstash get mykey --raw)` (prints only the secret; exit 2 if it does not exist) |
+| `eval "$(credstash env ...)"` (export secrets as variables) | `out=$(mattstash env --prefix myapp. --upper) && eval "$out"` |
+| `credstash getall` (all secrets as JSON) | `mattstash env --prefix '' --format json` (every secret; names sanitised) |
+| run a program with secrets in its environment | `mattstash exec --prefix myapp. --upper -- ./app` |
+
+`mattstash env` selects secrets by title prefix (`--prefix`) and/or one by one (`--map ENVVAR=TITLE[:FIELD]`, where
+`FIELD` can also be `username`, `url`, `notes` or a custom property), uses the latest version of each, and prints
+`shell` (`export NAME='value'`, safe to `eval` whatever the value contains), `dotenv` or `json`. `mattstash exec`
+builds the same environment and replaces itself with your command, so nothing is written to disk or stdout and the
+command's exit status is preserved:
+
+```bash
+# Store the secrets once ...
+printf '%s' "$DBPW" | mattstash put "myapp.db-password" --value -
+printf '%s' "$KEY"  | mattstash put "myapp.api-key" --value -
+
+# ... then start the app with DB_PASSWORD and API_KEY in its environment
+mattstash exec --prefix myapp. --upper -- python app.py
+
+# Individual variables, including fields of a full credential
+mattstash exec --map PGPASSWORD=production-db --map PGUSER=production-db:username -- psql -h db.internal myapp
+```
+
+Both work against a MattStash server too (`--server-url`), so a container can fetch its secrets over HTTP instead of
+mounting the database. See the [CLI reference](cli-reference.md#env---print-secrets-as-environment-variables).
 
 ## Migration Strategies
 
@@ -231,22 +274,26 @@ credstash get mykey
 
 **MattStash:**
 ```bash
-# Auto-generates and manages database password
-mattstash get "mykey"
+# Create the database once; you are prompted for a master password
+mattstash setup
 
-# Or explicit password
-mattstash --password "custom-password" get "mykey"
+# The password comes from, in order: --db-password-file / --password, KDBX_PASSWORD,
+# KDBX_PASSWORD_FILE, then a sidecar file (only if you ran `setup --sidecar`)
+export KDBX_PASSWORD_FILE=/run/secrets/kdbx_password
+mattstash get "mykey" --raw
 ```
+
+Avoid `--password` on the command line: it is visible to other users through `ps` and in shell history.
 
 ### 3. Advanced Features
 
 MattStash offers features beyond CredStash's simple key/value model:
 
 ```bash
-# Full credential storage (not available in CredStash)
+# Full credential storage (not available in CredStash); the entry password comes from a file
 mattstash put "database" --fields \
   --username "dbuser" \
-  --password "dbpass" \
+  --entry-password-file ./dbpass \
   --url "db.company.com:5432" \
   --notes "Production database" \
   --tag "production"
@@ -254,14 +301,18 @@ mattstash put "database" --fields \
 # S3 client integration (not available in CredStash)
 mattstash put "s3-backup" --fields \
   --username "ACCESS_KEY" \
-  --password "SECRET_KEY" \
+  --entry-password-file ./secret-key \
   --url "https://s3.amazonaws.com"
 
 # Test S3 connectivity
 mattstash s3-test "s3-backup" --bucket "my-bucket"
 
-# Generate database URLs
+# Generate database URLs (PostgreSQL by default; --dialect mysql|mariadb for the others)
 mattstash db-url "database" --database "myapp_prod"
+
+# Back up the database file, and change its master password
+mattstash backup
+mattstash rotate-password --new-password-file ./new-master-password
 ```
 
 ## Migration Checklist
@@ -285,7 +336,7 @@ mattstash db-url "database" --database "myapp_prod"
 
 - [ ] Verify all secrets migrated correctly
 - [ ] Test application functionality
-- [ ] Set up MattStash backup strategy
+- [ ] Set up a backup strategy (`mattstash backup` from cron, copied off the machine)
 - [ ] Remove CredStash dependencies
 - [ ] Clean up AWS DynamoDB tables (optional)
 
@@ -330,11 +381,20 @@ python app.py
 **After (MattStash):**
 ```bash
 #!/bin/bash
-export API_TOKEN=$(mattstash get "api-token" --json --show-password | jq -r .value)
-export DB_PASSWORD=$(mattstash get "db-password" --json --show-password | jq -r .value)
-export STRIPE_KEY=$(mattstash get "stripe-key" --json --show-password | jq -r .value)
+export API_TOKEN=$(mattstash get "api-token" --raw)
+export DB_PASSWORD=$(mattstash get "db-password" --raw)
+export STRIPE_KEY=$(mattstash get "stripe-key" --raw)
 
 python app.py
+```
+
+or, without exporting anything into your shell:
+
+```bash
+#!/bin/bash
+exec mattstash exec \
+  --map API_TOKEN=api-token --map DB_PASSWORD=db-password --map STRIPE_KEY=stripe-key \
+  -- python app.py
 ```
 
 ### Deployment Scripts
@@ -392,7 +452,7 @@ def deploy():
 - Works offline
 - No AWS dependency
 - Faster secret retrieval
-- Better debugging and auditing
+- `mattstash backup` and `mattstash rotate-password` for routine maintenance
 
 ### 5. **Development Experience**
 - Consistent interface across environments
@@ -407,6 +467,8 @@ def deploy():
 | `getSecret()` | ✅ Fully compatible | Use `get(name, show_password=True)["value"]` |
 | `deleteSecret()` | ✅ Fully compatible | Use `delete(name)` |
 | `listSecrets()` | ✅ Compatible | Returns different format |
+| `credstash env` / `getall` | ✅ Replaced | `mattstash env`, `mattstash exec` (see above) |
+| Shell scripting (`$(credstash get x)`) | ✅ Replaced | `$(mattstash get x --raw)` |
 | Version history | ✅ Enhanced | Better version management |
 | Encryption contexts | ⚠️ Not applicable | Uses KeePass encryption |
 | IAM permissions | ⚠️ Not applicable | Uses file system permissions |

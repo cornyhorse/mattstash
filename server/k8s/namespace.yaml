@@ -4,3 +4,8 @@ metadata:
   name: mattstash
   labels:
     name: mattstash
+    # Pod Security Admission: every pod in this directory satisfies the "restricted" profile
+    # (non-root, no privilege escalation, all capabilities dropped, RuntimeDefault seccomp,
+    # only secret/configMap/emptyDir/PVC volumes), so the namespace can enforce it.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

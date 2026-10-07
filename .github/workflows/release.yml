@@ -10,14 +10,18 @@ concurrency:
   group: release
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  packages: write
+# No permissions by default. Every job below asks for exactly what it needs.
+permissions: {}
+
+# Third-party actions are pinned to a commit SHA (the comment is the tag it was resolved from).
+# Dependabot (.github/dependabot.yml) keeps both up to date.
 
 jobs:
   # Wait for the CI workflow to pass before releasing
   ci:
     uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
 
   release:
     needs: [ci]
@@ -25,19 +29,26 @@ jobs:
     environment: pypi
     # Skip if the commit was made by the release bot (prevents infinite loop)
     if: "!contains(github.event.head_commit.message, '[skip-release]')"
+    permissions:
+      contents: write  # push the version-bump commit and tag, create the GitHub Release
+      # id-token: write  # <- needed for PyPI trusted publishing, see "Publish to PyPI" below
+    outputs:
+      new_version: ${{ steps.version.outputs.new_version }}
+      tag: ${{ steps.version.outputs.tag }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           fetch-depth: 0
           # Use the default GITHUB_TOKEN - needs "Allow GitHub Actions to
           # create and approve pull requests" enabled in repo settings, and
-          # the default token permissions set to read/write.
+          # the default token permissions set to read/write. The token is kept
+          # (persist-credentials defaults to true) because the version bump is pushed below.
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Configure git
         run: |
@@ -46,17 +57,23 @@ jobs:
 
       - name: Determine bump type
         id: bump
+        env:
+          # The commit message is attacker-influenced text. It is handed to the shell through the
+          # environment and only ever read as "$COMMIT_MSG"; it must never be interpolated into the
+          # script with ${{ }} (that would be script injection in the job that holds the publish
+          # credentials).
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
           # Check for explicit bump directives in merge commit message
-          if echo "$COMMIT_MSG" | grep -qiE '\[(major|bump-major)\]'; then
-            echo "type=major" >> "$GITHUB_OUTPUT"
-          elif echo "$COMMIT_MSG" | grep -qiE '\[(minor|bump-minor)\]'; then
-            echo "type=minor" >> "$GITHUB_OUTPUT"
+          if printf '%s\n' "$COMMIT_MSG" | grep -qiE '\[(major|bump-major)\]'; then
+            bump_type="major"
+          elif printf '%s\n' "$COMMIT_MSG" | grep -qiE '\[(minor|bump-minor)\]'; then
+            bump_type="minor"
           else
-            echo "type=patch" >> "$GITHUB_OUTPUT"
+            bump_type="patch"
           fi
-          echo "Bump type: $(cat "$GITHUB_OUTPUT" | grep type | cut -d= -f2)"
+          echo "type=$bump_type" >> "$GITHUB_OUTPUT"
+          echo "Bump type: $bump_type"
 
       - name: Bump version
         id: version
@@ -104,10 +121,12 @@ jobs:
           BUMP_TYPE: ${{ steps.bump.outputs.type }}
 
       - name: Commit version bump
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
         run: |
           git add pyproject.toml
-          git commit -m "release: v${{ steps.version.outputs.new_version }} [skip-release]"
-          git tag "v${{ steps.version.outputs.new_version }}"
+          git commit -m "release: v${NEW_VERSION} [skip-release]"
+          git tag "v${NEW_VERSION}"
           git push origin main --tags
 
       - name: Install build tools
@@ -118,14 +137,30 @@ jobs:
       - name: Build package
         run: python -m build
 
+      # --- Publish to PyPI ------------------------------------------------------------------
+      # ACTIVE: token-based publishing with the long-lived PYPI_API_TOKEN secret.
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           print-hash: true
 
+      # READY TO ENABLE: PyPI trusted publishing (OIDC). No stored token to leak or rotate, and
+      # the publish is bound to this repository, workflow and environment. It needs a ONE-TIME
+      # setting on PyPI first (repository owner action):
+      #   1. pypi.org -> project "mattstash" -> Settings -> Publishing -> add a trusted publisher:
+      #      GitHub, owner "cornyhorse", repository "mattstash", workflow "release.yml",
+      #      environment "pypi".
+      #   2. Then, in this file: uncomment `id-token: write` in this job's `permissions`, delete the
+      #      token-based "Publish to PyPI" step above, uncomment the step below, and finally delete
+      #      the PYPI_API_TOKEN secret.
+      # - name: Publish to PyPI (trusted publishing)
+      #   uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+      #   with:
+      #     print-hash: true
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           tag_name: "v${{ steps.version.outputs.new_version }}"
           name: "v${{ steps.version.outputs.new_version }}"
@@ -144,47 +179,45 @@ jobs:
     needs: [release]
     runs-on: ubuntu-latest
     if: "!contains(github.event.head_commit.message, '[skip-release]')"
+    permissions:
+      contents: read
+      packages: write  # push the image to ghcr.io
 
     steps:
-      - uses: actions/checkout@v4
+      # Build exactly the commit that was just released (the version-bump commit the release job
+      # tagged), not whatever main happens to be by now. The image installs the library from this
+      # checkout, so image == tagged commit == PyPI release.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: refs/tags/${{ needs.release.outputs.tag }}
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from pyproject.toml
-        id: version
-        run: |
-          git pull --ff-only origin main
-          VERSION=$(python3 - <<'PYEOF'
-          import re
-          from pathlib import Path
-
-          content = Path("pyproject.toml").read_text()
-          match = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
-          if match is None:
-              raise SystemExit("Could not find version in pyproject.toml")
-          print(match.group(1))
-          PYEOF
-          )
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
-          context: server
+          # Repository root as the build context, so the image is built from this commit's library.
+          context: .
+          file: server/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
+          # Supply-chain metadata attached to the image in the registry (SLSA provenance and an
+          # SPDX SBOM, as BuildKit attestations).
+          provenance: true
+          sbom: true
           tags: |
             ghcr.io/cornyhorse/mattstash:latest
-            ghcr.io/cornyhorse/mattstash:v${{ steps.version.outputs.version }}
+            ghcr.io/cornyhorse/mattstash:v${{ needs.release.outputs.new_version }}
           labels: |
             org.opencontainers.image.source=https://github.com/cornyhorse/mattstash
             org.opencontainers.image.description=MattStash API Server
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.version=${{ needs.release.outputs.new_version }}
+            org.opencontainers.image.licenses=MIT

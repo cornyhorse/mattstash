@@ -1,14 +1,27 @@
-"""Credentials router for CRUD operations."""
+"""Credentials router for CRUD operations.
+
+All handlers are plain ``def`` (not ``async def``): the KeePass work (decrypting, re-encrypting and
+saving the database takes ~0.5 s) therefore runs in FastAPI's threadpool instead of blocking the
+event loop, so health probes and other requests stay responsive while a write is in progress.
+"""
+
 import logging
-import re
-from typing import Any, Union
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
-
 from mattstash.models.credential import Credential
-from mattstash.utils.exceptions import CredentialNotFoundError
 
-from ..dependencies import APIKeyDep, MattStashDep
+from ..audit import audit
+from ..dependencies import (
+    DeleteAccess,
+    MattStashDep,
+    ReadAccess,
+    WriteAccess,
+    WritesEnabled,
+    WriteSlot,
+    ensure_name_in_scope,
+)
+from ..errors import translate_errors
 from ..models.requests import CreateCredentialRequest
 from ..models.responses import (
     CreateCredentialResponse,
@@ -16,35 +29,27 @@ from ..models.responses import (
     CredentialResponse,
     VersionListResponse,
 )
-from ..rate_limit import limiter
+from ..rate_limit import limiter, read_limit
+from ..validation import is_valid_name, require_valid_name, require_valid_prefix
 
 logger = logging.getLogger("mattstash.api")
 router = APIRouter()
-
-# Validation pattern for credential names
-_VALID_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+$")
-_MAX_NAME_LENGTH = 255
 
 _MASK = "*****"
 
 
 def _validate_credential_name(name: str) -> None:
-    """Validate credential name to prevent traversal attacks."""
-    if not name or len(name) > _MAX_NAME_LENGTH:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid credential name"
-        )
-    if not _VALID_NAME_PATTERN.match(name):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid credential name"
-        )
+    """Validate credential name (kept as a function for callers/tests)."""
+    require_valid_name(name)
+
+
+def _not_found(name: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Credential not found: {name}")
 
 
 def _normalize_credential(
     name: str,
-    result: Union[Credential, dict[str, Any]],
+    result: Credential | dict[str, Any],
     show_password: bool = False,
 ) -> CredentialResponse:
     """Convert a Credential object or simple-secret dict to CredentialResponse.
@@ -61,7 +66,7 @@ def _normalize_credential(
             password=pwd if show_password else _MASK,
             url=result.url,
             notes=result.notes,
-            version=None,
+            version=result.version,
         )
 
     # Simple-secret dict
@@ -80,15 +85,16 @@ def _normalize_credential(
 # GET endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.get("/credentials/{name}", response_model=CredentialResponse)
-@limiter.limit("60/minute")
-async def get_credential(  # pragma: no cover
+@limiter.limit(read_limit)
+def get_credential(
     request: Request,
     name: str,
     mattstash: MattStashDep,
-    api_key: APIKeyDep,
-    version: int | None = Query(None, description="Specific version to retrieve"),
-    show_password: bool = Query(False, description="Show actual password instead of masking")
+    principal: ReadAccess,
+    version: int | None = Query(None, ge=0, description="Specific version to retrieve"),
+    show_password: bool = Query(False, description="Show actual password instead of masking"),
 ) -> Response:
     """
     Get a specific credential by name.
@@ -97,140 +103,93 @@ async def get_credential(  # pragma: no cover
     - **version**: Optional version number
     - **show_password**: Whether to show the actual password (default: masked)
     """
-    _validate_credential_name(name)
-    if show_password:
-        logger.warning("Unmasked credential requested for %s from %s", name, request.client.host if request.client else "unknown")
-    try:
+    require_valid_name(name)
+    ensure_name_in_scope(principal, name, hide=True, request=request, op="read")
+    audit(request, "get", name, reveal=show_password, version=version)
+    with translate_errors("get"):
         credential = mattstash.get(name, show_password=True, version=version)
 
-        if credential is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Credential not found: {name}"
-            )
+    if credential is None:
+        raise _not_found(name)
 
-        response_data = _normalize_credential(name, credential, show_password)
-        response = Response(
-            content=response_data.model_dump_json(),
-            media_type="application/json",
-            headers={"Cache-Control": "no-store"}
-        )
-        return response
-
-    except CredentialNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Credential not found: {name}"
-        ) from None
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Error retrieving credential %s: %s", name, e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        ) from None
+    response_data = _normalize_credential(name, credential, show_password)
+    return Response(
+        content=response_data.model_dump_json(),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/credentials", response_model=CredentialListResponse)
-@limiter.limit("30/minute")
-async def list_credentials(  # pragma: no cover
+@limiter.limit(read_limit)
+def list_credentials(
     request: Request,
     response: Response,
     mattstash: MattStashDep,
-    api_key: APIKeyDep,
+    principal: ReadAccess,
     prefix: str | None = Query(None, description="Filter by name prefix"),
-    show_password: bool = Query(False, description="Show actual passwords instead of masking")
+    show_password: bool = Query(False, description="Show actual passwords instead of masking"),
 ) -> CredentialListResponse:
     """
-    List all credentials.
+    List credentials (latest version of each) that this key may read.
 
     - **prefix**: Optional prefix filter
     - **show_password**: Whether to show actual passwords (default: masked)
+
+    Entries whose titles contain characters outside ``[A-Za-z0-9_.-]`` are not addressable through this
+    API and are not listed.
     """
     response.headers["Cache-Control"] = "no-store"
-    if show_password:
-        logger.warning("Unmasked credential list requested from %s", request.client.host if request.client else "unknown")
-    try:
-        # mattstash.list() returns List[Credential]
-        all_creds = mattstash.list(show_password=True)
+    if prefix:
+        require_valid_prefix(prefix)
+    audit(request, "list", reveal=show_password, prefix=prefix)
+    with translate_errors("list"):
+        all_creds = mattstash.list(show_password=True, latest_only=True)
 
-        # Filter by prefix if provided
-        if prefix:
-            filtered = [
-                c for c in all_creds
-                if c.credential_name.startswith(prefix)
-            ]
-        else:
-            filtered = all_creds
-
-        credentials = [
-            _normalize_credential(c.credential_name, c, show_password)
-            for c in filtered
-        ]
-
-        return CredentialListResponse(
-            credentials=credentials,
-            count=len(credentials)
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Error listing credentials: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        ) from None
+    visible = [
+        c
+        for c in all_creds
+        if is_valid_name(c.credential_name)
+        and principal.allows_name(c.credential_name)
+        and (not prefix or c.credential_name.startswith(prefix))
+    ]
+    credentials = [_normalize_credential(c.credential_name, c, show_password) for c in visible]
+    return CredentialListResponse(credentials=credentials, count=len(credentials))
 
 
 @router.get("/credentials/{name}/versions", response_model=VersionListResponse)
-@limiter.limit("60/minute")
-async def list_versions(  # pragma: no cover
+@limiter.limit(read_limit)
+def list_versions(
     request: Request,
     name: str,
     mattstash: MattStashDep,
-    api_key: APIKeyDep
+    principal: ReadAccess,
 ) -> VersionListResponse:
     """
     List all versions of a credential.
 
     - **name**: Credential name
     """
-    _validate_credential_name(name)
-    try:
+    require_valid_name(name)
+    ensure_name_in_scope(principal, name, hide=True, request=request, op="read")
+    audit(request, "versions", name)
+    with translate_errors("versions"):
         versions = mattstash.list_versions(name)
 
-        if not versions:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Credential not found: {name}"
-            )
+    if not versions:
+        raise _not_found(name)
 
-        return VersionListResponse(
-            name=name,
-            versions=versions,
-            latest=versions[-1]  # Last version is the latest
-        )
-
-    except CredentialNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Credential not found: {name}"
-        ) from None
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Error listing versions for %s: %s", name, e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        ) from None
+    return VersionListResponse(
+        name=name,
+        versions=versions,
+        latest=versions[-1],  # Last version is the latest
+    )
 
 
 # ---------------------------------------------------------------------------
 # POST / DELETE endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.post(
     "/credentials/{name}",
@@ -238,22 +197,25 @@ async def list_versions(  # pragma: no cover
     status_code=status.HTTP_201_CREATED,
 )
 @limiter.limit("30/minute")
-async def create_credential(  # pragma: no cover
+def create_credential(
     request: Request,
     response: Response,
     name: str,
     body: CreateCredentialRequest,
     mattstash: MattStashDep,
-    api_key: APIKeyDep,
+    principal: WriteAccess,
+    _writes: WritesEnabled,
+    _slot: WriteSlot,
 ) -> CreateCredentialResponse:
     """
-    Create or update a credential.
+    Create a new version of a credential (or the first one).
 
     - **name**: Credential name
     """
-    _validate_credential_name(name)
+    require_valid_name(name)
+    ensure_name_in_scope(principal, name, hide=False, request=request, op="write")
     response.headers["Cache-Control"] = "no-store"
-    try:
+    with translate_errors("put"):
         result = mattstash.put(
             name,
             value=body.value,
@@ -264,66 +226,43 @@ async def create_credential(  # pragma: no cover
             tags=body.tags,
         )
 
-        if result is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to store credential"
-            )
+    if result is None:  # pragma: no cover - put() raises on failure
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to store credential")
 
-        # Determine version string from the result
-        if isinstance(result, dict):
-            version_str = result.get("version") or "0000000001"
-        else:
-            version_str = "0000000001"
-
-        return CreateCredentialResponse(
-            name=name,
-            version=version_str,
-            created=True,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Error creating credential %s: %s", name, e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        ) from None
+    version = result.get("version") if isinstance(result, dict) else result.version
+    audit(request, "put", name, version=version)
+    return CreateCredentialResponse(
+        name=name,
+        version=version or "0000000001",
+        created=version is None or int(version) == 1,
+    )
 
 
 @router.delete("/credentials/{name}", status_code=status.HTTP_200_OK)
 @limiter.limit("30/minute")
-async def delete_credential(  # pragma: no cover
+def delete_credential(
     request: Request,
     response: Response,
     name: str,
     mattstash: MattStashDep,
-    api_key: APIKeyDep,
+    principal: DeleteAccess,
+    _writes: WritesEnabled,
+    _slot: WriteSlot,
+    version: int | None = Query(None, ge=0, description="Delete only this version (default: all versions)"),
 ) -> dict[str, str]:
     """
-    Delete a credential by name.
+    Delete a credential by name (all versions, or one version with ``?version=N``).
 
     - **name**: Credential name
     """
-    _validate_credential_name(name)
+    require_valid_name(name)
+    ensure_name_in_scope(principal, name, hide=False, request=request, op="delete")
     response.headers["Cache-Control"] = "no-store"
-    try:
-        deleted = mattstash.delete(name)
+    with translate_errors("delete"):
+        deleted = mattstash.delete(name, version)
+    audit(request, "delete", name, version=version, deleted=deleted)
 
-        if not deleted:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Credential not found: {name}"
-            )
+    if not deleted:
+        raise _not_found(name)
 
-        return {"detail": f"Credential deleted: {name}"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Error deleting credential %s: %s", name, e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        ) from None
+    return {"detail": f"Credential deleted: {name}"}

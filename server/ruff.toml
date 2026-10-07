@@ -1,0 +1,13 @@
+# Lint config for the API server. Extends the repo-wide settings; the server only runs on
+# Python >= 3.11 like the rest of the project (FastAPI evaluates `X | None` annotations at runtime).
+extend = "../pyproject.toml"
+target-version = "py311"
+
+[lint.per-file-ignores]
+# Test fixtures use obviously fake credentials; asserts are what tests do.
+"tests/**" = ["S101", "S105", "S106", "S107", "S108", "S110", "S104"]
+# 0.0.0.0 is the intended default bind address inside a container.
+"app/config.py" = ["S104"]
+
+[lint.isort]
+known-first-party = ["app"]

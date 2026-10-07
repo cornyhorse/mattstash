@@ -1,49 +1,88 @@
-# Multi-stage Dockerfile for minimal production image
-# This reduces the final image size by excluding build dependencies
+#
+# MattStash API server - multi-stage image.
+#
+# Same application and same runtime behaviour as server/Dockerfile. The difference: the
+# dependencies and the mattstash library are installed into a virtualenv in a throw-away
+# builder stage and only that virtualenv is copied into the final image, so no source tree,
+# build directory or installer state is left behind.
+#
+# BUILD CONTEXT = THE REPOSITORY ROOT (not server/), so the image contains this commit's
+# mattstash library instead of whatever release is on PyPI:
+#
+#     docker build -f server/Dockerfile.multistage -t mattstash-api .
+#
+# Base image: pinned to the python:3.14-slim tag in BOTH stages (they must match, because the
+# virtualenv is copied between them). For fully reproducible builds pin the digest as well,
+# e.g.  FROM python:3.14-slim@sha256:<digest> AS builder  /  FROM python:3.14-slim@sha256:<digest>
+# (`docker buildx imagetools inspect python:3.14-slim` prints it). Dependabot's "docker"
+# ecosystem (.github/dependabot.yml) proposes updates for the tag and the digest.
 
-FROM python:3.11-slim AS builder
+# ---------------------------------------------------------------------------------------
+# Builder: virtualenv with hash-verified dependencies + the library from this checkout
+# ---------------------------------------------------------------------------------------
+FROM python:3.14-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1
+
+RUN python -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
 
 WORKDIR /build
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# Third-party dependencies: hash-pinned lockfile, wheels only (so no compiler is needed and
+# nothing is built from an sdist). pip refuses any file whose hash is not in the lock.
+COPY server/requirements.lock server/requirements.lock
+RUN pip install --no-cache-dir --disable-pip-version-check \
+        --require-hashes --only-binary=:all: -r server/requirements.lock
 
-# Copy and install Python dependencies
-COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+# mattstash itself, from this repository. Its dependencies are already installed above
+# (hence --no-deps); `pip check` proves the lock still satisfies pyproject.toml's ranges.
+# The build backend (hatchling) comes from pip's isolated build environment and is NOT
+# hash-pinned; it is build-time only and never reaches the final image.
+COPY pyproject.toml README.md LICENSE ./
+COPY src/ src/
+RUN pip install --no-cache-dir --disable-pip-version-check --no-deps . \
+ && pip check
 
-# ================================================================
-# Final stage - minimal runtime image
-# ================================================================
-FROM python:3.11-slim
+# ---------------------------------------------------------------------------------------
+# Runtime: slim base + the finished virtualenv + the server code
+# ---------------------------------------------------------------------------------------
+FROM python:3.14-slim
+
+# Unbuffered stdout/stderr so logs reach `docker logs` / `kubectl logs` immediately;
+# no .pyc files (the root filesystem is meant to be mounted read-only at runtime).
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH=/opt/venv/bin:$PATH
+
+# Non-root runtime user. The numeric uid/gid (1000) is what the compose and Kubernetes
+# examples assume; override at runtime (`user:` / `runAsUser`) to match the owner of your
+# bind-mounted files. /data exists and is owned by that user so a NAMED volume mounted there
+# is writable in the (opt-in) write mode; read-only deployments never write to it.
+RUN groupadd --gid 1000 mattstash \
+ && useradd --uid 1000 --gid 1000 --no-create-home --home-dir /nonexistent \
+            --shell /usr/sbin/nologin mattstash \
+ && mkdir /data \
+ && chown mattstash:mattstash /data
+
+# Root-owned and read-only to the runtime user: it cannot modify its own code or packages.
+COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
+COPY server/app/ ./app/
 
-# Create non-root user
-RUN useradd -m -u 1000 mattstash && \
-    chown -R mattstash:mattstash /app
-
-# Copy Python packages from builder to non-root user's home
-COPY --from=builder /root/.local /home/mattstash/.local
-RUN chown -R mattstash:mattstash /home/mattstash/.local
-
-# Copy server application code
-COPY app/ ./app/
-
-# Make sure scripts in .local are usable
-ENV PATH=/home/mattstash/.local/bin:$PATH
-
-# Expose port
+# Numeric user so Kubernetes `runAsNonRoot` can verify it without guessing.
+USER 1000:1000
 EXPOSE 8000
 
-# Switch to non-root user
-USER mattstash
+# Liveness only: /health never touches the database. (Readiness, i.e. "the database opened",
+# is /ready; orchestrators with a readiness concept should probe that one instead.)
+# If you enable in-app TLS (MATTSTASH_TLS_CERT_FILE) the probe switches to https and skips
+# certificate verification, because it talks to 127.0.0.1.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["python", "-c", "import os, ssl, urllib.request as u; tls = bool(os.environ.get('MATTSTASH_TLS_CERT_FILE')); u.urlopen(('https' if tls else 'http') + '://127.0.0.1:' + os.environ.get('MATTSTASH_PORT', '8000') + '/health', timeout=3, context=ssl._create_unverified_context() if tls else None)"]
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
-
-# Run application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Starts uvicorn via the app's own entrypoint (app/__main__.py). Honours MATTSTASH_HOST,
+# MATTSTASH_PORT, MATTSTASH_LOG_LEVEL and optional TLS (MATTSTASH_TLS_CERT_FILE +
+# MATTSTASH_TLS_KEY_FILE). Do not set `command:` in compose / `command:` in Kubernetes.
+CMD ["python", "-m", "app"]

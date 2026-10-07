@@ -1,0 +1,63 @@
+version: 2
+
+# Automated dependency update PRs.
+#
+# Notes
+#  * Every merge to main publishes a patch release (see .github/workflows/release.yml), so updates
+#    are grouped to keep the number of releases down.
+#  * server/requirements.lock is a pip-compile lockfile (hash-pinned; the command that produced it
+#    is in its header). Dependabot's pip support is keyed on requirements*.txt / *.in files and may
+#    not rewrite a *.lock file, so refresh the lock by re-running that command when the CI "audit"
+#    job reports an advisory against a pinned version (it audits the lock on every run).
+#  * The base image (python:3.14-slim in server/Dockerfile*) is updated by the "docker" entry; if
+#    you pin it by digest (recommended, see the comment in the Dockerfile) Dependabot updates the
+#    digest as well.
+
+updates:
+  # Library dependencies (pyproject.toml, requirements.txt)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      python-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # API server dependencies (server/requirements.in / requirements*.txt)
+  - package-ecosystem: "pip"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(server)"
+    groups:
+      server-python-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Base image of the server (server/Dockerfile and server/Dockerfile.multistage)
+  - package-ecosystem: "docker"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps(docker)"
+
+  # GitHub Actions used by the workflows (pinned by commit SHA; the "# vX.Y.Z" comment is updated too)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

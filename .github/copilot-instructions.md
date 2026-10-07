@@ -41,7 +41,7 @@ Agents are **strictly limited** to creating or modifying only these files:
 ## Technology Stack
 
 ### Backend
-- **Language**: Python 3.9+
+- **Language**: Python 3.11+ (tested on 3.11-3.14)
 - **KeePass Library**: pykeepass
 - **Optional Dependencies**: boto3/botocore for S3 support
 - **Testing**: pytest with coverage

@@ -1,312 +1,274 @@
-"""Shared test fixtures for MattStash Server tests."""
-import os
+"""Shared fixtures for MattStash server tests.
+
+The server tests run the real application (real middleware, real key policy, real KeePass
+database in a temp dir) through ``TestClient``. Nothing in the data or auth layer is mocked, so
+authorization, throttling, locking and error mapping are exercised end to end.
+"""
+
+import json
 import tempfile
+from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Generator
 from unittest.mock import MagicMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
-
 from mattstash import MattStash
+
+
+@pytest.fixture(scope="session")
+def _cheap_blank_database(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """pykeepass's blank-database template with a nearly free Argon2 setting (same trick as the root tests).
+
+    Databases are created from that template and keep its KDF parameters in their header, so the real server
+    subprocesses some tests start read them from the file. The shipped template costs ~0.5 s per open/save.
+    Production code is untouched; the library's own test suite proves new databases still get the strong default.
+    """
+    import pykeepass.pykeepass as kp_module
+
+    path = str(tmp_path_factory.mktemp("kdf") / "blank-cheap.kdbx")
+    blank = kp_module.PyKeePass(kp_module.BLANK_DATABASE_LOCATION, kp_module.BLANK_DATABASE_PASSWORD)
+    params = blank.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
+    params["I"].value = 1
+    params["M"].value = 1024 * 1024
+    blank.filename = path
+    blank.save()
+    return path
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cheap_kdf(_cheap_blank_database: str) -> Generator[None, None, None]:
+    """Session-wide, so module-scoped database fixtures (they run before function-scoped ones) are cheap too."""
+    import pykeepass.pykeepass as kp_module
+
+    original = kp_module.BLANK_DATABASE_LOCATION
+    kp_module.BLANK_DATABASE_LOCATION = _cheap_blank_database
+    yield
+    kp_module.BLANK_DATABASE_LOCATION = original
+
+
+DB_PASSWORD = "test-db-password-123"
+# Keys are >= 32 chars (the enforced minimum); each has a distinct role in the policy below.
+FULL_KEY = "full-access-legacy-key-" + "a" * 20
+READ_KEY = "read-only-scoped-key--" + "b" * 20
+APP_KEY = "app-prefix-scoped-key--" + "c" * 20
+WRITE_KEY = "writer-scoped-key------" + "d" * 20
+ADMIN_KEY = "admin-scoped-key-------" + "e" * 20
+
+
+def fresh_config_module():
+    """Load a private copy of ``app.config`` evaluated against the current environment.
+
+    ``importlib.reload(app.config)`` would replace the ``Config``/``config`` objects that every other
+    ``app.*`` module has already imported, silently desynchronising later tests; an isolated copy cannot.
+    """
+    import importlib.util
+
+    import app.config as real
+
+    spec = importlib.util.spec_from_file_location("app_config_isolated", real.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+CONFIG_ENV_VARS = [
+    "MATTSTASH_DB_PATH",
+    "KDBX_PASSWORD",
+    "KDBX_PASSWORD_FILE",
+    "MATTSTASH_HOST",
+    "MATTSTASH_PORT",
+    "MATTSTASH_LOG_LEVEL",
+    "MATTSTASH_API_KEY",
+    "MATTSTASH_API_KEYS_FILE",
+    "MATTSTASH_RATE_LIMIT",
+    "MATTSTASH_ALLOW_WRITES",
+    "MATTSTASH_MIN_KEY_LENGTH",
+    "MATTSTASH_REQUIRE_SCOPED_KEYS",
+    "MATTSTASH_AUTH_FAIL_LIMIT",
+    "MATTSTASH_AUTH_FAIL_WINDOW_SECONDS",
+    "MATTSTASH_TRUSTED_PROXY_HOPS",
+    "MATTSTASH_TLS_CERT_FILE",
+    "MATTSTASH_TLS_KEY_FILE",
+    "MATTSTASH_DISABLE_DOCS",
+    "MATTSTASH_REFUSE_SIDECAR",
+    "MATTSTASH_MAX_REQUEST_BODY_BYTES",
+    "MATTSTASH_MAX_CONCURRENT_WRITES",
+    "MATTSTASH_DB_POLL_INTERVAL",
+]
 
 
 @pytest.fixture
 def temp_password_file() -> Generator[Path, None, None]:
     """Create a temporary password file."""
-    with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
         f.write("test_password_123")
         temp_path = Path(f.name)
-    
     yield temp_path
-    
-    # Cleanup
-    if temp_path.exists():
-        temp_path.unlink()
+    temp_path.unlink(missing_ok=True)
 
 
 @pytest.fixture
 def temp_api_keys_file() -> Generator[Path, None, None]:
-    """Create a temporary API keys file."""
-    with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+    """Create a temporary legacy API keys file."""
+    with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
         f.write("# API Keys\n")
         f.write("test-key-1\n")
         f.write("test-key-2\n")
         f.write("# Another comment\n")
         f.write("test-key-3\n")
         temp_path = Path(f.name)
-    
     yield temp_path
-    
-    # Cleanup
-    if temp_path.exists():
-        temp_path.unlink()
-
-
-@pytest.fixture
-def mock_mattstash() -> Mock:
-    """Create a mock MattStash instance."""
-    from mattstash.models.credential import Credential
-    
-    mock = MagicMock(spec=MattStash)
-    
-    # Mock get() method - returns Credential object
-    mock.get.return_value = Credential(
-        credential_name='test_cred',
-        username='testuser',
-        password='testpass',
-        url='https://example.com',
-        notes='Test notes',
-        tags=[],
-        show_password=False
-    )
-    
-    # Mock list() method - returns list of Credential objects
-    mock.list.return_value = [
-        Credential(
-            credential_name='cred1',
-            username='user1',
-            password='pass1',
-            url='https://example1.com',
-            notes='',
-            tags=[],
-            show_password=False
-        ),
-        Credential(
-            credential_name='cred2',
-            username='user2',
-            password='pass2',
-            url='https://example2.com',
-            notes='Notes',
-            tags=[],
-            show_password=False
-        )
-    ]
-    
-    # Mock list_versions() method - returns list of version strings
-    mock.list_versions.return_value = ['001', '002', '003']
-    
-    # Mock put() method - returns Credential object
-    mock.put.return_value = Credential(
-        credential_name='new_cred',
-        username='newuser',
-        password='newpass',
-        url='https://new.example.com',
-        notes='New notes',
-        tags=[],
-        show_password=False
-    )
-    
-    # Mock delete() method - returns bool
-    mock.delete.return_value = True
-    
-    return mock
-
-
-@pytest.fixture
-def valid_api_key() -> str:
-    """Return a valid test API key."""
-    return "test-api-key-valid"
-
-
-@pytest.fixture
-def test_credential() -> dict:
-    """Return a test credential dictionary."""
-    return {
-        'name': 'test_app',
-        'username': 'admin',
-        'password': 'secure_password_123',
-        'url': 'https://test.example.com',
-        'notes': 'Test application credentials'
-    }
-
-
-@pytest.fixture(autouse=True)
-def reset_caches():
-    """Auto-reset all module caches before each test."""
-    import app.dependencies as deps
-    import app.security.api_keys as api_keys_module
-    
-    # Reset before test
-    deps._mattstash_instance = None
-    api_keys_module._api_keys = None
-    
-    yield
-    
-    # Reset after test
-    deps._mattstash_instance = None
-    api_keys_module._api_keys = None
+    temp_path.unlink(missing_ok=True)
 
 
 @pytest.fixture
 def clean_env(monkeypatch) -> None:
-    """Clean environment variables before each test."""
-    env_vars = [
-        'MATTSTASH_DB_PATH',
-        'KDBX_PASSWORD',
-        'KDBX_PASSWORD_FILE',
-        'MATTSTASH_HOST',
-        'MATTSTASH_PORT',
-        'MATTSTASH_LOG_LEVEL',
-        'MATTSTASH_API_KEY',
-        'MATTSTASH_API_KEYS_FILE',
-        'MATTSTASH_RATE_LIMIT'
-    ]
-    
-    for var in env_vars:
+    """Remove every MattStash-related environment variable."""
+    for var in CONFIG_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
 
 
-@pytest.fixture
-def test_app(clean_env, monkeypatch):
-    """Create a test app with minimal config."""
-    monkeypatch.setenv("KDBX_PASSWORD", "test_password")
-    monkeypatch.setenv("MATTSTASH_API_KEY", "test-api-key")
-    
-    # Force config reload
-    from importlib import reload
-    import app.config as config_module
-    reload(config_module)
-    
-    # Create app without lifespan (skip validation)
-    from fastapi import FastAPI
-    from slowapi import Limiter, _rate_limit_exceeded_handler
-    from slowapi.errors import RateLimitExceeded
-    from slowapi.util import get_remote_address
-    from app.config import config
-    from app.middleware.logging import RequestLoggingMiddleware
-    from app.routers import admin, credentials, db_url, health
-    
-    # Initialize rate limiter
-    limiter = Limiter(key_func=get_remote_address, default_limits=[config.RATE_LIMIT])
-    
-    app = FastAPI(
-        title=config.API_TITLE,
-        description=config.API_DESCRIPTION,
-        version=config.API_VERSION,
-        docs_url=f"/api/{config.API_VERSION}/docs",
-        redoc_url=f"/api/{config.API_VERSION}/redoc",
-        openapi_url=f"/api/{config.API_VERSION}/openapi.json"
-    )
-    
-    # Add rate limiting
-    app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    
-    # Skip CORS middleware for tests
-    
-    # Add request logging middleware
-    app.add_middleware(RequestLoggingMiddleware)
-    
-    # Include routers
-    app.include_router(health.router, prefix="/api", tags=["health"])
-    app.include_router(
-        credentials.router,
-        prefix=f"/api/{config.API_VERSION}",
-        tags=["credentials"]
-    )
-    app.include_router(
-        db_url.router,
-        prefix=f"/api/{config.API_VERSION}",
-        tags=["database"]
-    )
-    app.include_router(
-        admin.router,
-        prefix=f"/api/{config.API_VERSION}",
-        tags=["admin"]
-    )
-    
-    return app
+@pytest.fixture(autouse=True)
+def reset_state(clean_env):
+    """Reset all module-level state (instance, key cache, throttle, rate limiter) around each test."""
+    import app.dependencies as deps
+    import app.security.api_keys as api_keys_module
+    from app.middleware.security import auth_failures
+    from app.rate_limit import limiter
 
+    def reset() -> None:
+        deps._mattstash_instance = None
+        api_keys_module._policy = None
+        api_keys_module._policy_loaded_at = 0.0
+        auth_failures.reset()
+        limiter.reset()
 
-@pytest.fixture
-def test_client(test_app):
-    """Create a TestClient from the test app."""
-    from fastapi.testclient import TestClient
-    return TestClient(test_app)
-
-
-@pytest.fixture
-def client_with_mock_mattstash(test_app, mock_mattstash):
-    """Create a test client with mocked MattStash dependency."""
-    from app.dependencies import get_mattstash
-    from fastapi.testclient import TestClient
-    
-    # Override the dependency
-    test_app.dependency_overrides[get_mattstash] = lambda: mock_mattstash
-    
-    client = TestClient(test_app)
-    
-    yield client
-    
-    # Clean up
-    test_app.dependency_overrides.clear()
-
-
-@pytest.fixture
-def reset_config_cache():
-    """Reset config singleton state between tests."""
-    # Import here to avoid circular imports
-    from app.config import Config
-    from app.security.api_keys import _api_keys
-    from app.dependencies import _mattstash_instance
-    
-    # Reset cached values
+    reset()
     yield
-    
-    # Cleanup is handled by test isolation
+    reset()
 
 
 @pytest.fixture
-def real_db_mattstash(tmp_path) -> MattStash:
-    """MattStash instance backed by a real temporary KeePass database."""
-    from pykeepass import create_database
+def mock_mattstash() -> Mock:
+    """A MattStash mock for tests that only care about HTTP-level behaviour."""
+    from mattstash.models.credential import Credential
 
-    db_path = tmp_path / "roundtrip.kdbx"
-    password = "test-roundtrip-pass"
-    create_database(str(db_path), password=password)
-    # DB already exists so bootstrap_if_missing is a no-op
-    return MattStash(path=str(db_path), password=password)
+    mock = MagicMock(spec=MattStash)
+    mock.get.return_value = Credential(
+        credential_name="test_cred",
+        username="testuser",
+        password="testpass",
+        url="https://example.com",
+        notes="Test notes",
+        tags=[],
+        show_password=False,
+    )
+    mock.list_versions.return_value = ["0000000001"]
+    mock.delete.return_value = True
+    return mock
 
 
-@pytest.fixture
-def real_kdbx_client(test_app, real_db_mattstash):
-    """TestClient wired to a real KeePass database (no mocks in the data layer)."""
-    from app.dependencies import get_mattstash, verify_api_key_header
-    from fastapi.testclient import TestClient
-
-    ms = real_db_mattstash
-    test_app.dependency_overrides[get_mattstash] = lambda: ms
-    # Override auth so api_keys.py's stale module-level config reference doesn't
-    # interfere; auth is tested separately in test_api_keys.py.
-    test_app.dependency_overrides[verify_api_key_header] = lambda: "test-api-key"
-
-    client = TestClient(test_app)
-    yield client
-
-    test_app.dependency_overrides.clear()
+# ---------------------------------------------------------------------------
+# Real application + real database
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def test_client_factory(monkeypatch):
-    """Factory to create TestClient with custom config."""
-    def _create_client(mock_mattstash_instance=None, api_keys=None):
-        # Reset the dependency cache
-        import app.dependencies as deps
-        deps._mattstash_instance = mock_mattstash_instance
-        
-        # Reset API keys cache
-        import app.security.api_keys as api_keys_module
-        api_keys_module._api_keys = api_keys
-        
-        # Set required environment variables
-        monkeypatch.setenv("KDBX_PASSWORD", "test_password")
-        monkeypatch.setenv("MATTSTASH_API_KEY", "test-api-key-valid")
-        
-        # Import app after setting env vars
+def db_path(tmp_path) -> Path:
+    """A freshly created, empty KeePass database (explicit creation; the server never creates one)."""
+    data = tmp_path / "data"
+    data.mkdir()
+    path = data / "mattstash.kdbx"
+    MattStash.create(str(path), password=DB_PASSWORD)
+    return path
+
+
+@pytest.fixture
+def seed(db_path) -> Callable[..., MattStash]:
+    """Return a function that seeds credentials directly through the library (bypassing the API)."""
+
+    def _seed(**credentials) -> MattStash:
+        stash = MattStash(path=str(db_path), password=DB_PASSWORD)
+        for name, spec in credentials.items():
+            stash.put(name.replace("__", "-"), **spec)
+        return stash
+
+    return _seed
+
+
+@pytest.fixture
+def key_policy_file(tmp_path) -> Path:
+    """A JSON key policy exercising every role."""
+    import hashlib
+
+    def sha(key: str) -> str:
+        return hashlib.sha256(key.encode()).hexdigest()
+
+    policy = {
+        "keys": [
+            {"id": "reader", "key_sha256": sha(READ_KEY), "ops": ["read"]},
+            {"id": "app", "key": APP_KEY, "ops": ["read", "write", "delete"], "prefixes": ["app-"]},
+            {"id": "writer", "key_sha256": sha(WRITE_KEY), "ops": ["read", "write"]},
+            {"id": "ops", "key_sha256": sha(ADMIN_KEY), "ops": ["admin"]},
+        ]
+    }
+    path = tmp_path / "keys.json"
+    path.write_text(json.dumps(policy))
+    return path
+
+
+@pytest.fixture
+def configure(monkeypatch, db_path):
+    """Set server configuration for a test (class attributes are read at request time)."""
+    from app.config import Config
+
+    def _configure(**overrides) -> None:
+        defaults = {
+            "DB_PATH": str(db_path),
+            "KDBX_PASSWORD": DB_PASSWORD,
+            "KDBX_PASSWORD_FILE": None,
+            "API_KEY": FULL_KEY,
+            "API_KEYS_FILE": None,
+            "DB_POLL_INTERVAL": 0,
+        }
+        defaults.update(overrides)
+        for name, value in defaults.items():
+            monkeypatch.setattr(Config, name, value)
+
+    return _configure
+
+
+@pytest.fixture
+def make_client(configure) -> Generator[Callable[..., TestClient], None, None]:
+    """Factory: ``make_client(ALLOW_WRITES=True, ...)`` -> TestClient with lifespan (DB opened at startup)."""
+    clients: list[TestClient] = []
+
+    def _make(**overrides) -> TestClient:
+        configure(**overrides)
         from app.main import create_app
-        app = create_app()
-        
-        return TestClient(app)
-    
-    return _create_client
+
+        client = TestClient(create_app())
+        client.__enter__()
+        clients.append(client)
+        return client
+
+    yield _make
+    for client in clients:
+        client.__exit__(None, None, None)
+
+
+@pytest.fixture
+def client(make_client) -> TestClient:
+    """Default: one legacy full-access key, read-only mode."""
+    return make_client()
+
+
+@pytest.fixture
+def rw_client(make_client) -> TestClient:
+    """Default key, writes enabled."""
+    return make_client(ALLOW_WRITES=True)
+
+
+def auth(key: str = FULL_KEY) -> dict[str, str]:
+    return {"X-API-Key": key}
