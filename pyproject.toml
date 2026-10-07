@@ -50,7 +50,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-mock>=3.12",
     "ruff",
-    "mypy==1.19.1",
+    "mypy==2.4.0",
     "pip-audit",
 ]
 
