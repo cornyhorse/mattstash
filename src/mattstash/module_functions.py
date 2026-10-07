@@ -14,7 +14,7 @@ Database problems raise ``DatabaseNotFoundError`` / ``DatabaseAccessError``.
 """
 
 import threading
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from .core.mattstash import MattStash
 from .models.credential import Credential
@@ -23,7 +23,7 @@ from .models.credential import Credential
 _default_instance: Optional[MattStash] = None
 _instance_lock = threading.Lock()
 
-CredentialResult = Union[Credential, Dict[str, Any]]
+CredentialResult = Credential | Dict[str, Any]
 
 
 def _get_instance(path: Optional[str], password: Optional[str]) -> MattStash:

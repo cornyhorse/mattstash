@@ -7,7 +7,7 @@ Credential data class and related utilities.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -66,4 +66,4 @@ def serialize_credential(cred: Credential, show_password: bool = False) -> Dict[
 
 
 # Type alias for credential results
-CredentialResult = Union[Credential, Dict[str, Any]]
+CredentialResult = Credential | Dict[str, Any]
