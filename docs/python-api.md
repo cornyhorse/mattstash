@@ -118,32 +118,48 @@ result = stash.put("database",
 result = stash.put("api-token", value="new-token", version=5)
 ```
 
-#### `delete(title)`
+#### `delete(title, version=None)`
 
-Delete a credential.
+Delete a credential: the unversioned entry and **all** of its versions, or only one version.
 
 **Parameters:**
 - `title` (str) - Credential name
+- `version` (int, optional) - delete only this version and keep the others
 
 **Returns:**
-- `bool` - True if deleted, False if not found
+- `bool` - True if anything was deleted, False if nothing matched
 
 **Example:**
 ```python
-success = stash.delete("old-api-key")
-if success:
-    print("Deleted successfully")
+stash.delete("old-api-key")              # every version
+stash.delete("api-token", version=1)     # just api-token@0000000001
 ```
 
-#### `list(show_password=False)`
+#### `prune(title, keep)`
 
-List all credentials.
+Delete all but the newest `keep` versions (`keep >= 1`) of a credential.
+
+**Returns:**
+- `list[str]` - the version strings that were deleted (empty if there was nothing to prune)
+
+```python
+removed = stash.prune("api-token", keep=3)   # e.g. ["0000000001", "0000000002"]
+```
+
+Versions are a history of values, not an audit log: they do not record who changed a secret or when.
+
+#### `list(show_password=False, latest_only=False)`
+
+List credentials.
 
 **Parameters:**
 - `show_password` (bool) - Whether to include passwords
+- `latest_only` (bool) - collapse versions: each base name appears once, as its latest version, with
+  `credential_name` set to the base name and `version` filled in (default: every stored entry, so versions show up
+  as `name@0000000001` rows)
 
 **Returns:**
-- `list[Credential]` - List of all credentials
+- `list[Credential]` - List of credentials
 
 **Example:**
 ```python
@@ -164,7 +180,7 @@ Create a configured boto3 S3 client from stored credentials.
 - `addressing` (str) - "path" or "virtual" (default: "path")
 - `signature_version` (str) - Signature version (default: "s3v4")
 - `retries_max_attempts` (int) - Max retries (default: 10)
-- `verbose` (bool) - Enable verbose output (default: True)
+- `verbose` (bool) - Print the endpoint line to stderr (default: False; library calls are silent, the `s3-test` CLI enables it)
 
 **Returns:**
 - `boto3.client` - Configured S3 client
@@ -194,28 +210,40 @@ Generate SQLAlchemy database URL from stored credentials.
 
 **Parameters:**
 - `title` (str) - Credential containing database info
-- `driver` (str, optional) - Database driver (default: None)
+- `dialect` (str, optional) - `"postgresql"` (default), `"mysql"` or `"mariadb"`; overrides the credential's
+  `dialect` custom property
+- `driver` (str, optional) - driver suffix (default: None, i.e. none). Checked against an allow-list per dialect:
+  `postgresql`: `psycopg`, `psycopg2`, `asyncpg`, `pg8000`; `mysql`: `pymysql`, `mysqlconnector`, `asyncmy`,
+  `aiomysql`; `mariadb`: `mariadbconnector`, `pymysql`. `"auto"` means `psycopg` for PostgreSQL and no suffix for the others
 - `mask_password` (bool) - Mask password in URL (default: True)
 - `mask_style` (str) - "stars" or "omit" (default: "stars")
 - `database` (str, optional) - Database name
-- `sslmode_override` (str, optional) - SSL mode override
+- `sslmode_override` (str, optional) - SSL mode override (PostgreSQL only)
 
 **Returns:**
 - `str` - SQLAlchemy-compatible database URL
 
+An unknown dialect, a driver that does not belong to the dialect, a missing database name, a bad `host:port`, or
+`sslmode` on a non-PostgreSQL dialect raises `ValueError` (the last one is an error rather than silently
+dropping a TLS setting). User, password and database name are percent-encoded.
+
 **Example:**
 ```python
 # Generate database URL
-db_url = stash.get_db_url("production-db", 
+db_url = stash.get_db_url("production-db",
                           database="myapp_prod",
                           driver="psycopg")
 # Returns: "postgresql+psycopg://user:*****@host:5432/myapp_prod"
 
 # Unmasked URL
-db_url = stash.get_db_url("dev-db", 
+db_url = stash.get_db_url("dev-db",
                           database="myapp_dev",
                           mask_password=False)
 # Returns: "postgresql://user:realpass@host:5432/myapp_dev"
+
+# MySQL (or put the custom property dialect=mysql on the credential)
+db_url = stash.get_db_url("shop-db", dialect="mysql", driver="pymysql", database="shop")
+# Returns: "mysql+pymysql://user:*****@host:3306/shop"
 ```
 
 **Required credential format:**
@@ -223,6 +251,7 @@ db_url = stash.get_db_url("dev-db",
 - `password` - Database password
 - `url` - Host and port (e.g., "localhost:5432")
 - Custom property `database` or `dbname` (optional if passed as parameter)
+- Custom properties `dialect` and `sslmode` (optional; `sslmode` is PostgreSQL only)
 
 ### Versioning Methods
 
@@ -246,27 +275,98 @@ versions = stash.list_versions("api-token")
 
 #### `hydrate_env(mapping)`
 
-Set environment variables from stored credentials.
+Set `os.environ` variables from stored credentials (only for variables that are not already set).
 
 **Parameters:**
-- `mapping` (dict) - Map of env var names to credential specs
+- `mapping` (dict) - Map of `"Title:FIELD"` to the environment variable name. `FIELD` is `AWS_ACCESS_KEY_ID`
+  (the username), `AWS_SECRET_ACCESS_KEY` (the password) or a custom property name. The latest version is used.
 
 **Example:**
 ```python
-# Set environment variables
 stash.hydrate_env({
-    "DATABASE_URL": "prod-db:url",
-    "API_TOKEN": "api-creds:password",
-    "S3_KEY": "s3-backup:username"
+    "s3-backup:AWS_ACCESS_KEY_ID": "AWS_ACCESS_KEY_ID",
+    "s3-backup:AWS_SECRET_ACCESS_KEY": "AWS_SECRET_ACCESS_KEY",
 })
 ```
+
+#### `resolve_env(prefix=None, mappings=None, *, strip_prefix=True, upper=False)`
+
+Compute environment variables for a set of secrets *without* touching `os.environ`; this is the engine behind
+`mattstash env` and `mattstash exec`.
+
+**Parameters:**
+- `prefix` (str, optional) - every secret whose base title starts with it becomes a variable. The name is the title
+  without the prefix (kept with `strip_prefix=False`), characters outside `[A-Za-z0-9_]` replaced by `_`, upper-cased
+  with `upper=True`. `""` selects every secret.
+- `mappings` (dict or iterable, optional) - `{"ENVVAR": "TITLE[:FIELD]"}` or an iterable of `"ENVVAR=TITLE[:FIELD]"`
+  strings. `FIELD` is `password` (default), `username`, `url`, `notes` or a custom property name; the field is taken
+  after the last `:`, so a title containing `:` needs an explicit field.
+
+**Returns:**
+- `dict[str, str]` - `{ENVVAR: value}`, from the latest version of each secret, read from one consistent snapshot.
+  Nothing is logged or written.
+
+**Raises:** `ValueError` (nothing selected, invalid variable name, a name produced twice, NUL in a value),
+`CredentialNotFoundError` (a mapped secret/field value is missing, or the prefix matches nothing) and the usual
+database errors.
+
+```python
+env = stash.resolve_env("myapp/", upper=True)          # {"DB_PASSWORD": "...", "API_KEY": "..."}
+env = stash.resolve_env(mappings={"PGPASSWORD": "production-db", "PGUSER": "production-db:username"})
+
+import os, subprocess
+subprocess.run(["./server"], env={**os.environ, **env}, check=True)
+```
+
+`mattstash.core.env_vars` also provides `format_shell`, `format_dotenv` and `format_json` (the renderers of
+`mattstash env`; shell output is `shlex`-quoted and safe to `eval`).
+
+### Operations
+
+#### `backup(dest=None, *, force=False)`
+
+Write a consistent copy of the database file and return its path. The copy is taken while holding the write lock
+(it cannot interleave with a writer), written to a temp file with mode `0600` and renamed into place.
+
+**Parameters:**
+- `dest` (str, optional) - a file, or an existing directory (the default name is used inside it). Default:
+  `<db>.bak-<UTC timestamp>` next to the database
+- `force` (bool) - replace `dest` if it exists (otherwise `DatabaseExistsError`)
+
+The backup is the encrypted file as it is (it needs no password; the sidecar is not copied). Raises
+`DatabaseNotFoundError`, `DatabaseLockError`, `DatabaseExistsError` or `MattStashError` (bad destination).
+
+```python
+path = stash.backup()                       # /data/mattstash.kdbx.bak-20261007T120000Z
+stash.backup("/backups/", force=False)
+```
+
+#### `rotate_password(new_password, *, backup=False)`
+
+Change the master password. Under the write lock it verifies the current password, optionally copies the file first
+(`backup=True`; the copy keeps the *old* password and its path is returned), re-keys and saves, re-opens the file with
+the new password, and atomically replaces the sidecar file (mode 0600) if there is one. `self.password` is updated.
+
+**Returns:** the backup path if `backup=True`, otherwise `None`.
+
+**Raises:** `DatabaseAccessError` (wrong current password; nothing changed), `DatabaseLockError`,
+`InvalidCredentialError` (empty new password, or edge whitespace while a sidecar exists), and `SidecarUpdateError`
+if the database *was* re-keyed but the sidecar could not be replaced.
+
+```python
+stash = MattStash("/data/mattstash.kdbx", password=old_password)
+backup_path = stash.rotate_password(new_password, backup=True)
+```
+
+Other processes holding the old password (for example a server started with `KDBX_PASSWORD`) can no longer open
+the database until they receive the new one.
 
 ## Module-Level Functions
 
 For convenience, MattStash provides module-level functions that use a shared instance:
 
 ```python
-from mattstash import get, put, delete, list_creds, get_s3_client, get_db_url
+from mattstash import get, put, delete, prune, list_creds, get_s3_client, get_db_url
 ```
 
 ### `get(title, path=None, password=None, show_password=False, version=None)`
@@ -300,15 +400,20 @@ put("database",
     url="localhost:5432")
 ```
 
-### `delete(title, path=None, password=None)`
+### `delete(title, path=None, password=None, version=None)`
 
-Module-level credential deletion.
+Module-level credential deletion (all versions, or only `version`).
 
 ```python
 from mattstash import delete
 
 success = delete("old-token")
+delete("api-token", version=1)
 ```
+
+### `prune(title, keep, path=None, password=None)`
+
+Module-level version pruning; returns the deleted version strings.
 
 ### `list_creds(path=None, password=None, show_password=False)`
 
@@ -332,7 +437,7 @@ s3 = get_s3_client("s3-backup", region="us-west-2")
 
 ### `get_db_url(title, path=None, password=None, **kwargs)`
 
-Module-level database URL generation.
+Module-level database URL generation (accepts `dialect=` like `MattStash.get_db_url`).
 
 ```python
 from mattstash import get_db_url
@@ -353,6 +458,7 @@ class Credential:
     notes: str
     tags: list[str]
     show_password: bool
+    version: str | None
 ```
 
 ### Properties
@@ -365,31 +471,32 @@ class Credential:
 - `tags` - List of tags
 - `show_password` - Whether passwords are visible
 
-### Methods
-
-#### `get_custom_property(key)`
-
-Get custom property value from the underlying KeePass entry.
-
-```python
-cred = stash.get("database")
-db_name = cred.get_custom_property("database")
-```
+`Credential` also carries `version` (the zero-padded version string, or `None`).
 
 ## Error Handling
 
-MattStash raises standard Python exceptions:
+A missing *secret* is `None` (`get`) or `False` (`delete`). Problems with the database or the call raise
+exceptions from `mattstash.utils.exceptions` (all subclasses of `MattStashError`):
 
 ```python
+from mattstash.utils.exceptions import (
+    DatabaseAccessError, DatabaseLockError, DatabaseNotFoundError, MattStashError,
+)
+
 try:
     cred = stash.get("nonexistent")
-except FileNotFoundError:
-    print("Database file not found")
-except PermissionError:
-    print("Cannot access database file")
-except ValueError as e:
-    print(f"Invalid data: {e}")
+except DatabaseNotFoundError:
+    print("No database at that path: run `mattstash setup`")
+except DatabaseAccessError:
+    print("Wrong/missing password or corrupt database")
+except DatabaseLockError:
+    print("Another process held the write lock too long")
+if cred is None:
+    print("No such secret")
 ```
+
+`db-url` problems (`get_db_url`) and `resolve_env` input problems are `ValueError`; invalid titles/fields are
+`InvalidCredentialError`.
 
 ## Configuration
 
@@ -398,14 +505,18 @@ except ValueError as e:
 ```python
 from mattstash import config
 
-print(config.default_db_path)      # ~/.credentials/mattstash.kdbx
+print(config.default_db_path)      # ~/.config/mattstash/mattstash.kdbx
 print(config.sidecar_basename)     # .mattstash.txt
 print(config.version_pad_width)    # 10
 ```
 
 ### Environment Variables
 
-- `KDBX_PASSWORD` - Database password (lowest priority)
+- `KDBX_PASSWORD` - Database password
+- `KDBX_PASSWORD_FILE` - File holding the database password
+- `MATTSTASH_DB_PATH` - Default database path
+
+Password precedence: explicit `password=` argument > `KDBX_PASSWORD` > `KDBX_PASSWORD_FILE` > sidecar file.
 
 ## Best Practices
 

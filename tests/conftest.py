@@ -19,6 +19,8 @@ _SCRUBBED_ENV = (
     "MATTSTASH_DB_PATH",
     "MATTSTASH_SERVER_URL",
     "MATTSTASH_API_KEY",
+    "MATTSTASH_API_KEY_FILE",
+    "MATTSTASH_ALLOW_INSECURE_HTTP",
 )
 
 
@@ -27,6 +29,14 @@ def _hermetic_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep ambient credentials/config of the developer or CI machine out of the tests."""
     for name in _SCRUBBED_ENV:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_default_instance() -> None:
+    """The module-level helpers share one lazily created MattStash; don't let it leak between tests."""
+    import mattstash.module_functions as module_functions
+
+    module_functions._default_instance = None
 
 
 @pytest.fixture()

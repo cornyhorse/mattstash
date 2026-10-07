@@ -45,6 +45,7 @@ def get_db_url(
     mask_style: str = "stars",
     database: Optional[str] = None,
     sslmode_override: Optional[str] = None,
+    dialect: Optional[str] = None,
 ) -> str:
     stash = _get_instance(path, password)
     return stash.get_db_url(
@@ -54,6 +55,7 @@ def get_db_url(
         mask_style=mask_style,
         database=database,
         sslmode_override=sslmode_override,
+        dialect=dialect,
     )
 
 
