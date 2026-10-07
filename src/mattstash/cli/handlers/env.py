@@ -75,8 +75,13 @@ class EnvHandler(BaseHandler):
         except ValueError as exc:
             self.error(str(exc))
             return exit_codes.ERROR
-        sys.stdout.write(output)
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(output)
+            sys.stdout.flush()
+        except (UnicodeError, OSError, ValueError) as exc:
+            # a value that cannot be encoded for the terminal, a full disk, a closed pipe ...: no traceback
+            self.error(f"cannot write the environment to stdout: {exc.__class__.__name__}")
+            return exit_codes.ERROR
         return exit_codes.OK
 
     # ---- shared with exec -------------------------------------------------------
@@ -90,6 +95,7 @@ class EnvHandler(BaseHandler):
             upper = self.flag(args, "upper")
             # JSON is data (nothing applies it to an environment), so only the other formats and `exec` need the guard.
             allow_reserved = self.flag(args, "allow_reserved") or self.opt(args, "format", str) == "json"
+            allow_names = [str(n) for n in (self.opt(args, "allow_env_names", list) or [])]
             if self.is_server_mode(args):
                 client = self.get_server_client(args)
                 if client is None:
@@ -102,6 +108,7 @@ class EnvHandler(BaseHandler):
                     strip_prefix=strip_prefix,
                     upper=upper,
                     allow_reserved=allow_reserved,
+                    allow_names=allow_names,
                 )
             else:
                 stash = MattStash(path=self.opt(args, "path", str), password=self.opt(args, "password", str))
@@ -111,6 +118,7 @@ class EnvHandler(BaseHandler):
                     strip_prefix=strip_prefix,
                     upper=upper,
                     allow_reserved=allow_reserved,
+                    allow_names=allow_names,
                 )
             return env, exit_codes.OK
         except CredentialNotFoundError as exc:
@@ -125,7 +133,7 @@ class EnvHandler(BaseHandler):
 
 
 #: Environment variables that unlock the vault itself; ``exec`` does not hand them to the command by default.
-VAULT_CREDENTIAL_ENV = ("KDBX_PASSWORD", "MATTSTASH_API_KEY")
+VAULT_CREDENTIAL_ENV = ("KDBX_PASSWORD", "KDBX_PASSWORD_FILE", "MATTSTASH_API_KEY", "MATTSTASH_API_KEY_FILE")
 
 
 def _exists_but_not_executable(command: str) -> bool:
@@ -198,7 +206,7 @@ class ExecHandler(EnvHandler):
         try:
             # Intentional: `exec` runs the user's command with no shell involved (argv is passed as a list).
             os.execve(program, command, child_env)  # noqa: S606
-        except OSError as exc:
-            self.error(f"exec: cannot execute {command[0]}: {exc.strerror or exc.__class__.__name__}")
+        except (OSError, ValueError) as exc:  # ValueError/UnicodeError: a value or argument that cannot be encoded
+            self.error(f"exec: cannot execute {command[0]}: {getattr(exc, 'strerror', None) or exc.__class__.__name__}")
             return exit_codes.COMMAND_NOT_EXECUTABLE
         return exit_codes.OK  # pragma: no cover - execve only returns on failure (or when mocked)

@@ -167,14 +167,15 @@ def validate_lookup_title(title: str) -> None:
 def api_key_problem(key: str) -> Optional[str]:
     """Why ``key`` cannot be sent as an ``X-API-Key`` header, or ``None`` if it can. Never contains the key.
 
-    Keys are visible ASCII without whitespace (the server rejects anything else in its key files too). A stray
-    newline from a Kubernetes Secret or an ``echo`` is the typical culprit: callers strip surrounding whitespace first.
+    Keys are printable ASCII (an inner space is allowed: the server accepts it in ``MATTSTASH_API_KEY`` and JSON
+    policies). Control characters, non-ASCII text and a leading/trailing space are not: a stray newline from a
+    Kubernetes Secret or an ``echo`` is the typical culprit, and callers strip surrounding whitespace first.
     """
     if not key:
         return "the API key is empty"
-    if not all(0x21 <= ord(ch) <= 0x7E for ch in key):
+    if key != key.strip() or not all(0x20 <= ord(ch) <= 0x7E for ch in key):
         return (
-            "the API key contains whitespace, control or non-ASCII characters "
+            "the API key contains control or non-ASCII characters, or leading/trailing whitespace "
             "(a trailing newline or a byte-order mark in the file or variable?)"
         )
     return None

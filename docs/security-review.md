@@ -2,7 +2,7 @@
 
 Review date: 2026-10-07 · Reviewed version: 0.1.19 (`a4751d4`) · Branch: `claude/security-hardening`
 
-**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · two independent reviews acted on ✅ (4e, 4h)
+**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · three independent reviews acted on ✅ (4e, 4h, 4i)
 
 Target use cases: (1) CLI on machines you log into, (2) API service in a docker-compose stack,
 (3) secrets service inside a k8s cluster, plus other library/CLI uses.
@@ -319,6 +319,31 @@ is left unfixed except the items in section 7. The ones that mattered most:
 
 Regression tests: `tests/test_review_round2_{client,env,core}.py` and the "Round 2" section of
 `server/tests/test_review_findings.py`.
+
+---
+
+## 4i. Focused re-review of the round-2 fixes
+
+Four reviewers re-examined only what 4h changed (core and concurrency, operations, HTTP client, CLI/`env`/`exec`) and
+looked for regressions. Most of what they found was a gap in one of my own round-2 fixes:
+
+| Finding | Fix |
+|---------|-----|
+| A write queued on the lock of a file that was then retargeted (symlink flip, Secret volume swap) was saved into the old file under the old lock | the lock path is re-resolved after acquiring; a mismatch retries, a retarget after the write began is refused (`DatabaseLockError`) |
+| Password refresh after a rotation worked only on the first open; a refresh that failed replaced the working password | candidate password adopted only if it opens the database; refresh on every reload |
+| `rotate_password` did not check that the lock file was still the one it held | same `_guard_write` as every other write |
+| Lock files created by root were root-owned and locked the service user out | lock file takes the database's owner and group permissions |
+| `..` after a symlink was resolved lexically, naming a different file than the OS opens | the path is kept as given; only the OS resolves it |
+| An unreadable database (`EMFILE`) was reported as "missing" and in-memory state dropped | typed `DatabaseAccessError`; state kept |
+| Staging file names exceeded `NAME_MAX` for long database names; the orphan-lock retry could close a reused descriptor | names are truncated to fit; descriptor set to `-1` once closed |
+| Rotation errors: the failed-sidecar message did not say how to finish; a rekey-verify failure looked like a wrong password; shared sidecars were silent; a generated password appeared only after the slow verification | exact `mv` command, `RekeyVerifyError` is not a `DatabaseAccessError`, other databases named, `on_rekeyed` callback |
+| `--server-url ""` silently used the local database; empty `--db-password`/`--password-file`/`--new-password-file` fell back | explicit errors (an empty *environment variable* still means "not set") |
+| SIGTERM/SIGHUP skipped cleanup and left staged password files; `setup --generate` lost the password on a closed stdout | handled like Ctrl-C (exit 130); the password is shown on stderr first |
+| `setup --force` as root changed owners; restrictive umask and nested directories broke backups | owner kept; directories 0700, backups 0600 regardless of umask |
+| Client: base URLs with a query, fragment or user-info misrouted requests or leaked credentials; headers could be dribbled forever; compressed responses bypassed the size cap; hostile `Retry-After` and deeply nested JSON raised raw exceptions; keys with inner spaces were refused although the server accepts them | refused/handled with `ServerError`; total deadline also covers the headers; `Accept-Encoding: identity` |
+| `env`/`exec`: `GIT_*`, `EDITOR`, `PAGER`, proxy and `KUBECONFIG` variables could still be injected through a prefix; `exec` passed the `_FILE` vault variables on; one reserved name forced `--allow-reserved` for all | larger denylist, `_FILE` variables removed too, `--allow-env-name NAME` for a single name |
+
+Regression tests: `tests/test_review_round3.py`.
 
 ---
 

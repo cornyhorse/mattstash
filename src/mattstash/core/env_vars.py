@@ -47,22 +47,40 @@ DEFAULT_FIELD = "password"
 #: Output formats of ``mattstash env``.
 FORMATS = ("shell", "dotenv", "docker-env", "json")
 
-#: Variables that change how a program loads code or how a shell behaves. A secret *title* must not be able to set
-#: one of these by accident (or by malice: anyone who can write a title under the prefix could run code in the
-#: consumer through ``LD_PRELOAD`` or ``BASH_ENV``). Names derived from ``--prefix`` are refused; an operator can
-#: still choose one deliberately with ``--map NAME=TITLE`` or ``--allow-reserved``.
+#: Variables that change how a program loads code, runs commands or where it connects. A secret *title* must not be
+#: able to set one of these by accident (or by malice: anyone who can write a title under the prefix could run code in
+#: the consumer through ``LD_PRELOAD``, ``BASH_ENV`` or ``GIT_CONFIG_*``). Names derived from ``--prefix`` are refused;
+#: an operator can still choose one deliberately with ``--map NAME=TITLE``, ``--allow-env-name NAME`` or
+#: ``--allow-reserved``. The list is best effort -- it names the well-known ones -- not a proof that no other
+#: variable influences a particular program: keep the prefix to secrets you wrote yourself, and scope write keys.
 RESERVED_ENV_NAMES = frozenset(
     {
+        # shells and program lookup
         "PATH", "IFS", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "PROMPT_COMMAND", "CDPATH", "GLOBIGNORE",
-        "PS0", "PS1", "PS2", "PS3", "PS4", "HOME", "SHELL", "TMPDIR", "LD_PRELOAD",
-        "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "CLASSPATH", "GCONV_PATH", "LOCPATH", "NLSPATH",
-        "HOSTALIASES", "RESOLV_HOST_CONF", "MALLOC_CONF", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
-        "CURL_CA_BUNDLE", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_EXEC_PATH", "KDBX_PASSWORD",
-        "KDBX_PASSWORD_FILE", "MATTSTASH_API_KEY", "MATTSTASH_API_KEY_FILE", "MATTSTASH_SERVER_URL",
-        "MATTSTASH_DB_PATH",
+        "PS0", "PS1", "PS2", "PS3", "PS4", "HOME", "SHELL", "TMPDIR", "ZDOTDIR", "MANPATH",
+        # dynamic loader / libc
+        "GCONV_PATH", "LOCPATH", "NLSPATH", "HOSTALIASES", "RESOLV_HOST_CONF", "MALLOC_CONF", "GLIBC_TUNABLES",
+        "OPENSSL_CONF", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "AWS_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED",
+        # interpreters and build tools
+        "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONBREAKPOINT", "PYTHONUSERBASE", "PYTHONEXECUTABLE",
+        "PYTHONINSPECT", "PYTHONPYCACHEPREFIX", "PERL5LIB", "PERL5OPT", "PERLLIB", "PERL5DB", "RUBYOPT", "RUBYLIB",
+        "NODE_OPTIONS", "NODE_PATH", "LUA_INIT", "LUA_PATH", "LUA_CPATH", "PHP_INI_SCAN_DIR", "PHPRC",
+        "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JAVA_HOME", "CLASSPATH", "MAVEN_OPTS",
+        "GRADLE_OPTS", "RUSTC_WRAPPER", "CC", "CXX", "LD", "MAKEFLAGS",
+        # programs that run another program named in the environment
+        "EDITOR", "VISUAL", "PAGER", "LESSOPEN", "LESSCLOSE", "BROWSER", "SSH_ASKPASS", "SUDO_ASKPASS",
+        # where a tool connects
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        "KUBECONFIG", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT",
+        # mattstash itself
+        "KDBX_PASSWORD", "KDBX_PASSWORD_FILE", "MATTSTASH_API_KEY", "MATTSTASH_API_KEY_FILE",
+        "MATTSTASH_SERVER_URL", "MATTSTASH_DB_PATH",
     }
 )  # fmt: skip
-RESERVED_ENV_PREFIXES = ("LD_", "DYLD_", "BASH_FUNC_", "PYTHON", "PERL", "RUBY", "JAVA_", "_JAVA_", "JDK_JAVA_")
+#: ``GIT_*`` are all behaviour switches of git (``GIT_CONFIG_COUNT`` + ``GIT_CONFIG_KEY_n`` can define an alias that
+#: runs a shell command); the others are loader variables.
+RESERVED_ENV_PREFIXES = ("LD_", "DYLD_", "BASH_FUNC_", "GIT_", "XDG_")
 
 
 def is_reserved_env_name(name: str) -> bool:
@@ -165,6 +183,7 @@ def collect_env(
     strip_prefix: bool = True,
     upper: bool = False,
     allow_reserved: bool = False,
+    allow_names: Iterable[str] = (),
 ) -> Dict[str, str]:
     """Build ``{ENVVAR: value}`` from ``source`` according to ``prefix`` and ``mappings``.
 
@@ -189,6 +208,7 @@ def collect_env(
 
     env: Dict[str, str] = {}
     origins: Dict[str, str] = {}
+    allowed = frozenset(allow_names)
 
     def add(env_name: str, value: str, origin: str) -> None:
         if env_name in env:
@@ -202,15 +222,16 @@ def collect_env(
             raise CredentialNotFoundError(f"no secrets found with prefix {prefix!r}")
         for title in titles:
             env_name = derive_env_name(title, prefix, strip_prefix=strip_prefix, upper=upper)
-            if not allow_reserved and is_reserved_env_name(env_name):
-                raise ValueError(
-                    f"secret {title!r} would set the reserved variable {env_name} (it changes how programs load code "
-                    f"or how shells behave); name it explicitly with --map {env_name}=TITLE, or pass --allow-reserved"
-                )
             value = source.value(title, DEFAULT_FIELD)
             if not value:
                 logger.warning("skipping %r: it has no password/value", title)
                 continue
+            if not allow_reserved and env_name not in allowed and is_reserved_env_name(env_name):
+                raise ValueError(
+                    f"secret {title!r} would set the reserved variable {env_name} (it changes how programs load code, "
+                    f"run commands or connect); name it explicitly with --map {env_name}=TITLE, allow just this "
+                    f"name with --allow-env-name {env_name}, or pass --allow-reserved"
+                )
             add(env_name, value, repr(title))
 
     for env_name in sorted(mapped):

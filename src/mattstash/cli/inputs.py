@@ -69,6 +69,14 @@ def _interactive(stdin: object) -> bool:
         return False
 
 
+def _hidden_prompt(option: str) -> str:
+    """One line from the terminal without echo; Ctrl-D (EOF) is "no data", not a traceback."""
+    try:
+        return getpass.getpass(f"{option} (input is not shown): ")
+    except EOFError:
+        raise InputError(f"{option}: no data received (end of input)") from None
+
+
 def read_stdin_secret(option: str, stream: Optional[IO[bytes]] = None) -> str:
     """Read a secret from stdin (all of it), dropping one trailing newline. Rejects empty input.
 
@@ -76,7 +84,7 @@ def read_stdin_secret(option: str, stream: Optional[IO[bytes]] = None) -> str:
     """
     stdin = sys.stdin
     if stream is None and _interactive(stdin):
-        value = getpass.getpass(f"{option} (input is not shown): ")
+        value = _hidden_prompt(option)
         if not value:
             raise InputError(f"{option}: no data received on stdin (empty value)")
         return value
@@ -100,7 +108,7 @@ def read_stdin_line(option: str) -> str:
     """
     stdin = sys.stdin
     if _interactive(stdin):
-        value = getpass.getpass(f"{option} (input is not shown): ")
+        value = _hidden_prompt(option)
         if not value:
             raise InputError(f"{option}: no password received on stdin (empty line)")
         return value

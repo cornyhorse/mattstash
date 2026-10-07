@@ -18,6 +18,17 @@ def _temp_name(path: str) -> str:
     return f"{path}.tmp-{os.getpid()}-{secrets.token_hex(4)}"
 
 
+def staging_name(directory: str, base: str, token: str, suffix: str = ".new") -> str:
+    """Hidden staging file name ``<directory>/.<base>.<token><suffix>`` that always fits NAME_MAX (255 bytes).
+
+    A database called with a 240-character name would otherwise get a staging name too long to create. The base is
+    shortened (at a character boundary) to keep the file recognisable.
+    """
+    room = 255 - len(token) - len(suffix) - 2  # the leading dot and the dot before the token
+    shown = base.encode("utf-8")[: max(1, min(room, 100))].decode("utf-8", errors="ignore")
+    return os.path.join(directory, f".{shown}.{token}{suffix}")
+
+
 def match_owner(reference: os.stat_result, path: str) -> None:
     """Best effort: give ``path`` the owner and group of the file it is about to replace.
 

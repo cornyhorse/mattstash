@@ -27,7 +27,7 @@ deprecated), whereas `--db-password` and `--db-password-file` always mean the da
 ### Server Mode Options
 
 ```bash
---server-url URL            # MattStash server URL (enables server mode)
+--server-url URL            # MattStash server URL (enables server mode; an empty value is an error, never local mode)
 --api-key KEY               # API key for server authentication
 --api-key-file FILE         # Read the API key from FILE (surrounding whitespace is stripped)
 ```
@@ -369,7 +369,7 @@ because you asked for them, like `get --raw`; nothing else is printed there and 
 
 ```bash
 mattstash env [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... [--format shell|dotenv|docker-env|json]
-              [--strip-prefix | --no-strip-prefix] [--upper] [--allow-reserved]
+              [--strip-prefix | --no-strip-prefix] [--upper] [--allow-env-name NAME]... [--allow-reserved]
 ```
 
 **Selection** (at least one of `--prefix`/`--map` is required; the latest version of each secret is used):
@@ -381,10 +381,14 @@ mattstash env [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... [--format shell|doten
   contains `:` needs an explicit field (`X=svc:prod:password`). Server mode only offers the four standard fields.
 
 Names must match `[A-Za-z_][A-Za-z0-9_]*`. Names **derived from `--prefix`** may not be variables that change how
-programs load code or how shells behave (`LD_PRELOAD`, `LD_*`, `DYLD_*`, `PATH`, `IFS`, `BASH_ENV`, `PS4`,
-`PROMPT_COMMAND`, `PYTHON*`, `NODE_OPTIONS`, `HOME`, `KDBX_PASSWORD`, ...): otherwise whoever can write a secret under
-the prefix could run code in the consumer. Choose such a variable on purpose with `--map NAME=TITLE`, or pass
-`--allow-reserved` (the `json` format is data and is not restricted). Nothing is printed if a name is invalid, two secrets would produce the
+programs load code, which program they run or where they connect (`LD_PRELOAD`, `LD_*`, `DYLD_*`, `PATH`, `IFS`,
+`BASH_ENV`, `PS4`, `PROMPT_COMMAND`, `PYTHON*`, `NODE_OPTIONS`, `GIT_*`, `EDITOR`, `PAGER`, `HTTP_PROXY`,
+`KUBECONFIG`, `DOCKER_HOST`, `HOME`, `KDBX_PASSWORD`, ...): otherwise whoever can write a secret under the prefix could
+run code in the consumer or redirect its traffic. The list is a best-effort denylist, not a boundary: keep the
+prefix to secrets you control. Choose such a variable on purpose with `--map NAME=TITLE`, allow a single one with
+`--allow-env-name NAME` (repeatable; for example `JAVA_HOME`), or pass `--allow-reserved` for all of them (the `json`
+format is data and is not restricted). A secret with an empty password is skipped before this check.
+ Nothing is printed if a name is invalid, two secrets would produce the
 same name (the error names the titles, never the values), a mapped secret or field does not exist, or a prefix
 matches nothing.
 
@@ -418,7 +422,7 @@ write the output to disk or logs unless you mean to; prefer `exec`.
 
 ```bash
 mattstash exec [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... [--strip-prefix | --no-strip-prefix] [--upper]
-               [--allow-reserved] [--override] [--keep-vault-env] -- COMMAND [ARGS...]
+               [--allow-env-name NAME]... [--allow-reserved] [--override] [--keep-vault-env] -- COMMAND [ARGS...]
 ```
 
 Builds the same environment as `env` and then **replaces** the process with `COMMAND` (`execve`): the command's exit
@@ -426,11 +430,11 @@ status is the process's exit status, no shell is involved, and nothing is writte
 are already set win unless you pass `--override`. The command is looked up with your original `PATH` (a secret
 named `PATH` cannot redirect the lookup). Everything after `--` belongs to the command; options must come before it.
 
-The command inherits your environment **except** `KDBX_PASSWORD` and `MATTSTASH_API_KEY`: those unlock the whole
-vault, and the command should receive only the secrets you asked for. Pass `--keep-vault-env` if the command needs
-them (for example a wrapper that calls `mattstash` itself). `KDBX_PASSWORD_FILE` / `MATTSTASH_API_KEY_FILE` (file
-*paths*) are left alone; a secret you deliberately map to one of the removed names is still injected (also without
-`--override`). The command starts with default signal handling (`SIGPIPE` is not left ignored, so pipelines behave
+The command inherits your environment **except** `KDBX_PASSWORD`, `MATTSTASH_API_KEY` and their `_FILE` variants
+(`KDBX_PASSWORD_FILE`, `MATTSTASH_API_KEY_FILE`): those unlock the whole vault - a file path is a key to it when the
+command can read the file - and the command should receive only the secrets you asked for. Pass `--keep-vault-env`
+if the command needs them (for example a wrapper that calls `mattstash` itself). A secret you deliberately map to
+one of the removed names is still injected (also without `--override`). The command starts with default signal handling (`SIGPIPE` is not left ignored, so pipelines behave
 as they would without `mattstash`). Python may add `LC_CTYPE=C.UTF-8` to a minimal environment that sets no locale
 (PEP 538); set `LC_ALL` or `LANG` if the command must not see it. A command that exists but is not executable
 exits `126`, one that is not found exits `127`.
@@ -491,7 +495,8 @@ database, otherwise nothing changes). Steps: copy the database first (`<db>.bak-
 `--no-backup`), re-key and save it, **immediately** replace the sidecar file if there is one (atomically, mode 0600,
 symlinks followed), then re-open the database with the new password to prove it works. The sidecar is only rewritten
 if it holds the password the database was opened with: one `.mattstash.txt` serves a whole directory, and replacing
-another database's password record would lock you out of that database (the command says when it left it alone).
+another database's password record would lock you out of that database (the command says when it left it alone, and
+names the other databases in the directory that appear to share the sidecar).
 
 **New password source:** `--new-password-file FILE` (surrounding whitespace stripped, like `KDBX_PASSWORD_FILE`),
 `--new-password-stdin` (first line), `--generate` (random; printed once), or, when stdin is a terminal, a prompt asked
@@ -505,7 +510,9 @@ updated (the command warns if those variables are set in its own environment).
 Once the database is re-keyed the new password cannot be lost: if anything after that fails (the sidecar cannot be
 replaced - the new password is then kept in a private file next to it and the message names it -, or re-reading the
 database fails), the command still prints a generated password (to stderr if stdout is unusable) and the backup path,
-and exits non-zero. Pressing Ctrl-C right after the re-key leaves the sidecar updated, not stale.
+and exits non-zero. Pressing Ctrl-C (or sending `SIGTERM`) right after the re-key leaves the sidecar updated, not
+stale; before the re-key it leaves the old password in force, names the backup and exits `130`. A generated password
+is shown as soon as the database is re-keyed, before the slower verification.
 
 **Exit codes:** `0` success, `6` no database file, `7` wrong or missing current password, the write lock timed out, or the
 database was re-keyed but could not be re-read, `1` no/invalid new password, or the database was re-keyed but the
@@ -563,3 +570,4 @@ Needs PyYAML (`pip install "mattstash[config]"`). See [configuration.md](configu
 | 7 | database cannot be opened: wrong/missing password, corrupt file, lock timeout |
 | 8 | `setup` / `backup` refused to overwrite existing files |
 | 126 / 127 | `exec`: the command could not be executed / was not found |
+| 130 | interrupted (Ctrl-C, `SIGTERM` or `SIGHUP`); cleanup ran and nothing half-written was left behind |

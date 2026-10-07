@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from mattstash.core.password_resolver import read_password_file
+
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
 
@@ -52,7 +54,8 @@ class Config:
     REFUSE_SIDECAR: bool = _get_bool_env("MATTSTASH_REFUSE_SIDECAR")
 
     # API Security
-    API_KEY: Optional[str] = os.getenv("MATTSTASH_API_KEY")
+    # Stripped like the key files: a Kubernetes Secret or `echo` adds a newline that no client can ever send.
+    API_KEY: Optional[str] = (os.getenv("MATTSTASH_API_KEY") or "").strip() or None
     API_KEYS_FILE: Optional[str] = os.getenv("MATTSTASH_API_KEYS_FILE")
     MIN_KEY_LENGTH: int = _get_int_env("MATTSTASH_MIN_KEY_LENGTH", 32, minimum=8, maximum=256)
     REQUIRE_SCOPED_KEYS: bool = _get_bool_env("MATTSTASH_REQUIRE_SCOPED_KEYS")
@@ -69,7 +72,7 @@ class Config:
     #: Writes (POST/DELETE) that may be in flight at once. Each waits for the database write lock in a worker thread;
     #: more than this are answered 503 immediately, so a stuck lock holder cannot use up every worker thread and
     #: take reads and the readiness probe down with it.
-    MAX_CONCURRENT_WRITES: int = _get_int_env("MATTSTASH_MAX_CONCURRENT_WRITES", 8, minimum=1, maximum=64)
+    MAX_CONCURRENT_WRITES: int = _get_int_env("MATTSTASH_MAX_CONCURRENT_WRITES", 8, minimum=1, maximum=32)
     MAX_REQUEST_BODY_BYTES: int = _get_int_env(
         "MATTSTASH_MAX_REQUEST_BODY_BYTES",
         1_048_576,
@@ -94,7 +97,12 @@ class Config:
         if cls.KDBX_PASSWORD_FILE:
             password_path = Path(cls.KDBX_PASSWORD_FILE)
             if password_path.exists():
-                password = password_path.read_text().strip()
+                # The library's reader, so the server and the CLI can never disagree about the same file
+                # (surrounding whitespace, a UTF-8 BOM and the size cap are handled in one place).
+                try:
+                    password = read_password_file(str(password_path))
+                except (OSError, UnicodeDecodeError) as exc:
+                    raise ValueError(f"KDBX password file cannot be read: {exc.__class__.__name__}") from None
                 if not password:
                     raise ValueError("KDBX password file is empty")
                 return password

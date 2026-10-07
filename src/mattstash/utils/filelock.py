@@ -25,6 +25,7 @@ from types import TracebackType
 from typing import Optional
 
 from .exceptions import DatabaseLockError
+from .fileops import match_owner
 
 if sys.platform == "win32":  # pragma: no cover - exercised on Windows only
     import msvcrt
@@ -71,10 +72,16 @@ class FileLock:
     #: Every live lock, so the at-fork hook can reset them in a child process.
     _instances: "weakref.WeakSet[FileLock]" = weakref.WeakSet()
 
-    def __init__(self, path: str, timeout: float = 30.0, poll_interval: float = 0.02) -> None:
+    def __init__(
+        self, path: str, timeout: float = 30.0, poll_interval: float = 0.02, reference: Optional[str] = None
+    ) -> None:
         self.path = path
         self.timeout = timeout
         self.poll_interval = poll_interval
+        #: The file this lock protects (the database). A lock file this process creates gets its owner, group and
+        #: group permissions, so a lock created by root (or by one member of a shared group) does not lock the
+        #: service user out of the database it has every right to write.
+        self.reference = reference
         self._fd: Optional[int] = None
         self._depth = 0
         self._acquired_ns = 0
@@ -84,21 +91,46 @@ class FileLock:
     def held(self) -> bool:
         return self._depth > 0
 
+    @property
+    def depth(self) -> int:
+        """How many times the current owner has acquired the lock (re-entrant)."""
+        return self._depth
+
     def _open(self) -> int:
         try:
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        except PermissionError as exc:
+            # e.g. a 0400 lock file left by a restrictive umask: flock does not need write access
             try:
-                fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
-            except PermissionError:
-                # e.g. a 0400 lock file left by a restrictive umask: flock does not need write access
                 fd = os.open(self.path, os.O_RDONLY)
+            except OSError:
+                # Report the original problem (permission denied), not the fallback's "no such file".
+                raise DatabaseLockError(f"Cannot create lock file {self.path}: {exc.strerror or exc}") from exc
         except OSError as exc:
             raise DatabaseLockError(f"Cannot create lock file {self.path}: {exc.strerror or exc}") from exc
-        if hasattr(os, "fchmod") and hasattr(os, "geteuid"):  # POSIX only
-            with contextlib.suppress(OSError):
-                st = os.fstat(fd)
-                if st.st_uid == os.geteuid() and stat.S_IMODE(st.st_mode) & 0o600 != 0o600:
-                    os.fchmod(fd, 0o600)
+        self._fix_ownership(fd)
         return fd
+
+    def _fix_ownership(self, fd: int) -> None:
+        """Make a lock file we own usable by everyone who may write the database (POSIX; best effort)."""
+        if not (hasattr(os, "fchmod") and hasattr(os, "geteuid")):
+            return
+        with contextlib.suppress(OSError):
+            st = os.fstat(fd)
+            if st.st_uid != os.geteuid() and os.geteuid() != 0:
+                return  # not ours to change
+            wanted = stat.S_IMODE(st.st_mode) | 0o600
+            if self.reference is not None:
+                try:
+                    ref = os.stat(self.reference)
+                except OSError:
+                    ref = None
+                if ref is not None:
+                    wanted |= stat.S_IMODE(ref.st_mode) & 0o060  # the database's group read/write bits
+                    if (st.st_uid, st.st_gid) != (ref.st_uid, ref.st_gid):
+                        match_owner(ref, self.path)
+            if wanted != stat.S_IMODE(st.st_mode):
+                os.fchmod(fd, wanted)
 
     def _is_current(self, fd: int) -> bool:
         """True if ``fd`` is still the file at ``self.path`` (it may have been deleted or replaced meanwhile)."""
@@ -121,11 +153,17 @@ class FileLock:
                 "nothing was saved. Retry the operation."
             )
 
-    def acquire(self, timeout: Optional[float] = None) -> None:
+    def acquire(self, timeout: Optional[float] = None, *, reported_timeout: Optional[float] = None) -> None:
+        """Take the lock, waiting at most ``timeout`` seconds (default: the lock's own).
+
+        ``reported_timeout`` is what a timeout error says was waited when the caller spent part of a larger
+        budget elsewhere (it passes the remainder as ``timeout`` and the whole budget here).
+        """
         if self._depth:
             self._depth += 1
             return
         wait = self.timeout if timeout is None else timeout
+        shown = wait if reported_timeout is None else reported_timeout
         deadline = time.monotonic() + wait
         fd = self._open()
         try:
@@ -138,9 +176,9 @@ class FileLock:
                         raise DatabaseLockError(f"Cannot lock {self.path}: {exc.strerror or exc}") from exc
                     if time.monotonic() >= deadline:
                         raise DatabaseLockError(
-                            f"Timed out after {wait:.0f}s waiting for another MattStash process to release {self.path}"
+                            f"Timed out after {shown:.0f}s waiting for another MattStash process to release {self.path}"
                         ) from exc
-                    with contextlib.suppress(OSError, NotImplementedError):
+                    with contextlib.suppress(Exception):  # OSError, NotImplementedError, TypeError (Windows)
                         os.utime(fd, None)  # "somebody is waiting": the holder reads this when it releases
                     time.sleep(self.poll_interval)
                     continue
@@ -150,10 +188,16 @@ class FileLock:
                 with contextlib.suppress(OSError):
                     _unlock(fd)
                 os.close(fd)
+                fd = -1  # closed: the error path below must not close this number again (it may be reused)
+                if time.monotonic() >= deadline:
+                    raise DatabaseLockError(
+                        f"Timed out after {shown:.0f}s: the lock file {self.path} kept being replaced while waiting"
+                    )
                 fd = self._open()
         except BaseException:
-            with contextlib.suppress(OSError):
-                os.close(fd)
+            if fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
             raise
         self._fd = fd
         self._depth = 1

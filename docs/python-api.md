@@ -349,7 +349,7 @@ path = stash.backup()                       # /data/mattstash.kdbx.bak-20261007T
 stash.backup("/backups/", force=False)
 ```
 
-#### `rotate_password(new_password, *, backup=False)`
+#### `rotate_password(new_password, *, backup=False, on_rekeyed=None)`
 
 Change the master password. Under the write lock it verifies the current password, optionally copies the file first
 (`backup=True`; the copy keeps the *old* password and its path is returned), re-keys and saves, replaces the sidecar
@@ -358,13 +358,18 @@ password to prove it works. The sidecar is only rewritten if it holds the passwo
 `.mattstash.txt` serves a whole directory and may belong to another database (a warning says it was left alone).
 `self.password` is updated.
 
+`on_rekeyed` is an optional callable run as soon as the database is re-keyed and saved, before the slow
+verification: use it to show a generated password while it is certain to exist. An exception from the callback is
+logged and never aborts the rotation.
+
 **Returns:** the backup path if `backup=True`, otherwise `None`.
 
 **Raises:** `DatabaseAccessError` (wrong current password; nothing changed), `DatabaseLockError`,
 `InvalidCredentialError` (empty new password, or edge whitespace while a sidecar will be updated), and
 `RotationIncompleteError` if the database *was* re-keyed but something afterwards failed: `SidecarUpdateError` (the
 sidecar could not be replaced; the new password is kept in the file named by `staged_path`) or `RekeyVerifyError`
-(re-reading failed, for example an I/O error; the database and the sidecar already use the new password). Whenever you
+(re-reading failed, for example an I/O error; the database and the sidecar already use the new password; it is *not* a
+`DatabaseAccessError`, so a handler for "wrong password" never mistakes it for one). Whenever you
 catch `RotationIncompleteError` the new password **is in effect**: make sure it reaches the user. On any exception
 `backup_path` (when set) names the pre-rotation backup. An interruption (Ctrl-C) right after the re-key rolls the sidecar
 forward instead of discarding the only record of the new password.

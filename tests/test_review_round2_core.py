@@ -255,8 +255,8 @@ def test_c7_a_deleted_lock_file_is_detected_before_saving(tmp_path: Path):
     stash = MattStash(str(db), password=OLD)
     real_acquire = FileLock.acquire
 
-    def acquire_then_someone_deletes_the_lock_file(self, timeout=None):
-        real_acquire(self, timeout)
+    def acquire_then_someone_deletes_the_lock_file(self, timeout=None, **kwargs):
+        real_acquire(self, timeout, **kwargs)
         if os.path.exists(self.path):
             os.remove(self.path)  # `git clean`, a tmp cleaner, an admin's `rm *.lock`
 
@@ -316,12 +316,13 @@ def test_c8_fork_does_not_inherit_a_held_lock(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_o1_interruption_during_verification_leaves_database_and_sidecar_in_step(tmp_path: Path):
+def test_o1_interruption_during_verification_is_reported_as_rekeyed_not_as_a_bare_ctrl_c(tmp_path: Path):
     db = make_db(tmp_path / "r.kdbx")
     stash = MattStash(str(db), password=OLD)
     with patch.object(MattStash, "_reload_locked", side_effect=KeyboardInterrupt):
-        with pytest.raises(KeyboardInterrupt):
+        with pytest.raises(RekeyVerifyError, match="NEW password") as excinfo:
             stash.rotate_password(NEW)
+    assert isinstance(excinfo.value.__cause__, KeyboardInterrupt)
     assert opens_with(db, NEW) and not opens_with(db, OLD)
     assert (tmp_path / ".mattstash.txt").read_text() == NEW, "the sidecar was published right after the re-key"
     assert [p.name for p in tmp_path.iterdir() if ".tmp-" in p.name] == []
@@ -337,11 +338,21 @@ def test_o1_interruption_right_after_the_save_rolls_the_sidecar_forward(tmp_path
         raise KeyboardInterrupt  # ... when Ctrl-C arrives
 
     with patch.object(CredentialStore, "save", save_then_interrupt):
-        with pytest.raises(KeyboardInterrupt):
+        with pytest.raises(RekeyVerifyError, match="interrupted"):
             stash.rotate_password(NEW)
     assert opens_with(db, NEW)
     assert (tmp_path / ".mattstash.txt").read_text() == NEW
     assert stash.password == NEW
+
+
+def test_o1_the_callback_runs_the_moment_the_database_is_rekeyed(tmp_path: Path):
+    db = make_db(tmp_path / "r.kdbx", sidecar=False)
+    stash = MattStash(str(db), password=OLD)
+    seen: list[bool] = []
+    with patch.object(MattStash, "_reload_locked", side_effect=DatabaseAccessError("EIO")):
+        with pytest.raises(RekeyVerifyError):
+            stash.rotate_password(NEW, on_rekeyed=lambda: seen.append(opens_with(db, NEW)))
+    assert seen == [True], "the new password is already valid when the callback runs, before verification"
 
 
 def test_o1_a_failed_save_discards_the_staged_sidecar(tmp_path: Path):
@@ -378,21 +389,32 @@ def test_o1_cli_shows_the_generated_password_whenever_the_database_was_rekeyed(
     assert new in out.out + out.err, "the generated password must reach the user even though verification failed"
 
 
-def test_o1_cli_falls_back_to_stderr_when_stdout_is_broken(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+def test_o1_cli_shows_the_generated_password_on_stderr_when_stdout_is_unusable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
     db = make_db(tmp_path / "r.kdbx", sidecar=False)
-    real_print = print
-    calls = {"n": 0}
 
-    def flaky_print(*args, **kwargs):
-        if kwargs.get("file") is None:  # stdout
-            calls["n"] += 1
+    class Broken:
+        def write(self, text):
             raise OSError(errno.ENOSPC, "No space left on device")
-        return real_print(*args, **kwargs)
 
-    with patch("builtins.print", flaky_print):
-        main(["--db", str(db), "--password", OLD, "rotate-password", "--generate", "--no-backup"])
+        def flush(self):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr("sys.stdout", Broken())
+    main(["--db", str(db), "--password", OLD, "rotate-password", "--generate", "--no-backup"])
     err = capsys.readouterr().err
     # the database was re-keyed with a generated password: it must be recoverable from stderr
+    assert any(opens_with(db, word) for word in err.split() if len(word) >= 20)
+
+
+def test_o1_closed_stdout_does_not_lose_the_generated_password(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    db = make_db(tmp_path / "r.kdbx", sidecar=False)
+    monkeypatch.setattr("sys.stdout", None)  # `>&-`
+    main(["--db", str(db), "--password", OLD, "rotate-password", "--generate", "--no-backup"])
+    err = capsys.readouterr().err
     assert any(opens_with(db, word) for word in err.split() if len(word) >= 20)
 
 

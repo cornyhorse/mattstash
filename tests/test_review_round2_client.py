@@ -52,7 +52,7 @@ def test_f1_api_key_from_the_environment_is_stripped(server: FakeServer, monkeyp
     assert server.requests[-1].headers["X-API-Key"] == KEY
 
 
-@pytest.mark.parametrize("bad", ["abc\ndef", "abc def", "café-key-123", "﻿abc"])
+@pytest.mark.parametrize("bad", ["abc\ndef", "inner\ttab-key-0123456789abcdef", "café-key-123", "﻿abc"])
 def test_f1_unusable_api_keys_are_refused_without_echoing_them(
     server: FakeServer, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, bad: str
 ):
@@ -70,7 +70,7 @@ def test_f1_client_constructor_rejects_bad_keys_and_urls():
             MattStashServerClient(URL, key)
         assert key.strip() not in str(excinfo.value) or key == ""
     for url in ("localhost:8000", "ftp://host", "http://", "http://host:notaport", "http://ho\x00st"):
-        with pytest.raises(ServerError, match="not a valid"):
+        with pytest.raises(ServerError, match="must look like"):
             MattStashServerClient(url, KEY)
 
 

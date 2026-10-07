@@ -32,6 +32,7 @@ from typing import Optional
 from ..models.config import config
 from ..utils.exceptions import DatabaseExistsError, MattStashError
 from ..utils.filelock import FileLock
+from ..utils.fileops import match_owner, staging_name
 from ..utils.logging_config import get_logger
 from .password_resolver import PasswordResolver
 
@@ -53,6 +54,23 @@ class CreatedDatabase:
     sidecar_path: Optional[str] = None
     backups: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+def _makedirs_private(path: str) -> None:
+    """Create ``path`` and any missing parents as 0700 whatever the umask (``os.makedirs`` applies the mode to the
+    leaf only, and a restrictive umask can leave an intermediate directory unusable)."""
+    missing = []
+    probe = os.path.abspath(path)
+    while probe and not os.path.isdir(probe):
+        missing.append(probe)
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    for directory in reversed(missing):
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        with contextlib.suppress(OSError):  # pragma: no cover - non-POSIX
+            os.chmod(directory, 0o700)
 
 
 def _write_private(path: str, data: bytes) -> None:
@@ -115,7 +133,8 @@ class DatabaseBootstrapper:
 
     def existing_files(self) -> list[str]:
         """Paths that creating a database here would replace."""
-        return [p for p in (self.real_db_path, self.sidecar_path) if os.path.exists(p)]
+        # lexists for the sidecar: a dangling symlink there still blocks the swap
+        return [p for p in (self.real_db_path, self.sidecar_path) if os.path.lexists(p)]
 
     @staticmethod
     def _backup(path: str) -> str:
@@ -127,6 +146,8 @@ class DatabaseBootstrapper:
                 fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError:
                 continue
+            with contextlib.suppress(OSError, AttributeError):
+                os.fchmod(fd, 0o600)  # the umask must not leave the backup unwritable for its owner
             os.close(fd)
             try:
                 shutil.copyfile(path, dest)
@@ -184,11 +205,9 @@ class DatabaseBootstrapper:
         for directory in dict.fromkeys((self.db_dir, real_dir)):
             if not os.path.isdir(directory):
                 try:
-                    os.makedirs(directory, mode=0o700, exist_ok=True)
+                    _makedirs_private(directory)
                 except OSError as exc:
                     raise MattStashError(f"Cannot create the directory {directory}: {exc.strerror or exc}") from exc
-                with contextlib.suppress(OSError):  # pragma: no cover - non-POSIX
-                    os.chmod(directory, 0o700)
 
         # Writers and other creators serialise on the same lock file, so a writer cannot finish a save
         # (and rename an old-password copy over the new database) in the middle of a replacement.
@@ -210,8 +229,8 @@ class DatabaseBootstrapper:
         token = secrets.token_hex(6)  # unique per call: concurrent creators never share a temp file
         real_db = self.real_db_path
         real_dir = os.path.dirname(real_db) or "."
-        new_db = os.path.join(real_dir, f".{os.path.basename(real_db)}.{token}.new")
-        temp_sidecar = os.path.join(self.db_dir, f".{self.sidecar_basename}.{token}.new")
+        new_db = staging_name(real_dir, os.path.basename(real_db), token)
+        temp_sidecar = staging_name(self.db_dir, self.sidecar_basename, token)
         leftovers = [new_db, os.path.splitext(new_db)[0] + ".tmp", temp_sidecar]
         try:
             if os.path.exists(self.sidecar_path):
@@ -244,6 +263,11 @@ class DatabaseBootstrapper:
                 "the master password has leading or trailing whitespace: it cannot be supplied through "
                 "KDBX_PASSWORD_FILE or a sidecar file (those are read with whitespace stripped)"
             )
+        # Replacing files as root must not turn the service user's database into a root-owned one it cannot read.
+        for old, new in ((real_db, new_db), (self.sidecar_path, new_sidecar)):
+            if new is not None and os.path.exists(old):
+                with contextlib.suppress(OSError):
+                    match_owner(os.stat(old), new)
         try:
             if new_sidecar is not None:
                 _link_or_replace(new_sidecar, self.sidecar_path, replace=force)
@@ -252,7 +276,10 @@ class DatabaseBootstrapper:
         except FileExistsError as exc:
             self._restore_sidecar(sidecar_swapped, old_sidecar)
             self._cleanup(leftovers)
-            raise DatabaseExistsError(f"Refusing to overwrite {exc.filename or self.db_path}") from None
+            # os.link(src, dst) reports the *source* in .filename and the destination in .filename2
+            raise DatabaseExistsError(
+                f"Refusing to overwrite {exc.filename2 or exc.filename or self.db_path}"
+            ) from None
         except OSError as exc:
             self._restore_sidecar(sidecar_swapped, old_sidecar)
             self._cleanup(leftovers)

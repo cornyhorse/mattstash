@@ -73,7 +73,7 @@ def get_database_url(
     )
     response.headers["Cache-Control"] = "no-store"
     try:
-        chosen_dialect = normalize_dialect(dialect) if dialect else None
+        chosen_dialect = normalize_dialect(dialect) if dialect and dialect.strip() else None  # blank = not given
     except ValueError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid dialect name") from None
     # Same normalisation as the library ("PSYCOPG", " psycopg" work locally); "" means "no driver suffix".

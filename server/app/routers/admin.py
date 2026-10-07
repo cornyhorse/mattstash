@@ -32,7 +32,10 @@ def force_reload(request: Request, principal: AdminAccess) -> dict[str, str]:
     # serving the previous state (or nothing).
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="Database reload failed; the server is still serving the previous state (see the server log)",
+        detail=(
+            "Database reload failed; the server serves nothing until the database file opens again "
+            "(see the server log). Restoring a valid file recovers it without a restart."
+        ),
     )
 
 

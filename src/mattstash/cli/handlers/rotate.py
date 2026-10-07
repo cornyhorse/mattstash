@@ -17,7 +17,7 @@ from typing import Optional, Tuple
 
 from ...core.mattstash import MattStash
 from ...core.password_resolver import PasswordResolver
-from ...utils.exceptions import DatabaseAccessError, RotationIncompleteError
+from ...utils.exceptions import RekeyVerifyError, RotationIncompleteError
 from .. import exit_codes
 from ..inputs import InputError, read_credential_file, read_stdin_line
 from .base import BaseHandler
@@ -29,6 +29,17 @@ def _read_or_none(path: str) -> Optional[str]:
             return f.read().strip()
     except (OSError, UnicodeDecodeError):
         return None
+
+
+def _sibling_databases(db_path: str) -> list[str]:
+    """Other KeePass files in the database's directory (they may rely on the same sidecar)."""
+    directory = os.path.dirname(db_path)
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    own = os.path.basename(os.path.realpath(db_path))
+    return sorted(n for n in names if n.endswith(".kdbx") and n not in (own, os.path.basename(db_path)))
 
 
 class RotatePasswordHandler(BaseHandler):
@@ -56,57 +67,64 @@ class RotatePasswordHandler(BaseHandler):
 
         stash = MattStash(path=self.opt(args, "path", str), password=self.opt(args, "password", str))
         sidecar = PasswordResolver(stash.path).sidecar_path
-        old_sidecar = _read_or_none(sidecar)
-        failure: Optional[Exception] = None
+        had_sidecar = os.path.lexists(sidecar)
+        failure: Optional[RotationIncompleteError] = None
         backup_path: Optional[str] = None
+        shown = False
+
+        def reveal() -> None:
+            # Called by the library the moment the database holds the new password -- before the sidecar swap and
+            # the (slow) verification -- so that nothing after this point can lose a generated password.
+            nonlocal shown
+            if generated:
+                self.say(f"Generated new master password (shown once, store it safely): {new_password}")
+                shown = True
+
         try:
-            backup_path = stash.rotate_password(new_password, backup=not self.flag(args, "no_backup"))
+            backup_path = stash.rotate_password(
+                new_password, backup=not self.flag(args, "no_backup"), on_rekeyed=reveal
+            )
         except RotationIncompleteError as exc:
             # The database IS re-keyed: whatever else went wrong, the new password must still reach the user.
             failure, backup_path = exc, exc.backup_path
-        except Exception as exc:
-            # Nothing was changed, but a backup taken before the failure should not be a secret.
+        except BaseException as exc:
+            # Nothing was re-keyed (Ctrl-C included), but a backup taken before the failure should not be a secret.
             backup = getattr(exc, "backup_path", None)
             if backup:
-                self._say(f"  A backup made before the failure was kept: {backup}", err=True)
+                self.say(f"A backup made before the failure was kept: {backup}", err=True)
             raise
 
-        lines = [f"Master password rotated for {stash.path}"]
+        if generated and not shown:
+            self.say(f"Generated new master password (shown once, store it safely): {new_password}")
+        lines = [f"Master password rotated for {stash.path}"] if failure is None else []
         if backup_path:
             lines.append(
                 f"  Backup (opens with the OLD password; delete it once the new one is verified): {backup_path}"
             )
-        if failure is None and old_sidecar is not None:
+        if failure is None and had_sidecar:
             if _read_or_none(sidecar) == new_password:
                 lines.append(f"  Sidecar password file updated: {sidecar}")
+                siblings = _sibling_databases(stash.path)
+                if siblings:
+                    lines.append(
+                        "  warning: other database files in this directory ("
+                        + ", ".join(siblings)
+                        + ") share this sidecar: if they used the old password they no longer open with it"
+                    )
             else:
                 lines.append(
                     f"  Sidecar password file left unchanged (it does not hold this database's password): {sidecar}"
                 )
-        if generated:
-            lines.append(f"  Generated new master password (shown once, store it safely): {new_password}")
-        # One write, with stderr as the fallback: a closed or full stdout must not lose a generated password.
-        self._say("\n".join(lines))
+        if lines:
+            self.say("\n".join(lines))
         if failure is not None:
             self.error(str(failure))
         self._warn_stale_environment()
         if failure is None:
             return exit_codes.OK
-        return exit_codes.DB_ACCESS if isinstance(failure, DatabaseAccessError) else exit_codes.ERROR
+        return exit_codes.DB_ACCESS if isinstance(failure, RekeyVerifyError) else exit_codes.ERROR
 
     # ---- helpers ------------------------------------------------------------------
-
-    @staticmethod
-    def _say(text: str, *, err: bool = False) -> None:
-        """Print ``text`` to stdout (stderr with ``err`` or when stdout is unusable)."""
-        if not err:
-            try:
-                print(text)
-                sys.stdout.flush()
-                return
-            except OSError:
-                pass
-        print(text, file=sys.stderr)
 
     def _warn_stale_environment(self) -> None:
         for name in ("KDBX_PASSWORD", "KDBX_PASSWORD_FILE"):
@@ -121,7 +139,9 @@ class RotatePasswordHandler(BaseHandler):
         if self.flag(args, "generate"):
             return secrets.token_urlsafe(32), True
         password_file = self.opt(args, "new_password_file", str)
-        if password_file:
+        if password_file is not None:
+            if not password_file.strip():
+                raise InputError("--new-password-file was given an empty path")
             return read_credential_file("--new-password-file", password_file), False
         if self.flag(args, "new_password_stdin"):
             return read_stdin_line("--new-password-stdin"), False

@@ -5,8 +5,12 @@ Command-line interface for MattStash.
 """
 
 import argparse
+import contextlib
 import os
+import signal
 import sys
+import threading
+from collections.abc import Iterator
 from importlib.metadata import version as _pkg_version
 from typing import Any, Optional
 
@@ -58,8 +62,13 @@ def _resolve_db_password_file(args: argparse.Namespace) -> None:
     An option that is *given but empty* is an error: a shell variable that expands to nothing
     (``--db-password-file "$PW_FILE"``) must not quietly select another credential source. Raises ``InputError``.
     """
+    server_url = getattr(args, "server_url", None)
+    if isinstance(server_url, str) and not server_url.strip():
+        # `--server-url "$URL"` with $URL unset must not quietly fall back to the LOCAL database
+        raise InputError("--server-url was given an empty value (omit it for local mode)")
     password = getattr(args, "password", None)
-    entry_password = getattr(args, "cmd", None) == "put" and getattr(args, "fields", False) is True
+    # A bare `put --password` is the (deprecated) entry password; --db-password never is.
+    entry_password = getattr(args, "cmd", None) == "put" and getattr(args, "db_password_explicit", False) is not True
     if isinstance(password, str) and not password and not entry_password:
         raise InputError(
             "--password/--db-password was given an empty value (omit it to use "
@@ -75,6 +84,33 @@ def _resolve_db_password_file(args: argparse.Namespace) -> None:
     args.password = read_credential_file("--db-password-file", path)
     args.db_password_explicit = True
     args.db_password_from_file = True
+
+
+@contextlib.contextmanager
+def _signals_as_interrupt() -> Iterator[None]:
+    """Treat SIGTERM and SIGHUP like Ctrl-C while a command runs, so ``finally`` blocks clean up (staged files that
+    hold a password, locks) instead of the process dying with them in place. ``exec`` is unaffected: caught signals
+    are reset to their defaults by ``execve``."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def interrupt(signum: int, frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    saved: dict[int, Any] = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        with contextlib.suppress(ValueError, OSError):
+            saved[number] = signal.signal(number, interrupt)
+    try:
+        yield
+    finally:
+        for number, previous in saved.items():
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(number, previous)
 
 
 def _non_negative_int(text: str) -> int:
@@ -110,6 +146,15 @@ def _add_env_selection_options(parser: argparse.ArgumentParser) -> None:
         help="Remove the --prefix from variable names (default); --no-strip-prefix keeps it",
     )
     parser.add_argument("--upper", action="store_true", help="Upper-case variable names derived from --prefix")
+    parser.add_argument(
+        "--allow-env-name",
+        action="append",
+        dest="allow_env_names",
+        metavar="NAME",
+        default=None,
+        help="Allow --prefix to produce this one reserved variable name (repeatable), e.g. JAVA_HOME or ENV, without "
+        "lifting the protection for every other reserved name",
+    )
     parser.add_argument(
         "--allow-reserved",
         action="store_true",
@@ -150,7 +195,7 @@ def _add_global_options(parser: argparse.ArgumentParser, *, suppress_defaults: b
     parser.add_argument(
         "--server-url",
         dest="server_url",
-        default=unset if suppress_defaults else os.environ.get("MATTSTASH_SERVER_URL"),
+        default=unset if suppress_defaults else (os.environ.get("MATTSTASH_SERVER_URL") or None),
         help="MattStash server URL (enables server mode). Can also use MATTSTASH_SERVER_URL env var.",
     )
     parser.add_argument(
@@ -387,7 +432,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "so the exit status is the command's; nothing is written to disk or stdout). "
         "Example: mattstash exec --prefix myapp/ --upper -- ./server --port 8080",
         usage="mattstash exec [-h] [global options] [--prefix P] [--map ENVVAR=TITLE[:FIELD]]... "
-        "[--strip-prefix | --no-strip-prefix] [--upper] [--allow-reserved] [--override] [--keep-vault-env] "
+        "[--strip-prefix | --no-strip-prefix] [--upper] [--allow-env-name NAME]... [--allow-reserved] "
+        "[--override] [--keep-vault-env] "
         "-- COMMAND [ARGS...]",
         parents=[global_opts],
     )
@@ -400,7 +446,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_exec.add_argument(
         "--keep-vault-env",
         action="store_true",
-        help="Pass KDBX_PASSWORD and MATTSTASH_API_KEY through to the command (default: they are removed, so the "
+        help="Pass KDBX_PASSWORD, MATTSTASH_API_KEY and their _FILE variants through to the command (default: they "
+        "are removed, so the "
         "command receives only the secrets you asked for)",
     )
     p_exec.add_argument("command", nargs=argparse.REMAINDER, metavar="-- COMMAND [ARGS...]", help="Command to run")
@@ -517,7 +564,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     if handler:
         try:
             _resolve_db_password_file(args)
-            return handler.handle(args)
+            with _signals_as_interrupt():
+                return handler.handle(args)
+        except KeyboardInterrupt:
+            print("mattstash: interrupted", file=sys.stderr)
+            return exit_codes.INTERRUPTED
         except InputError as e:
             print(f"mattstash: {e}", file=sys.stderr)
             return exit_codes.ERROR
@@ -528,7 +579,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return exit_codes.ERROR
         except OSError as e:
             # A file-system failure (disk full, permission denied, ...) is an operational error, not a crash.
-            print(f"mattstash: {e.strerror or e}", file=sys.stderr)
+            where = f": {e.filename}" if e.filename else ""
+            print(f"mattstash: {e.strerror or e}{where}", file=sys.stderr)
             return exit_codes.ERROR
 
     # Should not reach here

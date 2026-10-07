@@ -22,9 +22,11 @@ Security notes
 * A rate-limited GET (HTTP 429) is retried a few times, honouring ``Retry-After``.
 """
 
+import contextlib
 import ipaddress
 import json
 import os
+import threading
 import time
 import urllib.request
 from typing import Any, Dict, List, Optional
@@ -106,6 +108,11 @@ def warn_if_insecure(base_url: str) -> bool:
     return True
 
 
+def _is_ascii_digits(text: str) -> bool:
+    """``str.isdigit`` accepts superscripts and other Unicode digits that ``float``/``int`` then refuse."""
+    return text.isascii() and text.isdigit()
+
+
 def segment(value: str) -> str:
     """Percent-encode one URL path segment (``/``, ``#``, ``?``, ``%`` ... are all escaped).
 
@@ -146,12 +153,20 @@ class MattStashServerClient:
         base_url = base_url.strip().rstrip("/")
         try:
             parsed = urlparse(base_url)
-            usable = parsed.scheme.lower() in ("http", "https") and bool(parsed.hostname)
-            _ = parsed.port  # raises ValueError for a bad port
+            usable = (
+                parsed.scheme.lower() in ("http", "https")
+                and bool(parsed.hostname)
+                and parsed.port != 0  # also raises ValueError for a malformed port
+                # Everything after the host would silently misroute the API path (query, fragment) or put a password
+                # into repr()/Authorization (userinfo): the base URL is scheme://host[:port][/prefix] only.
+                and not (parsed.query or parsed.fragment or parsed.username or parsed.password or "?" in base_url)
+            )
         except ValueError:
             usable = False
-        if not usable or not base_url.isprintable():
-            raise ServerError("the server URL is not a valid http:// or https:// URL")
+        if not usable or not base_url.isprintable() or any(ch.isspace() for ch in base_url):
+            raise ServerError(
+                "the server URL must look like http(s)://host[:port][/prefix] (no query, fragment or user:password)"
+            )
         problem = api_key_problem(api_key)
         if problem:
             raise ServerError(problem)
@@ -159,7 +174,8 @@ class MattStashServerClient:
         self.api_key = api_key
         self.timeout = timeout
         self.total_timeout = total_timeout
-        self.headers = {"X-API-Key": api_key}
+        # `identity`: the API has no use for compression, and an inflating response is a memory-bomb vector.
+        self.headers = {"X-API-Key": api_key, "Accept-Encoding": "identity"}
         self._client: Optional[httpx.Client] = None
         warn_if_insecure(self.base_url)
 
@@ -188,10 +204,18 @@ class MattStashServerClient:
         return text
 
     @staticmethod
-    def _safe_detail(body: bytes) -> Optional[str]:
+    def _loads(body: bytes) -> Any:
+        """``json.loads`` that reports every problem (bad bytes, absurd nesting) as ``ValueError``."""
+        try:
+            return json.loads(body)
+        except RecursionError:
+            raise ValueError("JSON nested too deeply") from None
+
+    @classmethod
+    def _safe_detail(cls, body: bytes) -> Optional[str]:
         """The server's ``detail`` text, but only if it is one of its fixed, value-free messages."""
         try:
-            payload = json.loads(body)
+            payload = cls._loads(body)
         except ValueError:
             return None
         detail = payload.get("detail") if isinstance(payload, dict) else None
@@ -199,10 +223,10 @@ class MattStashServerClient:
             return detail[:200]
         return None
 
-    @staticmethod
-    def _is_missing_secret(body: bytes) -> bool:
+    @classmethod
+    def _is_missing_secret(cls, body: bytes) -> bool:
         try:
-            payload = json.loads(body)
+            payload = cls._loads(body)
         except ValueError:
             return False
         detail = payload.get("detail") if isinstance(payload, dict) else None
@@ -223,9 +247,12 @@ class MattStashServerClient:
             if detail:
                 message += f": {detail}"
         retry_after = response.headers.get("Retry-After", "")
-        if code == 429 and retry_after.isdigit():
+        if code == 429 and _is_ascii_digits(retry_after):
             message += f"; retry after {retry_after}s"
-        return ServerError(message, status_code=code, secret_missing=code == 404 and self._is_missing_secret(body))
+        missing = code == 404 and self._is_missing_secret(body)
+        if missing:
+            message = f"server returned HTTP 404 for {method} {endpoint} (credential not found)"
+        return ServerError(message, status_code=code, secret_missing=missing)
 
     def _exchange(
         self,
@@ -237,26 +264,47 @@ class MattStashServerClient:
         """One request; the body is read with a size and time bound. Raises ``httpx`` errors and ``ServerError``."""
         if self._client is None:
             self._client = httpx.Client(timeout=self.timeout, verify=True)
+        client = self._client
         deadline = time.monotonic() + self.total_timeout
-        with self._client.stream(
-            method, f"{self.base_url}{endpoint}", headers=self.headers, params=params, json=json_data
-        ) as response:
-            limit = MAX_RESPONSE_BYTES if response.is_success else _MAX_ERROR_BODY_BYTES
-            declared = response.headers.get("Content-Length", "")
-            if declared.isdigit() and int(declared) > limit:
-                raise ServerError("server response is too large", status_code=response.status_code)
-            chunks: List[bytes] = []
-            received = 0
-            for chunk in response.iter_bytes():
-                received += len(chunk)
-                if received > limit:
-                    if response.is_success:
-                        raise ServerError("server response is too large", status_code=response.status_code)
-                    break  # an oversized error page: the part read is enough to classify it
-                chunks.append(chunk)
-                if time.monotonic() > deadline:
-                    raise ServerError(f"server did not finish responding within {self.total_timeout:g}s")
-            return response, b"".join(chunks)
+        # httpx's timeouts are per socket operation, so a server that dribbles its response HEADERS one byte at a time
+        # would never trip them. A watchdog enforces the real wall-clock bound by closing the connection.
+        expired = threading.Event()
+
+        def abort() -> None:
+            expired.set()
+            with contextlib.suppress(Exception):
+                client.close()
+
+        watchdog = threading.Timer(self.total_timeout, abort)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            with client.stream(
+                method, f"{self.base_url}{endpoint}", headers=self.headers, params=params, json=json_data
+            ) as response:
+                limit = MAX_RESPONSE_BYTES if response.is_success else _MAX_ERROR_BODY_BYTES
+                declared = response.headers.get("Content-Length", "")
+                if _is_ascii_digits(declared) and int(declared) > limit:
+                    raise ServerError("server response is too large", status_code=response.status_code)
+                chunks: List[bytes] = []
+                received = 0
+                for chunk in response.iter_bytes():
+                    received += len(chunk)
+                    if received > limit:
+                        if response.is_success:
+                            raise ServerError("server response is too large", status_code=response.status_code)
+                        break  # an oversized error page: the part read is enough to classify it
+                    chunks.append(chunk)
+                    if time.monotonic() > deadline:
+                        raise ServerError(f"server did not finish responding within {self.total_timeout:g}s")
+                return response, b"".join(chunks)
+        except Exception:
+            if expired.is_set():
+                self._client = None  # the watchdog closed it
+                raise ServerError(f"server did not finish responding within {self.total_timeout:g}s") from None
+            raise
+        finally:
+            watchdog.cancel()
 
     def _make_request(
         self,
@@ -297,7 +345,7 @@ class MattStashServerClient:
 
             if response.status_code == 429 and method == "GET" and attempt < MAX_RETRIES:
                 retry_after = response.headers.get("Retry-After", "")
-                wait = min(float(retry_after), _MAX_RETRY_WAIT) if retry_after.isdigit() else 2.0**attempt
+                wait = min(float(retry_after), _MAX_RETRY_WAIT) if _is_ascii_digits(retry_after) else 2.0**attempt
                 logger.warning("The server is rate limiting this client (HTTP 429); retrying in %gs", wait)
                 time.sleep(wait)
                 attempt += 1
@@ -307,7 +355,7 @@ class MattStashServerClient:
         if not response.is_success:
             raise self._status_error(method, endpoint, response, body)
         try:
-            result = json.loads(body)
+            result = self._loads(body)
         except ValueError:
             raise ServerError("server returned a response that is not valid JSON") from None
         if not isinstance(result, dict):
@@ -497,7 +545,7 @@ class MattStashServerClient:
         params: Dict[str, Any] = {"mask_password": mask_password}
         if driver is not None:  # "" is meaningful: no driver suffix
             params["driver"] = driver
-        if dialect:
+        if dialect and dialect.strip():  # blank means "not given", exactly as in local mode
             params["dialect"] = dialect
         if database:
             params["database"] = database

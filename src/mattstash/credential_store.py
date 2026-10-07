@@ -18,7 +18,7 @@ from pykeepass.entry import Entry
 
 from .models.config import config
 from .utils.exceptions import DatabaseAccessError, DatabaseNotFoundError
-from .utils.fileops import fsync_directory, match_owner
+from .utils.fileops import fsync_directory, match_owner, staging_name
 from .utils.logging_config import security_warning
 from .utils.validation import sanitize_error_message
 
@@ -94,12 +94,19 @@ class CredentialStore:
             raise DatabaseAccessError(f"Failed to open database: {sanitized_msg}") from e
 
     def _current_signature(self) -> Optional[Tuple[int, int, int, bytes]]:
+        """Identity of the file as it is now; ``None`` only if it is genuinely missing.
+
+        Any other failure (too many open files, permission denied) is an error, not "the database vanished": the
+        caller would otherwise discard its state and tell the user to run ``setup``.
+        """
         try:
             with open(self.db_path, "rb") as f:
                 st = os.fstat(f.fileno())
                 head = hashlib.blake2b(f.read(512), digest_size=8).digest()
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             return None
+        except OSError as exc:
+            raise DatabaseAccessError(f"Cannot read the database file: {exc.strerror or exc}") from exc
         return (st.st_ino, st.st_mtime_ns, st.st_size, head)
 
     def _warn_if_insecure_permissions(self) -> None:
@@ -230,7 +237,7 @@ class CredentialStore:
         except OSError:
             reference = None
         mode = stat.S_IMODE(reference.st_mode) if reference is not None else 0o600
-        staged = os.path.join(directory, f".{os.path.basename(target)}.{secrets.token_hex(6)}.new")
+        staged = staging_name(directory, os.path.basename(target), secrets.token_hex(6))
         # pykeepass writes "<staged without its last suffix>.tmp" and then moves that onto ``staged``
         pk_tmp = os.path.splitext(staged)[0] + ".tmp"
         try:
@@ -243,7 +250,7 @@ class CredentialStore:
                 os.chmod(staged, mode)
             if reference is not None:
                 match_owner(reference, staged)
-            fd = os.open(staged, os.O_RDONLY)
+            fd = os.open(staged, os.O_RDWR | getattr(os, "O_BINARY", 0))  # Windows' fsync needs write access
             try:
                 os.fsync(fd)
             finally:

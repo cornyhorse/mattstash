@@ -82,10 +82,11 @@ class SidecarUpdateError(RotationIncompleteError):
     staged_path: Optional[str] = None
 
 
-class RekeyVerifyError(RotationIncompleteError, DatabaseAccessError):
-    """The database was re-keyed and saved, but re-reading it with the new password failed (an I/O error?).
+class RekeyVerifyError(RotationIncompleteError):
+    """The database was re-keyed and saved, but the follow-up failed or was interrupted (re-reading it, Ctrl-C ...).
 
-    The database and the sidecar (when it is managed) both already use the new password.
+    The database and the sidecar (when it is managed) both already use the new password. Deliberately *not* a
+    ``DatabaseAccessError``: callers that treat that as "wrong password, nothing changed" would be wrong.
     """
 
 

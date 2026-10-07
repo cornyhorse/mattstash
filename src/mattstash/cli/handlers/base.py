@@ -138,6 +138,24 @@ class BaseHandler(ABC):
         if not logger.isEnabledFor(logging.ERROR):
             print(message, file=sys.stderr)
 
+    @staticmethod
+    def say(text: str, *, err: bool = False) -> None:
+        """Write ``text`` to stdout (stderr with ``err``, or when stdout is closed/full/unusable).
+
+        For output that must not be lost -- a generated password above all: a closed or full stdout falls back to
+        stderr instead of raising after the database has already been changed.
+        """
+        if not err:
+            stream = sys.stdout
+            if stream is not None:
+                try:
+                    print(text, file=stream)
+                    stream.flush()
+                    return
+                except (OSError, ValueError):
+                    pass
+        print(text, file=sys.stderr)
+
     def warning(self, message: str) -> None:
         """Log a warning (stderr)."""
         logger.warning(message)

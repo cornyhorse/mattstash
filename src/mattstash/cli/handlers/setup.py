@@ -15,6 +15,7 @@ from ...core.password_resolver import PasswordResolver, read_password_file
 from ...models.config import config
 from ...utils.exceptions import DatabaseExistsError, DatabaseLockError, MattStashError
 from .. import exit_codes
+from ..inputs import read_stdin_line
 from .base import BaseHandler
 
 
@@ -73,6 +74,10 @@ class SetupHandler(BaseHandler):
             self.error(f"Setup failed: {exc}")
             return exit_codes.ERROR
 
+        if info.generated and not info.sidecar_path:
+            # First, and with a stderr fallback: the database now exists and this is the only time the password is
+            # shown. Nothing printed afterwards (a closed or full stdout, say) may lose it.
+            self.say(f"Generated master password (shown once, store it safely): {info.password}")
         self.info("Setup complete!")
         print(f"  Database created: {info.db_path}")
         if info.sidecar_path:
@@ -83,8 +88,6 @@ class SetupHandler(BaseHandler):
             print(f"  Backed up previous file: {backup}")
         for warning in info.warnings:
             self.warning(warning)
-        if info.generated and not info.sidecar_path:
-            print(f"  Generated master password (shown once, store it safely): {info.password}")
         return exit_codes.OK
 
     # ---- helpers ------------------------------------------------------------
@@ -107,12 +110,11 @@ class SetupHandler(BaseHandler):
     def _password_from_args(self, args: Namespace, db_path: str) -> Optional[str]:
         """Explicit password sources, most specific first. Returns None if none was given."""
         if getattr(args, "password_stdin", False):
-            line = sys.stdin.readline().rstrip("\r\n")
-            if not line:
-                raise ValueError("no password received on stdin")
-            return line
+            return read_stdin_line("--password-stdin")  # one line, BOM stripped, strict UTF-8
         password_file = getattr(args, "password_file", None)
-        if password_file:
+        if password_file is not None:
+            if not str(password_file).strip():
+                raise ValueError("--password-file was given an empty path")
             password = read_password_file(os.path.expanduser(password_file))
             if not password:
                 raise ValueError(f"password file {password_file} is empty")

@@ -408,12 +408,12 @@ def test_rotate_serialises_with_a_concurrent_writer(seeded: Path):
 
 
 def test_instance_holding_the_old_password_is_locked_out_after_a_rotation(seeded: Path):
-    stale = MattStash(path=str(seeded))
+    stale = MattStash(path=str(seeded), password=OLD)  # e.g. a server that was started with KDBX_PASSWORD=<old>
     assert stale.get("a") is not None
     MattStash(path=str(seeded)).rotate_password(NEW)
-    # `stale` is e.g. a server that was started with KDBX_PASSWORD=<old>
     with pytest.raises(DatabaseAccessError):
         stale.get("a")
+    assert stale.password == OLD, "a failed attempt must not change the password it was given"
 
 
 # ---------------------------------------------------------------------------
