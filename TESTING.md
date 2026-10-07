@@ -4,11 +4,12 @@
 pip install -e ".[all,dev]"                       # library + test tooling (pytest, xdist, cov, ...)
 
 pytest tests --ignore=tests/integration -n auto   # library suite, in parallel (about a minute on a laptop)
+pytest tests --ignore=tests/integration -n auto --cov=mattstash --cov-report=term-missing:skip-covered   # + coverage (CI gate: 99%)
 pytest tests/integration -n auto                  # real CLI against a real server subprocess (needs the server deps, below)
 
 pip install -r server/requirements.lock           # server runtime dependencies (hash-pinned, as in the Docker image)
 pip install -r server/requirements-dev.txt
-(cd server && pytest)                             # server suite incl. the 90% coverage gate (about 20 s)
+(cd server && pytest)                             # server suite incl. the 99% coverage gate (about 20 s)
 
 ruff check src tests server/app server/tests && ruff format --check src tests server/app server/tests
 mypy src/mattstash --strict

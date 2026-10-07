@@ -583,6 +583,8 @@ class MattStash:
             raise InvalidCredentialError("The new password cannot be empty")
         backup_path: Optional[str] = None
         rekeyed = False
+        staged: Optional[str] = None
+        sidecar_target: Optional[str] = None
         try:
             with self._write():  # opens (verifies the current password) under the thread and file locks
                 assert self._credential_store is not None
@@ -652,11 +654,21 @@ class MattStash:
                     ) from exc
         except BaseException as exc:
             if rekeyed and not isinstance(exc, RotationIncompleteError):
-                # Whatever interrupted us after the re-key (for example Ctrl-C while publishing the sidecar), the
-                # caller must learn that the new password is in effect.
+                # Whatever interrupted us after the re-key (for example Ctrl-C while the caller was told about it),
+                # the caller must learn that the new password is in effect -- and a sidecar still holding the old
+                # password would lock the next command out, so finish publishing it if that has not happened yet.
+                unpublished = ""
+                if staged is not None and sidecar_target is not None and os.path.exists(staged):
+                    try:
+                        os.replace(staged, sidecar_target)
+                    except OSError:
+                        unpublished = (
+                            f" The sidecar {sidecar_target} still holds the OLD password; the new one is saved in "
+                            f"{staged}: finish by moving it into place: mv '{staged}' '{sidecar_target}'."
+                        )
                 converted = RekeyVerifyError(
                     f"The database was re-keyed, but the operation was interrupted ({type(exc).__name__}); "
-                    "the NEW password is in effect: check with `mattstash list`"
+                    f"the NEW password is in effect: check with `mattstash list`.{unpublished}"
                 )
                 converted.backup_path = backup_path
                 raise converted from exc
@@ -673,7 +685,7 @@ class MattStash:
         if callback is not None:
             try:
                 callback()
-            except Exception as exc:  # pragma: no cover - a failing callback must not undo or hide the re-key
+            except Exception as exc:  # a failing callback must not undo or hide the re-key
                 logger.warning("rotate_password: the on_rekeyed callback failed: %s", type(exc).__name__)
 
     def _managed_sidecar(self, current_password: Optional[str]) -> Optional[str]:

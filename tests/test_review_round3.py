@@ -352,6 +352,52 @@ def test_o_ctrl_c_during_the_verification_still_shows_the_generated_password_wit
     assert not opens_with(db, OLD)
 
 
+def test_o_ctrl_c_while_the_caller_is_told_about_the_rekey_still_publishes_the_sidecar(tmp_path: Path):
+    db = make_db(tmp_path / "a.kdbx")  # with a sidecar holding OLD
+
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    from mattstash.utils.exceptions import RekeyVerifyError as Interrupted
+
+    with pytest.raises(Interrupted, match="NEW password is in effect"):
+        MattStash(str(db), password=OLD).rotate_password(NEW, on_rekeyed=interrupted)
+    assert opens_with(db, NEW) and not opens_with(db, OLD)
+    assert (tmp_path / ".mattstash.txt").read_text() == NEW, "the sidecar was rolled forward, not left stale"
+    assert [p.name for p in tmp_path.iterdir() if ".tmp-" in p.name] == [], "and the staged file was consumed"
+    MattStash(str(db)).get("a")  # the next command works through the sidecar
+
+
+def test_o_if_the_sidecar_cannot_be_published_after_an_interrupt_the_message_says_how_to_finish(tmp_path: Path):
+    db = make_db(tmp_path / "a.kdbx")
+    real_replace = os.replace
+
+    def refuse_sidecar(src, dst, *args, **kwargs):
+        if str(dst).endswith(".mattstash.txt"):
+            raise OSError(errno.EACCES, "Permission denied")
+        return real_replace(src, dst, *args, **kwargs)
+
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    with patch("mattstash.core.mattstash.os.replace", refuse_sidecar):
+        with pytest.raises(RekeyVerifyError) as excinfo:
+            MattStash(str(db), password=OLD).rotate_password(NEW, on_rekeyed=interrupted)
+    assert "still holds the OLD password" in str(excinfo.value) and "mv '" in str(excinfo.value)
+    staged = [p for p in tmp_path.iterdir() if ".tmp-" in p.name]
+    assert len(staged) == 1 and staged[0].read_text() == NEW, "the staged file is the only record of the new password"
+
+
+def test_o_a_failing_on_rekeyed_callback_never_undoes_or_hides_the_rotation(tmp_path: Path):
+    db = make_db(tmp_path / "a.kdbx")
+
+    def broken() -> None:
+        raise RuntimeError("the terminal went away")
+
+    MattStash(str(db), password=OLD).rotate_password(NEW, on_rekeyed=broken)
+    assert opens_with(db, NEW) and (tmp_path / ".mattstash.txt").read_text() == NEW
+
+
 # ---------------------------------------------------------------------------
 # operations: setup / create
 # ---------------------------------------------------------------------------

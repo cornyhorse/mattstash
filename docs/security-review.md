@@ -2,7 +2,7 @@
 
 Review date: 2026-10-07 · Reviewed version: 0.1.19 (`a4751d4`) · Branch: `claude/security-hardening`
 
-**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · three independent reviews acted on ✅ (4e, 4h, 4i)
+**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · three independent reviews acted on ✅ (4e, 4h, 4i) · 100% line coverage ✅
 
 Target use cases: (1) CLI on machines you log into, (2) API service in a docker-compose stack,
 (3) secrets service inside a k8s cluster, plus other library/CLI uses.
@@ -359,6 +359,16 @@ reproduced in clean environments including an unprivileged user, every documente
 
 The full suites also pass as an unprivileged user (`setpriv`), which is the environment CI runs in.
 
+**Defects found while reaching 100% coverage** (all fixed, each with a regression test):
+
+| Finding | Fix |
+|---------|-----|
+| `put(..., tags=[...])` silently stored no tags at all (a `set` was assigned where pykeepass 4.x needs a list, and the fallback was a no-op) | tags are stored and read back |
+| `MATTSTASH_LOG_LEVEL=warn` or `fatal` stopped `python -m app` at startup (uvicorn rejects names Python accepts) | the level is mapped to a name uvicorn knows |
+| A malformed number in the settings file made `import mattstash` raise; quoted booleans (`enabled: "false"`) were read as true; `s3.signature_version` was documented but never read; a top-level list in the file, `merge_config` aliasing, and `MATTSTASH_LOG_LEVEL=BASIC_FORMAT` | ignored with a warning naming the key / parsed correctly / read / handled |
+| An interrupt while `rotate_password` told its caller about the re-key left the sidecar holding the old password | the sidecar swap is finished first; if that is impossible the message says how |
+| Dead code: five unused `EntryManager` helpers | removed |
+
 ---
 
 ## 5. Phases
@@ -389,7 +399,7 @@ session scratchpad and are re-created as proper regression tests rather than com
 | Q9 | Secret-name separator | **`.`** (`myapp.db-password`). Names stay letters, digits, `_`, `.`, `-`: identical in the CLI, the library and the server. Hierarchical `/` names are not supported (optional follow-up; it would widen routing, prefix-scoping and URL-encoding surface). |
 | Q10 | Branch protection | The required status check moves from the old job names (`lint-server`, `server-tests`, `integration`) to the single roll-up job **`ci-gate`** (the owner changes it in the repository settings; the project is maintained agentically, so lighter protections are acceptable). |
 | Q11 | Release gating | A focused third review of the round-2 changes runs before the pull request is opened. |
-| Q12 | Coverage target | **100% line coverage** of `src/mattstash` and `server/app` (baseline: library 90%, server 97.6%), reached with in-process tests and mocks; `# pragma: no cover` only where a unit test makes no sense (OS-specific or defensive code). Branch coverage is not a goal. Done after the review fixes so code that is about to change is not covered twice. |
+| Q12 | Coverage target | **100% line coverage** of `src/mattstash` and `server/app` (baseline: library 90%, server 97.6%), reached with in-process tests and mocks; `# pragma: no cover` only where a unit test makes no sense (OS-specific or defensive code). Branch coverage is not a goal. Done after the review fixes so code that is about to change is not covered twice. **Done:** `src/mattstash` and `server/app` are at 100% (two `# pragma: no cover` lines for provably unreachable code); CI gates at 99% (the runner is not root, so a few ownership tests skip) and measures the library once, on Python 3.14. |
 | Q13 | Coverage gate | CI fails below **99%** (slack for platform-specific lines) on both the library and the server. |
 | Q14 | Subprocess coverage | **Not collected.** The real-process tests (CLI against a real server, `exec`, concurrent `create`, log output) stay as end-to-end checks that do not count towards the number. |
 

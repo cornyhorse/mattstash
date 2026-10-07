@@ -77,10 +77,6 @@ class EntryManager:
                 versions.append((number, entry))
         return exact, versions
 
-    def find_entry(self, title: str) -> Optional[Entry]:
-        """Return the entry whose title is exactly ``title`` (no version resolution)."""
-        return next((e for e in self._live_entries() if e.title == title), None)
-
     def resolve_entry(self, title: str, version: Optional[int] = None) -> Optional[tuple[Entry, Optional[str]]]:
         """Resolve ``title`` (and optional version) to ``(entry, version_string)``.
 
@@ -152,26 +148,6 @@ class EntryManager:
             return None
         entry, vstr = resolved
         return self._format_entry_result(entry, title, vstr, show_password)
-
-    def _get_versioned_entry(self, title: str, version: int, show_password: bool) -> Optional[CredentialResult]:
-        """Get a specific versioned entry."""
-        return self.get_entry(title, show_password, version)
-
-    def _get_latest_versioned_entry(self, title: str, show_password: bool) -> Optional[CredentialResult]:
-        """Get the latest versioned entry for a title (None if the title has no versions)."""
-        _exact, versions = self._scan(title)
-        if not versions:
-            return None
-        number, entry = max(versions, key=lambda t: t[0])
-        return self._format_entry_result(entry, title, self.version_manager.format_version(number), show_password)
-
-    def _get_unversioned_entry(self, title: str, show_password: bool) -> Optional[CredentialResult]:
-        """Get an unversioned entry."""
-        entry = self.find_entry(title)
-        if entry is None:
-            logger.info(f"Entry not found: {title}")
-            return None
-        return self._format_entry_result(entry, title, None, show_password)
 
     def _format_entry_result(
         self, entry: Entry, title: str, version: Optional[str], show_password: bool
@@ -318,26 +294,6 @@ class EntryManager:
         else:
             return self._put_full_entry(entry, title, username, password, url, notes, tags, vstr)
 
-    def _determine_entry_title(
-        self, title: str, version: Optional[int], autoincrement: bool
-    ) -> tuple[str, Optional[str]]:
-        """Determine the entry title and version string."""
-        if version is not None or autoincrement:
-            if version is None and autoincrement:
-                # Find next version
-                # all entries, trashed ones included: a version number is never reused, so restoring one cannot collide
-                next_version = self.version_manager.get_next_version(title, list(self.kp.entries))
-                vstr = self.version_manager.format_version(next_version)
-            elif version is not None:
-                vstr = self.version_manager.format_version(version)
-            else:
-                vstr = self.version_manager.format_version(1)
-
-            entry_title = self.version_manager.get_versioned_title(title, int(vstr))
-            return entry_title, vstr
-
-        return title, None
-
     def _put_simple_entry(
         self,
         entry: Entry,
@@ -405,7 +361,7 @@ class EntryManager:
     def _set_entry_tags(self, entry: Entry, tags: List[str]) -> None:
         """Set tags on an entry, handling different PyKeePass versions."""
         try:
-            entry.tags = set(tags)
+            entry.tags = list(tags)  # pykeepass joins a list; a set raised TypeError and the tags were silently lost
         except Exception:
             # Fallback for older versions
             for t in list(entry.tags or []):

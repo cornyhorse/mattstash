@@ -37,7 +37,7 @@ Tests for the core MattStash library and CLI in local mode (direct KeePass acces
 ```
 
 - **Location**: `tests/`
-- **Coverage Target**: 90%+
+- **Coverage Target**: 99%+ (CI gate; the goal is 100% of lines, `# pragma: no cover` only where a unit test makes no sense)
 - **Dependencies**: pytest, pytest-cov, pykeepass
 - **What's Tested**:
   - Core credential store operations
@@ -55,7 +55,7 @@ Tests for the FastAPI server component.
 ```
 
 - **Location**: `server/tests/`
-- **Coverage Target**: 90%+
+- **Coverage Target**: 99%+ (CI gate; the goal is 100% of lines, `# pragma: no cover` only where a unit test makes no sense)
 - **Dependencies**: pytest, pytest-cov, httpx, fastapi, slowapi
 - **What's Tested**:
   - API endpoints (credentials, db-url, health)

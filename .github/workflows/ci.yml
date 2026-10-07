@@ -66,8 +66,17 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[all,dev]" "mypy==1.19.1"
 
+      # Coverage is measured once, on the home version (it is the same code on every version). The gate is 99% rather
+      # than 100%: the CI runner is not root, so the few tests that need root (file ownership) skip themselves.
       - name: Run tests
+        if: matrix.python-version != '3.14'
         run: python -m pytest tests/ --ignore=tests/integration -n auto -q --tb=short
+
+      - name: Run tests with coverage
+        if: matrix.python-version == '3.14'
+        run: >-
+          python -m pytest tests/ --ignore=tests/integration -n auto -q --tb=short
+          --cov=mattstash --cov-report=term-missing:skip-covered --cov-fail-under=99
 
       - name: Type check
         if: matrix.python-version == '3.14'

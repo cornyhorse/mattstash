@@ -81,6 +81,13 @@ sidecar is group/world readable.
 | Server mode (CLI) | Only the server's own "Credential not found" 404 means "no such secret" (a wrong URL is an error, so `delete` cannot report "already gone"). Responses are bounded in size and time; rate-limited `GET`s are retried honouring `Retry-After`. |
 | Server | Rate limits per route, `Retry-After` on `429`, `MATTSTASH_MAX_CONCURRENT_WRITES`, `POST /admin/reload` fails with `503`. See [server/docs/configuration.md](../server/docs/configuration.md). |
 
+## Also fixed on the way
+
+- `put(..., tags=[...])` (and `mattstash put --tag` / the server's `tags` field) stored **no tags** before; they are stored now.
+- A malformed number in `config.yml` no longer stops `import mattstash` (it is ignored with a warning); `s3.signature_version`
+  is read; quoted booleans (`enabled: "false"`) mean false.
+- `MATTSTASH_LOG_LEVEL=warn` no longer stops the server at startup.
+
 ## Server mode (CLI client)
 
 - Failures raise `mattstash.utils.exceptions.ServerError` (HTTP status and request path only; never the API key, query

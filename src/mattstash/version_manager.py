@@ -59,7 +59,7 @@ class VersionManager:
             return title, None
 
         parts = title.rsplit("@", 1)
-        if len(parts) != 2:
+        if len(parts) != 2:  # pragma: no cover - unreachable: "@" in title makes rsplit return exactly two parts
             return title, None
 
         base_title, version_str = parts
