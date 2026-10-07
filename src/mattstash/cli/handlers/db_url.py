@@ -7,7 +7,7 @@ Handler for the db-url command.
 from argparse import Namespace
 
 from ...module_functions import get_db_url
-from .base import BaseHandler
+from .base import DB_ERRORS, BaseHandler
 
 
 class DbUrlHandler(BaseHandler):
@@ -32,6 +32,8 @@ class DbUrlHandler(BaseHandler):
             )
             print(url)
             return 0
+        except DB_ERRORS as e:
+            return self.db_error(e)
         except Exception as e:
             self.error(f"failed to build DB URL: {e}")
             return 5

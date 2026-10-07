@@ -4,6 +4,7 @@ mattstash.s3_client
 S3 client functionality for MattStash.
 """
 
+import sys
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
@@ -31,7 +32,7 @@ class S3ClientBuilder:
         addressing: str = "path",  # "virtual" or "path"
         signature_version: str = "s3v4",
         retries_max_attempts: int = 10,
-        verbose: bool = True,
+        verbose: bool = False,
     ) -> Any:
         """
         Read a KeePass entry and return a configured boto3 S3 client.
@@ -47,7 +48,7 @@ class S3ClientBuilder:
             addressing: S3 addressing style - "virtual" or "path" (default: "path")
             signature_version: AWS signature version (default: "s3v4")
             retries_max_attempts: Maximum retry attempts (default: 10)
-            verbose: Print connection details (default: True)
+            verbose: Print connection details to stderr (default: False; the CLI enables it)
 
         Returns:
             Configured boto3 S3 client instance
@@ -85,7 +86,8 @@ class S3ClientBuilder:
 
         if verbose:
             print(
-                f"[mattstash] Using endpoint={endpoint}, region={region}, addressing={addressing}"
+                f"[mattstash] Using endpoint={endpoint}, region={region}, addressing={addressing}",
+                file=sys.stderr,
             )  # pragma: no cover
 
         cfg = Config(

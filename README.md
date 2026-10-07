@@ -11,7 +11,7 @@ MattStash provides both CLI and Python API access to KeePass databases, supporti
 - **Versioning** with automatic incrementing
 - **S3 client helpers** for boto3 integration
 - **Database URL builders** for SQLAlchemy connections
-- **Auto-bootstrapping** of databases and secure password storage
+- **Explicit, safe database creation** (`mattstash setup`) with private file modes and backups
 
 ## Quick Start
 
@@ -33,18 +33,28 @@ pip install "mattstash[all]"
 
 ### First Use
 
-MattStash automatically bootstraps on first use:
+Create a database once, explicitly. `mattstash setup` is the only command that ever creates one, so a
+mistyped `--db` path or an unmounted volume can never silently produce a fresh, empty database.
 
 ```bash
-# Creates ~/.credentials/mattstash.kdbx and ~/.credentials/.mattstash.txt
-mattstash list
-```
-
-Or explicitly:
-
-```bash
+# Prompts for a master password (twice) and creates ~/.config/mattstash/mattstash.kdbx
 mattstash setup
+
+# Non-interactive alternatives
+mattstash setup --sidecar                    # random password stored in <db dir>/.mattstash.txt (0600)
+mattstash setup --password-file /run/secrets/kdbx_password
+echo "$PW" | mattstash setup --password-stdin
+KDBX_PASSWORD=... mattstash setup            # or KDBX_PASSWORD_FILE=...
+mattstash setup --generate                   # random password, printed once
 ```
+
+Every other command opens the database with, in order: `--password`, `KDBX_PASSWORD`,
+`KDBX_PASSWORD_FILE`, then the sidecar file (if you chose `--sidecar`). A missing database or a wrong
+password is reported as such (exit codes 6 and 7), never as "secret not found" (exit code 2).
+
+> **Security note:** with `--sidecar` the key sits next to the database. That protects against copying the
+> `.kdbx` alone (for example in a backup or cloud sync) but not against anyone who can read the directory.
+> For services prefer `KDBX_PASSWORD_FILE` pointing at a file in a *different* mount.
 
 ### Basic Examples
 

@@ -10,6 +10,8 @@ import sys
 from importlib.metadata import version as _pkg_version
 from typing import Optional
 
+from ..utils.exceptions import MattStashError
+from . import exit_codes
 from .handlers import (
     ConfigHandler,
     DbUrlHandler,
@@ -22,12 +24,13 @@ from .handlers import (
     SetupHandler,
     VersionsHandler,
 )
+from .handlers.base import DB_ERRORS
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     """
     Simple CLI:
-      - setup: create database and sidecar password file
+      - setup: create a new database (the only command that creates one)
       - list: show all entries
       - get:  fetch a single entry by title
       - put:  create or update an entry (simple or full)
@@ -92,8 +95,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="cmd", required=True)
 
     # setup
-    p_setup = subparsers.add_parser("setup", help="Create database and sidecar password file", parents=[global_opts])
-    p_setup.add_argument("--force", action="store_true", help="Force creation even if files already exist")
+    p_setup = subparsers.add_parser("setup", help="Create a new database", parents=[global_opts])
+    p_setup.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing database (existing files are backed up first; asks for confirmation)",
+    )
+    p_setup.add_argument("--yes", action="store_true", help="Do not ask for confirmation when using --force")
+    p_setup.add_argument("--no-backup", action="store_true", help="With --force, do not back up replaced files")
+    p_pw = p_setup.add_argument_group("master password (default: prompt; or KDBX_PASSWORD / KDBX_PASSWORD_FILE)")
+    p_pw.add_argument(
+        "--sidecar",
+        action="store_true",
+        help="Generate a random password and store it in <db dir>/.mattstash.txt (0600). "
+        "Convenient, but the key then sits next to the database.",
+    )
+    p_pw.add_argument("--generate", action="store_true", help="Generate a random password and print it once")
+    p_pw.add_argument("--password-file", help="Read the master password from this file")
+    p_pw.add_argument("--password-stdin", action="store_true", help="Read the master password from stdin")
 
     # list
     p_list = subparsers.add_parser("list", help="List entries", parents=[global_opts])
@@ -223,7 +242,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Get the appropriate handler and execute it
     handler = handlers.get(args.cmd)
     if handler:
-        return handler.handle(args)
+        try:
+            return handler.handle(args)
+        except DB_ERRORS as e:
+            return handler.db_error(e)
+        except MattStashError as e:
+            print(f"mattstash: {e}", file=sys.stderr)
+            return exit_codes.ERROR
 
     # Should not reach here
     return 1  # pragma: no cover

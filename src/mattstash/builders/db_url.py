@@ -5,11 +5,15 @@ Database URL construction functionality.
 """
 
 # Updated import path for refactored structure
+import re
 from typing import TYPE_CHECKING, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 if TYPE_CHECKING:
     from ..core.mattstash import MattStash
+
+_SSLMODES = frozenset({"disable", "allow", "prefer", "require", "verify-ca", "verify-full"})
+_HOST_RE = re.compile(r"[A-Za-z0-9._\-\[\]:%]+")
 
 
 def build_db_url(
@@ -80,6 +84,8 @@ class DatabaseUrlBuilder:
                 raise ValueError("[mattstash] Invalid database port in endpoint")
             port = int(port_str)
         host = host.strip("/")
+        if not host or not _HOST_RE.fullmatch(host):
+            raise ValueError("[mattstash] Invalid database host in endpoint")
         return host, port
 
     def build_url(
@@ -117,16 +123,12 @@ class DatabaseUrlBuilder:
           - CLI masked default (omit, with driver):   `postgresql+psycopg://user@host:5432/db`
           - Unmasked with driver:                     `postgresql+psycopg://user:pw@host:5432/db`
         """
-        # Get credential and entry in single database operation
-        if not self.mattstash._ensure_initialized():
-            raise ValueError("[mattstash] Unable to open KeePass database")  # pragma: no cover
-
-        assert self.mattstash._entry_manager is not None
-        result = self.mattstash._entry_manager.get_entry_with_custom_properties(title)
-        if result is None:
+        # Credential + custom properties in one consistent snapshot of the database
+        found = self.mattstash.get_entry_with_properties(title, ("database", "dbname", "sslmode"))
+        if found is None:
             raise ValueError(f"[mattstash] Credential not found: {title}")
 
-        cred, entry = result
+        cred, props = found
 
         # If `cred` is a dict (simple secret), this is not a full DB cred
         if isinstance(cred, dict):
@@ -134,18 +136,22 @@ class DatabaseUrlBuilder:
 
         host, port = self._parse_host_port(cred.url)
 
-        dbname = database or entry.get_custom_property("database") or entry.get_custom_property("dbname")
+        dbname = database or props.get("database") or props.get("dbname")
         if not dbname:
             raise ValueError(
                 "[mattstash] Missing database name. Provide --database/`database=`"
                 " or set custom property 'database'/'dbname' on the credential."
             )
 
-        sslmode = sslmode_override if sslmode_override is not None else entry.get_custom_property("sslmode")
+        sslmode = sslmode_override if sslmode_override is not None else props.get("sslmode")
+        if sslmode and sslmode not in _SSLMODES:
+            raise ValueError(f"[mattstash] Invalid sslmode {sslmode!r}; expected one of {sorted(_SSLMODES)}")
 
         dialect = "postgresql" + (f"+{driver}" if driver else "")
-        user = cred.username or ""
-        pwd = cred.password or ""
+        # Percent-encode everything that is user data: a password such as "p@ss/w:rd#1" would
+        # otherwise change the meaning of the URL (host, path, query).
+        user = quote(cred.username or "", safe="")
+        pwd = quote(cred.password or "", safe="")
 
         if mask_password:
             if mask_style == "omit":
@@ -156,7 +162,7 @@ class DatabaseUrlBuilder:
             # include the real password if available
             userinfo = f"{user}:{pwd}" if pwd else user
 
-        base = f"{dialect}://{userinfo}@{host}:{port}/{dbname}"
+        base = f"{dialect}://{userinfo}@{host}:{port}/{quote(dbname, safe='')}"
         if sslmode:
-            base = f"{base}?sslmode={sslmode}"
+            base = f"{base}?{urlencode({'sslmode': sslmode})}"
         return base

@@ -14,26 +14,29 @@ from mattstash import MattStash
 class TestCompleteCredentialLifecycle:
     """Test complete CRUD operations on actual database."""
 
-    def test_bootstrap_creates_database(self, tmp_path):
-        """Test that MattStash bootstraps a new database on first use."""
-        db_path = tmp_path / "bootstrap_test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
+    def test_create_makes_a_usable_database(self, tmp_path):
+        """MattStash.create() is the only way a database comes into existence."""
+        db_path = tmp_path / "create_test.kdbx"
 
-        # Create sidecar password file
-        sidecar_path.write_text("test-password-123")
+        ms = MattStash.create(str(db_path), password="test-password-123")
 
-        # Initialize MattStash - should create DB
-        MattStash(path=str(db_path))
-
-        # Verify database was created
         assert db_path.exists()
         assert db_path.stat().st_size > 0
+        assert ms.list() == []
+
+    def test_opening_a_missing_database_does_not_create_it(self, tmp_path):
+        """Constructing or using MattStash on a missing path must not create anything."""
+        from mattstash.utils.exceptions import DatabaseNotFoundError
+
+        db_path = tmp_path / "typo.kdbx"
+        with pytest.raises(DatabaseNotFoundError):
+            MattStash(path=str(db_path), password="x").get("anything")
+        assert list(tmp_path.iterdir()) == []
 
     def test_put_and_get_simple_credential(self, tmp_path):
         """Test storing and retrieving a simple credential."""
         db_path = tmp_path / "test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -55,8 +58,7 @@ class TestCompleteCredentialLifecycle:
     def test_put_and_get_database_credential(self, tmp_path):
         """Test storing and retrieving a database credential."""
         db_path = tmp_path / "test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -74,8 +76,7 @@ class TestCompleteCredentialLifecycle:
     def test_update_credential(self, tmp_path):
         """Test updating an existing credential."""
         db_path = tmp_path / "test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -93,8 +94,7 @@ class TestCompleteCredentialLifecycle:
     def test_delete_credential(self, tmp_path):
         """Test deleting a credential."""
         db_path = tmp_path / "test.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -116,8 +116,7 @@ class TestCompleteCredentialLifecycle:
     def test_complete_lifecycle(self, tmp_path):
         """Test complete credential lifecycle: create → read → update → delete."""
         db_path = tmp_path / "lifecycle.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -149,8 +148,7 @@ class TestVersioning:
     def test_create_versioned_credentials(self, tmp_path):
         """Test creating multiple versions of a credential."""
         db_path = tmp_path / "versions.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -172,8 +170,7 @@ class TestVersioning:
     def test_get_latest_version(self, tmp_path):
         """Test retrieving latest version without specifying version."""
         db_path = tmp_path / "versions.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -188,8 +185,7 @@ class TestVersioning:
     def test_list_versions(self, tmp_path):
         """Test listing all versions of a credential."""
         db_path = tmp_path / "versions.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -211,8 +207,7 @@ class TestListOperations:
     def test_list_empty_database(self, tmp_path):
         """Test listing credentials in empty database."""
         db_path = tmp_path / "empty.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -222,8 +217,7 @@ class TestListOperations:
     def test_list_multiple_credentials(self, tmp_path):
         """Test listing multiple credentials."""
         db_path = tmp_path / "list.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -248,8 +242,7 @@ class TestDatabaseUrlBuilder:
     def test_build_basic_url(self, tmp_path):
         """Test building a basic database URL."""
         db_path = tmp_path / "dburl.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -272,8 +265,7 @@ class TestDatabaseUrlBuilder:
     def test_build_url_with_driver(self, tmp_path):
         """Test building database URL with driver."""
         db_path = tmp_path / "dburl.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -295,8 +287,7 @@ class TestDatabaseUrlBuilder:
     def test_build_url_unmasked(self, tmp_path):
         """Test building unmasked database URL."""
         db_path = tmp_path / "dburl.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -322,8 +313,7 @@ class TestErrorHandling:
     def test_get_nonexistent_credential(self, tmp_path):
         """Test getting a credential that doesn't exist."""
         db_path = tmp_path / "errors.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -334,8 +324,7 @@ class TestErrorHandling:
     def test_delete_nonexistent_credential(self, tmp_path):
         """Test deleting a credential that doesn't exist."""
         db_path = tmp_path / "errors.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -346,8 +335,7 @@ class TestErrorHandling:
     def test_invalid_database_credential(self, tmp_path):
         """Test building URL from simple credential raises error."""
         db_path = tmp_path / "errors.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -365,8 +353,7 @@ class TestPasswordResolution:
     def test_explicit_password(self, tmp_path):
         """Test explicit password takes precedence."""
         db_path = tmp_path / "password.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("sidecar-password")
+        MattStash.create(str(db_path), password="sidecar-password", sidecar=True)
 
         # Set environment variable
         os.environ["KDBX_PASSWORD"] = "env-password"
@@ -381,28 +368,25 @@ class TestPasswordResolution:
                 del os.environ["KDBX_PASSWORD"]
 
     def test_sidecar_password(self, tmp_path):
-        """Test sidecar file password resolution."""
+        """A sidecar next to the database is used when nothing else provides a password."""
         db_path = tmp_path / "password.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("sidecar-password")
+        MattStash.create(str(db_path), password="sidecar-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
         assert ms.password == "sidecar-password"
 
     def test_env_password(self, tmp_path):
-        """Test environment variable password resolution."""
+        """KDBX_PASSWORD is used for creation (no random password, no sidecar) and for opening."""
         db_path = tmp_path / "password.kdbx"
 
-        # Set environment variable
         os.environ["KDBX_PASSWORD"] = "env-password"
-
         try:
-            ms = MattStash(path=str(db_path))
-            # Note: Sidecar might be created during bootstrap, so check if password resolved
-            assert ms.password in ["env-password", ""]
+            ms = MattStash.create(str(db_path))
+            assert ms.password == "env-password"
+            assert not (tmp_path / ".mattstash.txt").exists()
+            assert MattStash(path=str(db_path)).password == "env-password"
         finally:
-            if "KDBX_PASSWORD" in os.environ:
-                del os.environ["KDBX_PASSWORD"]
+            os.environ.pop("KDBX_PASSWORD", None)
 
 
 class TestMultipleOperations:
@@ -411,8 +395,7 @@ class TestMultipleOperations:
     def test_batch_credential_creation(self, tmp_path):
         """Test creating many credentials in sequence."""
         db_path = tmp_path / "batch.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 
@@ -432,8 +415,7 @@ class TestMultipleOperations:
     def test_mixed_operations(self, tmp_path):
         """Test mixed create, read, update, delete operations."""
         db_path = tmp_path / "mixed.kdbx"
-        sidecar_path = tmp_path / ".password.txt"
-        sidecar_path.write_text("test-password")
+        MattStash.create(str(db_path), password="test-password", sidecar=True)
 
         ms = MattStash(path=str(db_path))
 

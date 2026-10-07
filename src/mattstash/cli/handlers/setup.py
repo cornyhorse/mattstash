@@ -1,14 +1,20 @@
 """
 mattstash.cli.handlers.setup
 ----------------------------
-Handler for the setup command.
+Handler for the setup command: the only place a database is ever created.
 """
 
+import getpass
 import os
+import sys
 from argparse import Namespace
+from typing import Optional
 
 from ...core.bootstrap import DatabaseBootstrapper
+from ...core.password_resolver import PasswordResolver, read_password_file
 from ...models.config import config
+from ...utils.exceptions import DatabaseExistsError, MattStashError
+from .. import exit_codes
 from .base import BaseHandler
 
 
@@ -17,38 +23,110 @@ class SetupHandler(BaseHandler):
 
     def handle(self, args: Namespace) -> int:
         """Handle the setup command."""
+        db_path = os.path.expanduser(getattr(args, "path", None) or config.default_db_path)
+        bootstrapper = DatabaseBootstrapper(db_path)
+        force = bool(getattr(args, "force", False))
+        existing = bootstrapper.existing_files()
+
+        if existing and not force:
+            self.error("Setup aborted - files already exist:")
+            for path in existing:
+                print(f"  {path}")
+            self.error("Use --force to replace them (existing files are backed up first)")
+            return exit_codes.WOULD_OVERWRITE
+
+        if existing and not self._confirm_replace(existing, bool(getattr(args, "yes", False))):
+            return exit_codes.WOULD_OVERWRITE
+
         try:
-            # Determine the database path
-            db_path = os.path.expanduser(args.path or config.default_db_path)
-            db_dir = os.path.dirname(db_path) or "."
-            sidecar_path = os.path.join(db_dir, config.sidecar_basename)
+            password = self._password_from_args(args, db_path)
+        except (OSError, ValueError, MattStashError) as exc:
+            self.error(f"Setup failed: {exc}")
+            return exit_codes.ERROR
+        sidecar = bool(getattr(args, "sidecar", False))
+        generate = bool(getattr(args, "generate", False))
 
-            # Check if files already exist
-            db_exists = os.path.exists(db_path)
-            sidecar_exists = os.path.exists(sidecar_path)
+        if password is None and not sidecar and not generate:
+            password = self._prompt_password()
+            if password is None:
+                self.error(
+                    "No master password source. Use one of: --sidecar, --generate, --password-file, "
+                    "--password-stdin, the KDBX_PASSWORD / KDBX_PASSWORD_FILE environment variables, "
+                    "or run interactively to be prompted."
+                )
+                return exit_codes.ERROR
 
-            if (db_exists or sidecar_exists) and not args.force:
-                existing_files = []
-                if db_exists:
-                    existing_files.append(f"Database: {db_path}")
-                if sidecar_exists:
-                    existing_files.append(f"Sidecar: {sidecar_path}")
+        try:
+            info = bootstrapper.create(
+                password,
+                sidecar=sidecar,
+                force=force,
+                backup=not getattr(args, "no_backup", False),
+            )
+        except DatabaseExistsError as exc:
+            self.error(str(exc))
+            return exit_codes.WOULD_OVERWRITE
+        except MattStashError as exc:
+            self.error(f"Setup failed: {exc}")
+            return exit_codes.ERROR
 
-                self.error("Setup aborted - files already exist:")
-                for file_info in existing_files:
-                    print(f"  {file_info}")
-                self.error("Use --force to overwrite existing files")
-                return 1
+        self.info("Setup complete!")
+        print(f"  Database created: {info.db_path}")
+        if info.sidecar_path:
+            print(f"  Password file created: {info.sidecar_path}")
+            print("  Note: the password is stored next to the database; anyone who can read this directory can")
+            print("        open it. Prefer an operator-supplied password (KDBX_PASSWORD_FILE) for services.")
+        for backup in info.backups:
+            print(f"  Backed up previous file: {backup}")
+        if info.generated and not info.sidecar_path:
+            print(f"  Generated master password (shown once, store it safely): {info.password}")
+        return exit_codes.OK
 
-            # Force bootstrap by creating a bootstrapper and calling the creation method directly
-            bootstrapper = DatabaseBootstrapper(db_path)
-            bootstrapper._create_database_and_sidecar(db_dir, sidecar_path)
+    # ---- helpers ------------------------------------------------------------
 
-            self.info("Setup complete!")
-            print(f"  Database created: {db_path}")
-            print(f"  Password file created: {sidecar_path}")
-            return 0
+    def _confirm_replace(self, existing: list[str], assume_yes: bool) -> bool:
+        if assume_yes:
+            return True
+        if not sys.stdin.isatty():
+            self.error("Refusing to replace existing files non-interactively; pass --yes to confirm.")
+            return False
+        print("This will REPLACE the following (backups are written first):")
+        for path in existing:
+            print(f"  {path}")
+        try:
+            answer = input("Type 'yes' to continue: ")
+        except EOFError:
+            return False
+        return answer.strip().lower() == "yes"
 
-        except Exception as e:
-            self.error(f"Setup failed: {e}")
-            return 1
+    def _password_from_args(self, args: Namespace, db_path: str) -> Optional[str]:
+        """Explicit password sources, most specific first. Returns None if none was given."""
+        if getattr(args, "password_stdin", False):
+            line = sys.stdin.readline().rstrip("\r\n")
+            if not line:
+                raise ValueError("no password received on stdin")
+            return line
+        password_file = getattr(args, "password_file", None)
+        if password_file:
+            password = read_password_file(os.path.expanduser(password_file))
+            if not password:
+                raise ValueError(f"password file {password_file} is empty")
+            return password
+        explicit = getattr(args, "password", None)
+        if explicit:
+            self.error("warning: --password on the command line is visible to other users (ps, shell history)")
+            return str(explicit)
+        # KDBX_PASSWORD / KDBX_PASSWORD_FILE (the same sources every other command opens the DB with)
+        return PasswordResolver(db_path).resolve_from_environment()
+
+    def _prompt_password(self) -> Optional[str]:
+        if not sys.stdin.isatty():
+            return None
+        first = getpass.getpass("New master password: ")
+        if not first:
+            self.error("Password cannot be empty")
+            return None
+        if getpass.getpass("Repeat master password: ") != first:
+            self.error("Passwords do not match")
+            return None
+        return first

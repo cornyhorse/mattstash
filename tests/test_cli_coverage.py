@@ -142,11 +142,3 @@ def test_main_s3_test_quiet_mode(temp_db: Path):
     """Test main function s3-test in quiet mode"""
     result = main(["--db", str(temp_db), "s3-test", "nonexistent", "--quiet"])
     assert result == 3  # Should still fail but quietly
-
-
-@pytest.fixture()
-def temp_db(tmp_path: Path) -> Path:
-    """Create an isolated directory for each test to hold DB + sidecar."""
-    d = tmp_path / "mattstash"
-    d.mkdir()
-    return d / "test.kdbx"

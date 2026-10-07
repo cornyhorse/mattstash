@@ -33,12 +33,24 @@ stash = MattStash(path="/path/to/custom.kdbx", password="mypassword")
 ### Constructor
 
 ```python
-MattStash(path=None, password=None)
+MattStash(path=None, password=None, *, lock_timeout=30.0)
+MattStash.create(path=None, password=None, *, sidecar=False, force=False, backup=True)  # classmethod
 ```
 
 **Parameters:**
-- `path` (str, optional) - Path to KeePass database. Default: `~/.credentials/mattstash.kdbx`
-- `password` (str, optional) - Database password. If None, reads from sidecar file or environment
+- `path` (str, optional) - Path to KeePass database. Default: `~/.config/mattstash/mattstash.kdbx`
+- `password` (str, optional) - Database password. If None, resolved from `KDBX_PASSWORD`, `KDBX_PASSWORD_FILE`, then the sidecar file
+- `lock_timeout` (float) - seconds to wait for another writer before raising `DatabaseLockError`
+
+The constructor never creates a database. Use `MattStash.create(...)` (what `mattstash setup` calls) to create one;
+it returns a ready-to-use instance and `create_with_info(...)` also returns the generated password and any backups.
+
+**Errors.** A missing *secret* is `None`/`False`. Problems with the *database* raise typed exceptions from
+`mattstash.utils.exceptions`: `DatabaseNotFoundError`, `DatabaseAccessError` (wrong/missing password, corrupt file) and
+`DatabaseLockError`. They are never reported as "not found".
+
+**Thread/process safety.** One `MattStash` object may be shared between threads. Writes hold a cross-process lock,
+re-read the file if another writer changed it, and discard in-memory state if saving fails.
 
 ### Core Methods
 

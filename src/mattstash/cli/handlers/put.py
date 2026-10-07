@@ -10,7 +10,7 @@ from argparse import Namespace
 
 from ...models.credential import serialize_credential
 from ...module_functions import put
-from .base import BaseHandler
+from .base import DB_ERRORS, BaseHandler
 
 
 class PutHandler(BaseHandler):
@@ -90,6 +90,8 @@ class PutHandler(BaseHandler):
             else:
                 print(f"{args.title}: OK")
             return 0
+        except DB_ERRORS as e:
+            return self.db_error(e)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1

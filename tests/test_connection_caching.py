@@ -4,7 +4,7 @@ Tests for connection caching functionality.
 
 import time
 import unittest
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 from pykeepass.entry import Entry
 
@@ -59,7 +59,10 @@ class TestConnectionCaching(unittest.TestCase):
 
         # Mock KeePass instance
         mock_kp_instance = MagicMock()
-        mock_kp_instance.find_entries.return_value = mock_entry
+        # The store does exact title matching over kp.entries (no XPath query); each access of
+        # that property stands for one scan of the database.
+        entries_prop = PropertyMock(return_value=[mock_entry])
+        type(mock_kp_instance).entries = entries_prop
         mock_pykeepass.return_value = mock_kp_instance
 
         # Create store with caching enabled
@@ -68,7 +71,7 @@ class TestConnectionCaching(unittest.TestCase):
         # First lookup - should hit database
         result1 = store.find_entry_by_title("test-cred")
         self.assertEqual(result1, mock_entry)
-        self.assertEqual(mock_kp_instance.find_entries.call_count, 1)
+        self.assertEqual(entries_prop.call_count, 1)
 
         # Entry should be in cache
         self.assertIn("test-cred", store._entry_cache)
@@ -77,8 +80,8 @@ class TestConnectionCaching(unittest.TestCase):
         # Second lookup - should hit cache
         result2 = store.find_entry_by_title("test-cred")
         self.assertEqual(result2, mock_entry)
-        # Should not call find_entries again
-        self.assertEqual(mock_kp_instance.find_entries.call_count, 1)
+        # Should not scan the database again
+        self.assertEqual(entries_prop.call_count, 1)
 
     @patch("mattstash.credential_store.PyKeePass")
     @patch("mattstash.credential_store.os.path.exists", return_value=True)
@@ -90,7 +93,10 @@ class TestConnectionCaching(unittest.TestCase):
 
         # Mock KeePass instance
         mock_kp_instance = MagicMock()
-        mock_kp_instance.find_entries.return_value = mock_entry
+        # The store does exact title matching over kp.entries (no XPath query); each access of
+        # that property stands for one scan of the database.
+        entries_prop = PropertyMock(return_value=[mock_entry])
+        type(mock_kp_instance).entries = entries_prop
         mock_pykeepass.return_value = mock_kp_instance
 
         # Create store with short TTL
@@ -99,7 +105,7 @@ class TestConnectionCaching(unittest.TestCase):
         # First lookup
         result1 = store.find_entry_by_title("test-cred")
         self.assertEqual(result1, mock_entry)
-        self.assertEqual(mock_kp_instance.find_entries.call_count, 1)
+        self.assertEqual(entries_prop.call_count, 1)
 
         # Wait for cache to expire
         time.sleep(1.1)
@@ -107,7 +113,7 @@ class TestConnectionCaching(unittest.TestCase):
         # Second lookup - should hit database again
         result2 = store.find_entry_by_title("test-cred")
         self.assertEqual(result2, mock_entry)
-        self.assertEqual(mock_kp_instance.find_entries.call_count, 2)
+        self.assertEqual(entries_prop.call_count, 2)
 
         # Cache should have been cleared and repopulated
         self.assertIn("test-cred", store._entry_cache)
@@ -122,7 +128,10 @@ class TestConnectionCaching(unittest.TestCase):
 
         # Mock KeePass instance
         mock_kp_instance = MagicMock()
-        mock_kp_instance.find_entries.return_value = mock_entry
+        # The store does exact title matching over kp.entries (no XPath query); each access of
+        # that property stands for one scan of the database.
+        entries_prop = PropertyMock(return_value=[mock_entry])
+        type(mock_kp_instance).entries = entries_prop
         mock_pykeepass.return_value = mock_kp_instance
 
         # Create store with caching
@@ -172,7 +181,10 @@ class TestConnectionCaching(unittest.TestCase):
 
         # Mock KeePass instance
         mock_kp_instance = MagicMock()
-        mock_kp_instance.find_entries.return_value = mock_entry
+        # The store does exact title matching over kp.entries (no XPath query); each access of
+        # that property stands for one scan of the database.
+        entries_prop = PropertyMock(return_value=[mock_entry])
+        type(mock_kp_instance).entries = entries_prop
         mock_pykeepass.return_value = mock_kp_instance
 
         # Create store without caching
@@ -184,7 +196,7 @@ class TestConnectionCaching(unittest.TestCase):
         store.find_entry_by_title("test-cred")
 
         # Should hit database every time
-        self.assertEqual(mock_kp_instance.find_entries.call_count, 3)
+        self.assertEqual(entries_prop.call_count, 3)
 
         # Cache should remain empty
         self.assertEqual(len(store._entry_cache), 0)

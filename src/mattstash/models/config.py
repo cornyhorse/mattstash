@@ -47,6 +47,14 @@ class MattStashConfig:
         self._load_from_environment()
         self._load_from_file()
 
+    @staticmethod
+    def _env_int(name: str, raw: str) -> int:
+        """Parse an integer environment variable, naming the variable if it is malformed."""
+        try:
+            return int(raw)
+        except ValueError:
+            raise ValueError(f"{name} must be an integer, got {raw!r}") from None
+
     def _load_from_environment(self) -> None:
         """Load configuration from environment variables."""
         env_val = os.getenv("MATTSTASH_DB_PATH")
@@ -57,7 +65,7 @@ class MattStashConfig:
             self.sidecar_basename = env_val
         env_val = os.getenv("MATTSTASH_VERSION_PAD_WIDTH")
         if env_val:
-            self.version_pad_width = int(env_val)
+            self.version_pad_width = self._env_int("MATTSTASH_VERSION_PAD_WIDTH", env_val)
         env_val = os.getenv("MATTSTASH_PASSWORD_MASK")
         if env_val:
             self.password_mask = env_val
@@ -72,13 +80,13 @@ class MattStashConfig:
             self.default_signature_version = env_val
         env_val = os.getenv("MATTSTASH_S3_RETRIES")
         if env_val:
-            self.default_retries = int(env_val)
+            self.default_retries = self._env_int("MATTSTASH_S3_RETRIES", env_val)
         env_val = os.getenv("MATTSTASH_ENABLE_CACHE")
         if env_val:
             self.cache_enabled = env_val.lower() in ("true", "1", "yes")
         env_val = os.getenv("MATTSTASH_CACHE_TTL")
         if env_val:
-            self.cache_ttl = int(env_val)
+            self.cache_ttl = self._env_int("MATTSTASH_CACHE_TTL", env_val)
         env_val = os.getenv("MATTSTASH_LOG_LEVEL")
         if env_val:
             self.log_level = env_val

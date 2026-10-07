@@ -30,46 +30,6 @@ def test_base_handler_error_method():
         mock_logger.error.assert_called_once_with("test error message")
 
 
-def test_setup_handler_force_overwrite():
-    """Test setup handler with force flag when files exist"""
-    handler = SetupHandler()
-    args = Namespace(path="/tmp/test.kdbx", force=True)
-
-    with (
-        patch("os.path.exists", return_value=True),
-        patch("mattstash.cli.handlers.setup.DatabaseBootstrapper") as mock_bootstrapper,
-    ):
-        mock_instance = Mock()
-        mock_bootstrapper.return_value = mock_instance
-
-        result = handler.handle(args)
-        assert result == 0
-        mock_instance._create_database_and_sidecar.assert_called_once()
-
-
-def test_setup_handler_existing_files_no_force():
-    """Test setup handler when files exist without force flag"""
-    handler = SetupHandler()
-    args = Namespace(path="/tmp/test.kdbx", force=False)
-
-    with patch("os.path.exists", return_value=True):
-        result = handler.handle(args)
-        assert result == 1
-
-
-def test_setup_handler_exception():
-    """Test setup handler when an exception occurs"""
-    handler = SetupHandler()
-    args = Namespace(path="/tmp/test.kdbx", force=False)
-
-    with (
-        patch("os.path.exists", return_value=False),
-        patch("mattstash.cli.handlers.setup.DatabaseBootstrapper", side_effect=Exception("Test error")),
-    ):
-        result = handler.handle(args)
-        assert result == 1
-
-
 def test_list_handler_json_output():
     """Test list handler with JSON output"""
     handler = ListHandler()

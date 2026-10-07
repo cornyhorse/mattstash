@@ -14,6 +14,18 @@ from mattstash.core.entry_manager import EntryManager
 from mattstash.version_manager import VersionManager
 
 
+def _wire(mock_mattstash, cred, entry):
+    """Wire a mocked MattStash so ``get_entry_with_properties`` returns ``cred`` plus the
+    custom properties the (mock) ``entry`` reports for the requested names."""
+
+    def _get(title, names=()):
+        if cred is None:
+            return None
+        return cred, {name: entry.get_custom_property(name) for name in names}
+
+    mock_mattstash.get_entry_with_properties.side_effect = _get
+
+
 def test_delete_handler_success():
     """Test delete handler when deletion succeeds"""
     handler = DeleteHandler()
@@ -85,8 +97,7 @@ def test_db_url_builder_simple_secret_error():
     simple_secret = {"name": "test", "value": "secret"}
     mock_entry = Mock()
 
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (simple_secret, mock_entry)
+    _wire(mock_mattstash, simple_secret, mock_entry)
 
     with pytest.raises(ValueError, match="is a simple secret"):
         builder.build_url("test")
@@ -106,8 +117,7 @@ def test_db_url_builder_no_custom_properties():
     mock_entry = Mock()
     mock_entry.get_custom_property.return_value = None
 
-    mock_mattstash._ensure_initialized.return_value = True
-    mock_mattstash._entry_manager.get_entry_with_custom_properties.return_value = (mock_cred, mock_entry)
+    _wire(mock_mattstash, mock_cred, mock_entry)
 
     # This should raise an error due to missing database name
     with pytest.raises(ValueError, match="Missing database name"):

@@ -45,60 +45,74 @@ export KDBX_PASSWORD="your-db-password"
 
 ## Password Management
 
-MattStash uses a priority system for database passwords:
+MattStash resolves the database password from these sources, highest priority first:
 
-1. **Explicit parameter** (highest priority)
+1. **Explicit parameter**
    ```bash
-   mattstash --password "explicit-pass" list
+   mattstash --password "explicit-pass" list     # visible in `ps`/shell history: prefer the options below
    ```
 
-2. **Sidecar file** (auto-generated)
-   ```
-   ~/.credentials/.mattstash.txt  # 0600 permissions
-   ```
-
-3. **Environment variable** (lowest priority)
+2. **`KDBX_PASSWORD` environment variable**
    ```bash
-   export KDBX_PASSWORD="fallback-password"
+   export KDBX_PASSWORD="your-db-password"
    ```
 
-## Auto-Bootstrap Process
+3. **`KDBX_PASSWORD_FILE`** - path to a file containing the password (Docker/Kubernetes secrets).
+   If it is set but cannot be read, that is an error (no silent fallback).
+   ```bash
+   export KDBX_PASSWORD_FILE=/run/secrets/kdbx_password
+   ```
 
-On first use, MattStash automatically:
+4. **Sidecar file** `.mattstash.txt` next to the database - only exists if you ran `mattstash setup --sidecar`
+   (or have an older install). It is consulted last, so an operator-supplied password can never be
+   silently overridden by a stale sidecar.
 
-1. Creates `~/.credentials/` directory
-2. Generates a strong random password
-3. Writes password to `.mattstash.txt` with 0600 permissions
-4. Creates empty KeePass database at default location
+Empty values are ignored. A warning is logged if the sidecar or the database file is group/world readable.
 
-### Manual Bootstrap
+## Creating a Database
 
-Force re-initialization:
+`mattstash setup` is the only way to create a database; no other command, the Python API or the server creates
+one implicitly.
 
 ```bash
-# Initialize with defaults
-mattstash setup
-
-# Initialize with custom location
-mattstash --db /custom/path.kdbx setup
-
-# Force overwrite existing
-mattstash setup --force
+mattstash setup                                     # prompt for a master password
+mattstash --db /custom/path.kdbx setup --sidecar    # random password in <db dir>/.mattstash.txt
+mattstash setup --password-file F | --password-stdin | --generate
 ```
+
+If `KDBX_PASSWORD`/`KDBX_PASSWORD_FILE` are set they are used as the master password (nothing random is
+generated and no sidecar is written).
+
+### Replacing an existing database
+
+```bash
+mattstash setup --force            # asks for confirmation; add --yes for scripts
+mattstash setup --force --yes --no-backup
+```
+
+`--force` first copies the existing database (and sidecar) to `<name>.bak-<UTC timestamp>` (mode 0600), builds the
+new files beside the old ones, and only swaps them in on success. If creation fails the old files are untouched.
 
 ## File Permissions
 
-MattStash sets secure permissions automatically:
+MattStash creates and keeps files private:
 
 ```bash
-# Password sidecar file
--rw------- (0600) ~/.credentials/.mattstash.txt
-
-# Database file  
--rw-r--r-- (0644) ~/.credentials/mattstash.kdbx
+-rw------- (0600) mattstash.kdbx        # also re-applied after every save
+-rw------- (0600) .mattstash.txt        # only with --sidecar; created 0600, never briefly world-readable
+-rw------- (0600) mattstash.kdbx.lock   # advisory lock file used while writing
+drwx------ (0700) <directory>           # only if setup had to create it
 ```
 
-The database file uses KeePass encryption, so broader read permissions are acceptable.
+An existing, looser mode on the database is preserved (never widened) and triggers a warning.
+
+## Concurrency
+
+Writes take an advisory lock (`<db>.lock`), re-read the database if another process changed it, apply the change
+and save atomically. Two writers (for example the CLI and the server, or several processes) can therefore not
+overwrite each other's changes, and a failed write never leaves phantom state behind. Reads never block on the lock
+and pick up external changes automatically. On network filesystems (NFS/SMB) locking is best effort; run a single
+writer there.
 
 ## Server Mode Configuration
 

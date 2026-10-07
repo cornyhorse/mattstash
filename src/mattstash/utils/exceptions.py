@@ -45,3 +45,15 @@ class DatabaseCorruptedError(MattStashError):
     """Raised when the database appears to be corrupted."""
 
     pass
+
+
+class DatabaseExistsError(MattStashError):
+    """Raised when creating a database would overwrite existing files."""
+
+    pass
+
+
+class DatabaseLockError(MattStashError):
+    """Raised when the cross-process database lock cannot be acquired in time."""
+
+    pass

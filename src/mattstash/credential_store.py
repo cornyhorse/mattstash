@@ -4,16 +4,20 @@ mattstash.credential_store
 Handles KeePass database operations and credential storage.
 """
 
+import contextlib
 import logging
 import os
+import stat
 import time
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 
 from .models.config import config
 from .utils.exceptions import DatabaseAccessError, DatabaseNotFoundError
+from .utils.logging_config import security_warning
 from .utils.validation import sanitize_error_message
 
 logger = logging.getLogger(__name__)
@@ -26,7 +30,10 @@ class CredentialStore:
         self.db_path = db_path
         self.password = password
         self._kp: Optional[PyKeePass] = None
-        self._file_mtime: float = 0.0
+        # (inode, mtime_ns, size) of the file as last read/written by us. pykeepass saves by
+        # renaming a temp file over the target, so the inode changes on every save by any
+        # writer; that makes this robust against coarse mtime granularity.
+        self._file_sig: Optional[Tuple[int, int, int]] = None
 
         # Connection caching settings
         self.cache_enabled = cache_enabled or config.cache_enabled
@@ -57,24 +64,44 @@ class CredentialStore:
 
         if not os.path.exists(self.db_path):
             logger.error("KeePass database file not found")
-            raise DatabaseNotFoundError("Database file not found")
+            raise DatabaseNotFoundError(f"Database file not found: {self.db_path}. Create one with 'mattstash setup'.")
 
         if not self.password:
             logger.error("No password provided for database")
             raise DatabaseAccessError("No password provided for database")
 
+        self._warn_if_insecure_permissions()
         try:
+            # Take the signature BEFORE reading: if another writer replaces the file while we
+            # decrypt, the next has_file_changed() correctly reports a change.
+            sig = self._current_signature()
             self._kp = PyKeePass(self.db_path, password=self.password)
-            try:
-                self._file_mtime = os.path.getmtime(self.db_path)
-            except OSError:
-                self._file_mtime = 0.0
+            self._file_sig = sig
             logger.info("Successfully opened database")
             return self._kp
         except Exception as e:
             sanitized_msg = sanitize_error_message(e, self.db_path)
             logger.error(f"Failed to open database: {sanitized_msg}")
             raise DatabaseAccessError(f"Failed to open database: {sanitized_msg}") from e
+
+    def _current_signature(self) -> Optional[Tuple[int, int, int]]:
+        try:
+            st = os.stat(self.db_path)
+        except OSError:
+            return None
+        return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+    def _warn_if_insecure_permissions(self) -> None:
+        """Warn when the database file is readable/writable by group or others."""
+        try:
+            mode = os.stat(self.db_path).st_mode
+        except OSError:  # pragma: no cover
+            return
+        if mode & (stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH):
+            security_warning(
+                f"Database file has insecure permissions: {oct(stat.S_IMODE(mode))}. "
+                "Should be 0600 (owner read/write only)."
+            )
 
     def find_entry_by_title(self, title: str) -> Optional[Entry]:
         """Find a single entry by exact title match with optional caching.
@@ -101,7 +128,9 @@ class CredentialStore:
         if kp is None:
             return None
 
-        entry = kp.find_entries(title=title, first=True)
+        # Exact match in Python: pykeepass builds an XPath from the title, so quotes in a
+        # title would break out of the query (see docs/security-review.md H-1).
+        entry = next((e for e in kp.entries if e.title == title), None)
         if entry is not None:
             self._cache_entry(title, entry)
 
@@ -119,7 +148,10 @@ class CredentialStore:
         kp = self.open()
         if kp is None:
             raise DatabaseAccessError("Unable to open database")
-        entry = kp.add_entry(kp.root_group, title=title, username=username, password=password, url=url, notes=notes)
+        # Build the entry directly: PyKeePass.add_entry() runs an XPath duplicate check that
+        # breaks on (and can be steered by) quotes in the title.
+        entry = Entry(title=title, username=username, password=password, url=url, notes=notes, kp=kp)
+        kp.root_group.append(entry)
         return entry
 
     def _get_cached_entry(self, title: str) -> Optional[Entry]:
@@ -168,11 +200,20 @@ class CredentialStore:
     def save(self) -> None:
         """Save changes to the database and clear cache."""
         if self._kp:
-            self._kp.save()
+            # pykeepass writes "<name>.tmp" and moves it over the database, which would give the
+            # new file default-umask permissions. Keep the existing mode (0600 for new files).
             try:
-                self._file_mtime = os.path.getmtime(self.db_path)
+                mode = stat.S_IMODE(os.stat(self.db_path).st_mode)
             except OSError:
-                self._file_mtime = 0.0
+                mode = 0o600
+            tmp = Path(self.db_path).with_suffix(".tmp")
+            with contextlib.suppress(OSError):
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT, mode)
+                os.close(fd)
+            self._kp.save()
+            with contextlib.suppress(OSError):  # pragma: no cover - non-POSIX
+                os.chmod(self.db_path, mode)
+            self._file_sig = self._current_signature()
             self.clear_cache()  # Invalidate cache on save
             logger.debug("Database saved successfully")
 
@@ -180,12 +221,13 @@ class CredentialStore:
         """Check if the KDBX file has been modified externally since last open/save.
 
         Returns:
-            True if the file's mtime differs from the last recorded mtime.
+            True if the file's identity (inode, mtime, size) differs from the last
+            recorded one. A missing file is reported as unchanged.
         """
-        if not os.path.exists(self.db_path):
+        current = self._current_signature()
+        if current is None:
             return False
-        current_mtime = os.path.getmtime(self.db_path)
-        return current_mtime != self._file_mtime
+        return current != self._file_sig
 
     def reload(self) -> Optional[PyKeePass]:
         """Close and reopen the database from disk.

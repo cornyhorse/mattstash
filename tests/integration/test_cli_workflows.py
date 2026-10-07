@@ -25,7 +25,7 @@ class TestCLISetup:
         """Test setup command creates database and sidecar."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        result = run_cli(["setup", "--db", str(db_path)])
+        result = run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         # Should succeed
         assert result.returncode == 0
@@ -42,10 +42,10 @@ class TestCLISetup:
         db_path = tmp_path / "cli-test.kdbx"
 
         # First setup
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         # Second setup with --force
-        result = run_cli(["setup", "--db", str(db_path), "--force"])
+        result = run_cli(["setup", "--db", str(db_path), "--sidecar", "--force", "--yes"])
         assert result.returncode == 0
 
 
@@ -57,7 +57,7 @@ class TestCLIPut:
         db_path = tmp_path / "cli-test.kdbx"
 
         # Setup (creates sidecar automatically)
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         # Put credential
         result = run_cli(["put", "api-key", "--value", "secret-123", "--db", str(db_path)])
@@ -68,7 +68,7 @@ class TestCLIPut:
         """Test putting a database credential via CLI."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         # Put database credential
         result = run_cli(
@@ -93,7 +93,7 @@ class TestCLIPut:
         """Test putting credential with notes."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         result = run_cli(
             [
@@ -118,7 +118,7 @@ class TestCLIGet:
         """Test getting an existing credential."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
         run_cli(["put", "test-key", "--value", "test-value", "--db", str(db_path)])
 
         # Get credential (masked)
@@ -132,7 +132,7 @@ class TestCLIGet:
         """Test getting credential with password shown."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
         run_cli(["put", "secret", "--value", "my-secret", "--db", str(db_path)])
 
         # Get with password shown
@@ -145,7 +145,7 @@ class TestCLIGet:
         """Test getting credential as JSON."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
         run_cli(["put", "json-test", "--value", "value", "--db", str(db_path)])
 
         # Get as JSON
@@ -161,7 +161,7 @@ class TestCLIGet:
         """Test getting a credential that doesn't exist."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         result = run_cli(["get", "nonexistent", "--db", str(db_path)])
 
@@ -176,7 +176,7 @@ class TestCLIList:
         """Test listing empty database."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         result = run_cli(["list", "--db", str(db_path)])
 
@@ -186,7 +186,7 @@ class TestCLIList:
         """Test listing multiple credentials."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         # Add credentials
         run_cli(["put", "cred1", "--value", "val1", "--db", str(db_path)])
@@ -205,7 +205,7 @@ class TestCLIList:
         """Test listing credentials as JSON."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
         run_cli(["put", "test", "--value", "val", "--db", str(db_path)])
 
         result = run_cli(["list", "--json", "--db", str(db_path)])
@@ -224,7 +224,7 @@ class TestCLIDelete:
         """Test deleting an existing credential."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
         run_cli(["put", "to-delete", "--value", "temp", "--db", str(db_path)])
 
         # Delete
@@ -240,7 +240,7 @@ class TestCLIDelete:
         """Test deleting a credential that doesn't exist."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         result = run_cli(["delete", "nonexistent", "--db", str(db_path)])
 
@@ -255,7 +255,7 @@ class TestCLIDbUrl:
         """Test generating database URL via CLI."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         # Put database credential
         run_cli(
@@ -286,7 +286,7 @@ class TestCLIDbUrl:
         """Test generating database URL with driver."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         run_cli(
             [
@@ -318,7 +318,7 @@ class TestCLIKeys:
         """Test keys command lists only titles."""
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         # Add credentials
         run_cli(["put", "key1", "--value", "val1", "--db", str(db_path)])
@@ -343,7 +343,7 @@ class TestCLIVersions:
         """
         db_path = tmp_path / "cli-test.kdbx"
 
-        run_cli(["setup", "--db", str(db_path)])
+        run_cli(["setup", "--db", str(db_path), "--sidecar"])
 
         # Create multiple versions of the same key
         run_cli(["put", "secret", "--value", "v1", "--db", str(db_path)])
@@ -367,7 +367,7 @@ class TestCLICompleteWorkflow:
         db_path = tmp_path / "workflow.kdbx"
 
         # Setup
-        result = run_cli(["setup", "--db", str(db_path)])
+        result = run_cli(["setup", "--db", str(db_path), "--sidecar"])
         assert result.returncode == 0
 
         # Put

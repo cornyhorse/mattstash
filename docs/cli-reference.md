@@ -9,8 +9,8 @@ Available for all commands:
 ### Local Mode Options
 
 ```bash
---db PATH                    # Path to KeePass database (default: ~/.credentials/mattstash.kdbx)
---password PASSWORD          # Database password (overrides sidecar/env)
+--db PATH                    # Path to KeePass database (default: ~/.config/mattstash/mattstash.kdbx)
+--password PASSWORD          # Database password (overrides KDBX_PASSWORD, KDBX_PASSWORD_FILE, sidecar)
 ```
 
 ### Server Mode Options
@@ -51,33 +51,49 @@ MattStash CLI operates in one of two modes:
 
 ## Commands
 
-### `setup` - Initialize Database
+### `setup` - Create a Database
 
-Creates the KeePass database and password sidecar file.
+Creates a new KeePass database. This is the **only** command that creates one.
 
 ```bash
-mattstash setup [--force]
+mattstash setup [--sidecar | --generate | --password-file FILE | --password-stdin]
+                [--force [--yes] [--no-backup]]
 ```
 
+**Master password source** (first match wins): `--password-stdin`, `--password-file`, `--password`,
+`KDBX_PASSWORD` / `KDBX_PASSWORD_FILE`, `--sidecar` (random, stored next to the database), `--generate` (random,
+printed once), otherwise an interactive prompt (asked twice). Non-interactive runs without any source fail.
+
 **Options:**
-- `--force` - Overwrite existing files
+- `--sidecar` - generate a password and store it in `<db dir>/.mattstash.txt` (0600). The key then sits beside the database.
+- `--generate` - generate a password and print it once; nothing is stored.
+- `--password-file FILE` / `--password-stdin` - read the password from a file / stdin.
+- `--force` - replace existing files. Asks for confirmation (non-interactive runs need `--yes`) and backs up the
+  existing database/sidecar to `<name>.bak-<timestamp>` first.
+- `--no-backup` - with `--force`, skip the backup.
 
 **Examples:**
 ```bash
-# Initialize with defaults
-mattstash setup
-
-# Force re-initialization
-mattstash setup --force
-
-# Custom database location
-mattstash --db /path/to/custom.kdbx setup
+mattstash setup                                   # prompt
+mattstash setup --sidecar                         # convenient single-user setup
+mattstash --db /srv/data/mattstash.kdbx setup --password-file /run/secrets/kdbx_password
+mattstash setup --force --yes --sidecar           # replace (with backup)
 ```
 
-**Output:**
-```
-Database and sidecar created at ~/.credentials/
-```
+**Exit codes:** `0` success, `1` failure, `8` refused to overwrite existing files.
+
+### Exit codes (all commands)
+
+| Code | Meaning |
+|------|---------|
+| 0 | success |
+| 1 | generic failure / invalid input |
+| 2 | the requested secret does not exist |
+| 3 / 4 | `s3-test`: client creation / `HeadBucket` failed |
+| 5 | `db-url`: URL could not be built |
+| 6 | database file not found (run `mattstash setup`) |
+| 7 | database cannot be opened: wrong/missing password, corrupt file, lock timeout |
+| 8 | `setup` refused to overwrite existing files |
 
 ### `list` - Show All Credentials
 

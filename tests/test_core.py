@@ -24,28 +24,6 @@ def _read_sidecar(db_path: Path) -> str:
     return sidecar.read_text().strip()
 
 
-@pytest.fixture()
-def temp_db(tmp_path: Path) -> Path:
-    """Create an isolated directory for each test to hold DB + sidecar."""
-    d = tmp_path / "mattstash"
-    d.mkdir()
-    return d / "test.kdbx"
-
-
-def test_bootstrap_creates_db_and_sidecar(temp_db: Path):
-    assert not temp_db.exists()
-    sidecar = temp_db.parent / DEFAULT_KDBX_SIDECAR_BASENAME
-    assert not sidecar.exists()
-
-    ms = MattStash(path=str(temp_db))  # triggers bootstrap when both missing
-
-    assert temp_db.exists(), "KDBX database should be created"
-    assert sidecar.exists(), "Sidecar password file should be created"
-
-    # Password should resolve from the sidecar
-    assert ms.password == _read_sidecar(temp_db)
-
-
 def test_get_and_list_roundtrip(temp_db: Path):
     ms = MattStash(path=str(temp_db))
 

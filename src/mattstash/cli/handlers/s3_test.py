@@ -7,7 +7,7 @@ Handler for the s3-test command.
 from argparse import Namespace
 
 from ...module_functions import get_s3_client
-from .base import BaseHandler
+from .base import DB_ERRORS, BaseHandler
 
 
 class S3TestHandler(BaseHandler):
@@ -26,6 +26,8 @@ class S3TestHandler(BaseHandler):
                 retries_max_attempts=args.retries_max_attempts,
                 verbose=not args.quiet,
             )
+        except DB_ERRORS as e:
+            return self.db_error(e)
         except Exception as e:
             if not args.quiet:
                 self.error(f"failed to create S3 client: {e}")

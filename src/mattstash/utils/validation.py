@@ -146,3 +146,19 @@ def sanitize_error_message(error: Exception, db_path: Optional[str] = None) -> s
     message = re.sub(r"[A-Za-z]:\\[\w\\.-]+\.kdbx", "<database>", message)
 
     return message
+
+
+def validate_lookup_title(title: str) -> None:
+    """
+    Light validation for titles used to *look up* or delete existing entries.
+
+    Deliberately much looser than :func:`validate_credential_title`: databases created by
+    other KeePass tools can hold titles with slashes, spaces, leading dots and so on, and
+    lookups are exact string comparisons (no query language), so such titles are safe.
+    """
+    if not isinstance(title, str) or not title:
+        raise InvalidCredentialError("Credential title cannot be empty")
+    if len(title) > MAX_TITLE_LENGTH:
+        raise InvalidCredentialError(f"Credential title too long (max {MAX_TITLE_LENGTH} characters)")
+    if "\0" in title:
+        raise InvalidCredentialError("Credential title contains invalid character: '\\x00'")

@@ -8,13 +8,24 @@ from abc import ABC, abstractmethod
 from argparse import Namespace
 from typing import Any, Optional
 
+from ...utils.exceptions import DatabaseAccessError, DatabaseLockError, DatabaseNotFoundError
 from ...utils.logging_config import get_logger
+from .. import exit_codes
 
 logger = get_logger(__name__)
 
 
+#: Problems with the database itself (as opposed to a missing secret).
+DB_ERRORS = (DatabaseNotFoundError, DatabaseAccessError, DatabaseLockError)
+
+
 class BaseHandler(ABC):
     """Base class for all CLI command handlers."""
+
+    def db_error(self, exc: Exception) -> int:
+        """Report a database-level error and return the matching exit code."""
+        self.error(str(exc))
+        return exit_codes.DB_NOT_FOUND if isinstance(exc, DatabaseNotFoundError) else exit_codes.DB_ACCESS
 
     @abstractmethod
     def handle(self, args: Namespace) -> int:

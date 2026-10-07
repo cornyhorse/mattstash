@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from mattstash import Credential, MattStash
+from mattstash.utils.exceptions import DatabaseAccessError, DatabaseNotFoundError, InvalidCredentialError
 
 
 def test_corrupt_database_handling(tmp_path: Path):
@@ -15,9 +16,11 @@ def test_corrupt_database_handling(tmp_path: Path):
     corrupt_db.write_text("this is not a valid kdbx file")
 
     ms = MattStash(path=str(corrupt_db), password="test")
-    # Should handle gracefully and return None/False
-    result = ms._ensure_initialized()
-    assert result is False
+    # A corrupt database is a database error, never reported as "secret not found"
+    with pytest.raises(DatabaseAccessError):
+        ms._ensure_initialized()
+    with pytest.raises(DatabaseAccessError):
+        ms.get("anything")
 
 
 def test_missing_database_file(tmp_path: Path):
@@ -25,19 +28,26 @@ def test_missing_database_file(tmp_path: Path):
     nonexistent_db = tmp_path / "does_not_exist.kdbx"
 
     ms = MattStash(path=str(nonexistent_db), password="test")
-    result = ms._ensure_initialized()
-    assert result is False
+    with pytest.raises(DatabaseNotFoundError):
+        ms._ensure_initialized()
+    # ...and nothing is created as a side effect of trying
+    assert not nonexistent_db.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_wrong_password_handling(temp_db: Path):
     """Test behavior with incorrect password"""
-    # Create a database with one password
-    MattStash(path=str(temp_db))
-
-    # Try to open with wrong password
+    # temp_db was created with a sidecar password; try to open with a different one
     ms_wrong = MattStash(path=str(temp_db), password="wrong_password")
-    result = ms_wrong._ensure_initialized()
-    assert result is False
+    with pytest.raises(DatabaseAccessError):
+        ms_wrong._ensure_initialized()
+    # Every operation reports the failure instead of pretending the secret is missing
+    with pytest.raises(DatabaseAccessError):
+        ms_wrong.get("x")
+    with pytest.raises(DatabaseAccessError):
+        ms_wrong.delete("x")
+    with pytest.raises(DatabaseAccessError):
+        ms_wrong.list()
 
 
 def test_special_characters_in_values(temp_db: Path):
@@ -137,11 +147,11 @@ def test_invalid_version_numbers(temp_db: Path):
     # Valid version
     ms.put("test", value="v1", version=1)
 
-    # Test negative version - the current implementation converts to absolute value
-    # Let's test what actually happens rather than assume it should raise
-    result = ms.put("test", value="v-1", version=-1)
-    # The implementation uses abs() internally via str(int(version))
-    assert isinstance(result, dict)
+    # Negative versions used to be written as a malformed title ("test@00000000-1"); now rejected
+    with pytest.raises(InvalidCredentialError):
+        ms.put("test", value="v-1", version=-1)
+    with pytest.raises(InvalidCredentialError):
+        ms.put("test", value="v-bool", version=True)  # type: ignore[arg-type]
 
     # Test very large version numbers
     large_version = 999999999999
@@ -184,11 +194,3 @@ def test_list_versions_nonexistent_credential(temp_db: Path):
 
     versions = ms.list_versions("nonexistent")
     assert versions == []
-
-
-@pytest.fixture()
-def temp_db(tmp_path: Path) -> Path:
-    """Create an isolated directory for each test to hold DB + sidecar."""
-    d = tmp_path / "mattstash"
-    d.mkdir()
-    return d / "test.kdbx"
