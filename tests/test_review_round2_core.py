@@ -91,7 +91,7 @@ def test_c1_kubernetes_secret_volume_swap(tmp_path: Path):
     assert stash.reload_if_changed() is True
     assert stash.reload() is True
     assert stash.get("new-secret") is not None and stash.get("old-secret") is None
-    assert [c.credential_name for c in stash.list(latest_only=True)] == ["new-secret"] or True  # list works too
+    assert [c.credential_name for c in stash.list(latest_only=True)] == ["new-secret"]  # list follows the swap too
 
 
 def test_c1_read_without_poller_also_follows_the_swap(tmp_path: Path):
