@@ -65,7 +65,9 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
-        run: pip install -e ".[all,dev]" "mypy==1.19.1"
+        # mypy is pinned exactly once, in the dev extra of pyproject.toml, so Dependabot's bump of that pin is not
+        # blocked by a second, contradictory pin here.
+        run: pip install -e ".[all,dev]"
 
       # Coverage is measured once, on the home version (it is the same code on every version). The gate is 99% rather
       # than 100%: the CI runner is not root, so the few tests that need root (file ownership) skip themselves.
