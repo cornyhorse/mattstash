@@ -1,11 +1,20 @@
-name: Auto Release
+name: Release
+
+# Releases are manual. Merging to main publishes nothing.
+#
+# To release: bump `version` in pyproject.toml in a pull request, merge it, then push a tag vX.Y.Z on the
+# merge commit (the runbook is .claude/skills/release/SKILL.md; `scripts/check-release.sh vX.Y.Z --preflight`
+# checks everything the workflow below will check). Pushing the tag starts this workflow.
+#
+# To re-run a failed publish for an EXISTING tag: Actions -> Release -> "Run workflow" and pick the tag as the
+# ref ("Use workflow from: Tag: vX.Y.Z"). Never move or delete a tag that was already published.
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:  # allow manual re-runs
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
 
-# Prevent concurrent releases
+# One release at a time; a second one waits instead of being cancelled halfway.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -17,125 +26,75 @@ permissions: {}
 # Dependabot (.github/dependabot.yml) keeps both up to date.
 
 jobs:
-  # Wait for the CI workflow to pass before releasing
+  # Cheap checks first, with no credentials in reach: refuse anything that is not a clean release tag.
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Require a tag
+        id: tag
+        env:
+          # Handed to the shell through the environment only, never interpolated into the script.
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$REF_TYPE" != "tag" ]]; then
+            echo "::error::Run this workflow from a tag (Use workflow from: Tag: vX.Y.Z), not from the branch '$REF_NAME'."
+            exit 1
+          fi
+          if [[ ! "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$REF_NAME' is not a release tag (vMAJOR.MINOR.PATCH)."
+            exit 1
+          fi
+          echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # the check needs the history of main
+          persist-credentials: false
+
+      - name: Check the tag against pyproject.toml and main
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: bash scripts/check-release.sh "$TAG"
+
+  # The same checks as every pull request, on exactly the tagged commit.
   ci:
+    needs: [verify]
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
   release:
-    needs: [ci]
+    needs: [verify, ci]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Optional approval gate: add required reviewers to the "pypi" environment (Settings -> Environments) and
+    # every release waits for a click before anything is published.
     environment: pypi
-    # Skip if the commit was made by the release bot (prevents infinite loop)
-    if: "!contains(github.event.head_commit.message, '[skip-release]')"
     permissions:
-      contents: write  # push the version-bump commit and tag, create the GitHub Release
+      contents: write  # create the GitHub Release for the tag (nothing is pushed)
       # id-token: write  # <- needed for PyPI trusted publishing, see "Publish to PyPI" below
-    outputs:
-      new_version: ${{ steps.version.outputs.new_version }}
-      tag: ${{ steps.version.outputs.tag }}
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          fetch-depth: 0
-          # Use the default GITHUB_TOKEN - needs "Allow GitHub Actions to
-          # create and approve pull requests" enabled in repo settings, and
-          # the default token permissions set to read/write. The token is kept
-          # (persist-credentials defaults to true) because the version bump is pushed below.
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.14"
 
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Determine bump type
-        id: bump
-        env:
-          # The commit message is attacker-influenced text. It is handed to the shell through the
-          # environment and only ever read as "$COMMIT_MSG"; it must never be interpolated into the
-          # script with ${{ }} (that would be script injection in the job that holds the publish
-          # credentials).
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
-        run: |
-          # Check for explicit bump directives in merge commit message
-          if printf '%s\n' "$COMMIT_MSG" | grep -qiE '\[(major|bump-major)\]'; then
-            bump_type="major"
-          elif printf '%s\n' "$COMMIT_MSG" | grep -qiE '\[(minor|bump-minor)\]'; then
-            bump_type="minor"
-          else
-            bump_type="patch"
-          fi
-          echo "type=$bump_type" >> "$GITHUB_OUTPUT"
-          echo "Bump type: $bump_type"
-
-      - name: Bump version
-        id: version
-        run: |
-          python - <<'PYEOF'
-          import re, os, sys
-
-          bump_type = os.environ["BUMP_TYPE"]
-
-          with open("pyproject.toml") as f:
-              content = f.read()
-
-          m = re.search(r'version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', content)
-          if not m:
-              print("ERROR: Could not find version in pyproject.toml")
-              sys.exit(1)
-
-          major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-          old_version = f"{major}.{minor}.{patch}"
-
-          if bump_type == "major":
-              major += 1
-              minor = 0
-              patch = 0
-          elif bump_type == "minor":
-              minor += 1
-              patch = 0
-          else:
-              patch += 1
-
-          new_version = f"{major}.{minor}.{patch}"
-          content = content.replace(f'version = "{old_version}"', f'version = "{new_version}"')
-
-          with open("pyproject.toml", "w") as f:
-              f.write(content)
-
-          print(f"Bumped {old_version} -> {new_version} ({bump_type})")
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"old_version={old_version}\n")
-              f.write(f"new_version={new_version}\n")
-              f.write(f"tag=v{new_version}\n")
-          PYEOF
-        env:
-          BUMP_TYPE: ${{ steps.bump.outputs.type }}
-
-      - name: Commit version bump
-        env:
-          NEW_VERSION: ${{ steps.version.outputs.new_version }}
-        run: |
-          git add pyproject.toml
-          git commit -m "release: v${NEW_VERSION} [skip-release]"
-          git tag "v${NEW_VERSION}"
-          git push origin main --tags
-
-      - name: Install build tools
+      - name: Build package
         run: |
           python -m pip install --upgrade pip
           pip install build
-
-      - name: Build package
-        run: python -m build
+          python -m build
 
       # --- Publish to PyPI ------------------------------------------------------------------
       # ACTIVE: token-based publishing with the long-lived PYPI_API_TOKEN secret.
@@ -162,34 +121,33 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
-          tag_name: "v${{ steps.version.outputs.new_version }}"
-          name: "v${{ steps.version.outputs.new_version }}"
+          tag_name: ${{ needs.verify.outputs.tag }}
+          name: ${{ needs.verify.outputs.tag }}
           body: |
-            ## mattstash v${{ steps.version.outputs.new_version }}
-
-            Bumped from v${{ steps.version.outputs.old_version }} → v${{ steps.version.outputs.new_version }} (${{ steps.bump.outputs.type }}).
+            ## mattstash ${{ needs.verify.outputs.tag }}
 
             Install or upgrade:
             ```
-            pip install mattstash==${{ steps.version.outputs.new_version }}
+            pip install mattstash==${{ needs.verify.outputs.version }}
             ```
+
+            Server image: `ghcr.io/cornyhorse/mattstash:${{ needs.verify.outputs.tag }}`
           generate_release_notes: true
 
   docker:
-    needs: [release]
+    needs: [verify, release]
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip-release]')"
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write  # push the image to ghcr.io
-
     steps:
-      # Build exactly the commit that was just released (the version-bump commit the release job
-      # tagged), not whatever main happens to be by now. The image installs the library from this
-      # checkout, so image == tagged commit == PyPI release.
+      # Build exactly the tagged commit. The image installs the library from this checkout, so
+      # image == tagged commit == PyPI release.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: refs/tags/${{ needs.release.outputs.tag }}
+          ref: refs/tags/${{ needs.verify.outputs.tag }}
+          persist-credentials: false
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
@@ -215,9 +173,9 @@ jobs:
           sbom: true
           tags: |
             ghcr.io/cornyhorse/mattstash:latest
-            ghcr.io/cornyhorse/mattstash:v${{ needs.release.outputs.new_version }}
+            ghcr.io/cornyhorse/mattstash:${{ needs.verify.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/cornyhorse/mattstash
             org.opencontainers.image.description=MattStash API Server
-            org.opencontainers.image.version=${{ needs.release.outputs.new_version }}
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
             org.opencontainers.image.licenses=MIT
