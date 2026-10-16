@@ -65,6 +65,10 @@ password is reported as such (exit codes 6 and 7), never as "secret not found" (
 # Store a simple secret: the value from stdin (or --value-file FILE), not from the command line
 printf '%s' "$TOKEN" | mattstash put "api-token" --value -
 
+# Or type it at a prompt: username + password, or just the value with --value
+mattstash -i "production-db"
+mattstash -i "api-token" --value
+
 # Store a full credential: the password from a file (or --entry-password-stdin)
 mattstash put "production-db" --username dbuser --entry-password-file ./db-password \
   --url localhost:5432 --notes "Production PostgreSQL"
@@ -271,7 +275,7 @@ mattstash db-url "shop-db" --dialect mysql --driver pymysql --database shop
 | `list` | Show all credentials |
 | `keys` | List credential names only |
 | `get <name>` | Retrieve a credential (`--raw` / `--field` for scripts) |
-| `put <name>` | Store or update a credential (`--value -`, `--value-file`, `--entry-password*`) |
+| `put <name>` | Store or update a credential (`-i` to type it at a prompt, `--value -`, `--value-file`, `--entry-password*`) |
 | `delete <name>` | Remove a credential (`--version N` for one version) |
 | `prune <name> --keep N` | Keep only the newest N versions (local only) |
 | `versions <name>` | Show version history |

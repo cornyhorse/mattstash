@@ -221,6 +221,19 @@ mattstash put <title> --value-file FILE       # read the value from a file
 mattstash put <title> --value VALUE           # value on the command line (visible via ps/history)
 ```
 
+#### Interactive mode (`-i`)
+```bash
+mattstash -i [<title>]                         # prompts: Username, Password (twice) -> full credential
+mattstash -i [<title>] --value                 # prompts: Password (twice) -> simple secret
+mattstash put <title> --value                  # same: a bare --value prompts for the value
+```
+`mattstash -i ...` is short for `mattstash put -i ...`. The title is not a secret, so give it on the command line; when
+it is omitted you are asked for it (`Key:`). Passwords are read without echo and must be typed twice; prompts go to
+stderr, so `--json` output stays clean. `--username` skips the username prompt (an empty answer stores no username),
+and `--url`, `--notes` and `--tag` work as usual. `-i` needs a terminal and cannot be combined with `--value VALUE`,
+`--value-file` or `--entry-password*` (use those in scripts). In fields mode use `--db-password` (not a bare
+`--password`) for the database password.
+
 #### Full credential mode
 ```bash
 mattstash put <title> [--fields] [--username U] [--url URL]
@@ -229,7 +242,8 @@ mattstash put <title> [--fields] [--username U] [--url URL]
 ```
 
 **Options:**
-- `--value VALUE` - simple secret; `--value -` reads stdin
+- `-i`, `--interactive` - prompt for the title (if omitted) and the secret; see above
+- `--value VALUE` - simple secret; `--value -` reads stdin; a bare `--value` prompts for it
 - `--value-file FILE` - simple secret from a file
 - `--fields` - full credential mode (inferred when any of `--username`, `--url` or `--entry-password*` is given)
 - `--username`, `--url` - fields of a full credential
@@ -252,6 +266,10 @@ for the database.
 
 **Examples:**
 ```bash
+# Typed at the terminal (nothing on the command line or in shell history)
+mattstash -i production-db --url db.internal:5432
+mattstash -i api-token --value
+
 # Simple secret, value from stdin or a file (nothing on the command line)
 printf '%s' "$TOKEN" | mattstash put api-token --value -
 mattstash put api-token --value-file ./token.txt

@@ -7,6 +7,9 @@ Secrets can be supplied without touching ``argv`` (which is visible through ``ps
 history): ``--value -`` / ``--value-file`` for simple secrets, ``--entry-password-file`` /
 ``--entry-password-stdin`` for the password of a full credential.
 
+``-i``/``--interactive`` prompts on the terminal instead: for the username and password (the default), or only
+the value with ``--value`` (given without an argument). The title is prompted for when it is omitted.
+
 ``--password`` is the *database* password everywhere except ``put --fields``, where it used to
 mean the entry password. That meaning still works but is deprecated; ``--db-password`` always
 means the database password and ``--entry-password*`` always means the entry password.
@@ -20,7 +23,15 @@ from typing import Optional
 from ...models.credential import serialize_credential
 from ...module_functions import put
 from .. import exit_codes
-from ..inputs import InputError, StdinClaim, read_secret_file, read_stdin_secret
+from ..inputs import (
+    InputError,
+    StdinClaim,
+    prompt_line,
+    prompt_new_secret,
+    read_secret_file,
+    read_stdin_secret,
+    require_terminal,
+)
 from .base import DB_ERRORS, BaseHandler
 
 _ENTRY_PW_DEPRECATION = (
@@ -29,16 +40,21 @@ _ENTRY_PW_DEPRECATION = (
     "Use --db-password-file, KDBX_PASSWORD_FILE or KDBX_PASSWORD for the database password."
 )
 
+#: ``--value`` given without an argument (prompt for it). NUL cannot appear in a command-line argument.
+VALUE_PROMPT = "\0prompt"
+
 
 @dataclass
 class PutRequest:
     """What ``put`` should store, after mode detection and reading all secret inputs."""
 
+    title: str
     fields: bool
     value: Optional[str] = None
     entry_password: Optional[str] = None
     #: Database password override (None: resolve from KDBX_PASSWORD / KDBX_PASSWORD_FILE / sidecar).
     db_password: Optional[str] = None
+    username: Optional[str] = None
 
 
 class PutHandler(BaseHandler):
@@ -61,7 +77,7 @@ class PutHandler(BaseHandler):
             if not request.fields:
                 # Simple value mode (credstash-like)
                 result = put(
-                    args.title,
+                    request.title,
                     path=args.path,
                     db_password=request.db_password,
                     value=request.value,
@@ -78,16 +94,16 @@ class PutHandler(BaseHandler):
                     if isinstance(result, dict):
                         print(f"{result['name']}: {result['value']}")
                     else:
-                        print(f"{args.title}: OK")
+                        print(f"{request.title}: OK")
                 return exit_codes.OK
 
             # Fields mode: the entry password is stored in the entry; the database password
             # comes from --db-password*/KDBX_PASSWORD*/the sidecar, never from the entry password.
             result = put(
-                args.title,
+                request.title,
                 path=args.path,
                 db_password=request.db_password,
-                username=args.username,
+                username=request.username,
                 password=request.entry_password,
                 url=args.url,
                 notes=args.notes,
@@ -103,7 +119,7 @@ class PutHandler(BaseHandler):
                 else:
                     print(json.dumps(serialize_credential(result, show_password=False), indent=2))
             else:
-                print(f"{args.title}: OK")
+                print(f"{request.title}: OK")
             return exit_codes.OK
         except DB_ERRORS as e:
             return self.db_error(e)
@@ -123,6 +139,11 @@ class PutHandler(BaseHandler):
         username = self.opt(args, "username", str)
         url = self.opt(args, "url", str)
         fields = self.flag(args, "fields")
+        title = self.opt(args, "title", str)
+        if self.flag(args, "interactive") or value_arg == VALUE_PROMPT:
+            return self._build_interactive_request(args, title, value_arg == VALUE_PROMPT)
+        if not title:
+            raise InputError("a title is required (or use -i to be prompted for it)")
 
         has_value = value_arg is not None or value_file is not None
         entry_pw_options = [
@@ -168,7 +189,7 @@ class PutHandler(BaseHandler):
 
         if not fields:
             value = self._read_value(value_arg, value_file)
-            return PutRequest(fields=False, value=value, db_password=cli_password)
+            return PutRequest(title=title, fields=False, value=value, db_password=cli_password)
 
         # Fields mode. --db-password / --db-password-file are the database password; a plain --password
         # is the deprecated spelling of --entry-password (this command's historical meaning).
@@ -190,7 +211,51 @@ class PutHandler(BaseHandler):
                 )
             self.deprecation(_ENTRY_PW_DEPRECATION)
             entry_password = cli_password
-        return PutRequest(fields=True, entry_password=entry_password, db_password=db_password)
+        return PutRequest(
+            title=title, fields=True, entry_password=entry_password, db_password=db_password, username=username
+        )
+
+    def _build_interactive_request(self, args: Namespace, title: Optional[str], value_mode: bool) -> PutRequest:
+        """``-i`` (or a bare ``--value``): prompt for the title if omitted, then the secret. Raises ``InputError``."""
+        for name, option in (
+            ("value_file", "--value-file"),
+            ("entry_password", "--entry-password"),
+            ("entry_password_file", "--entry-password-file"),
+        ):
+            if self.opt(args, name, str) is not None:
+                raise InputError(f"-i prompts for the secret and cannot be combined with {option}")
+        if self.flag(args, "entry_password_stdin"):
+            raise InputError("-i prompts for the secret and cannot be combined with --entry-password-stdin")
+        value_arg = self.opt(args, "value", str)
+        if value_arg is not None and not value_mode:
+            raise InputError(
+                "-i prompts for the value, so --value takes no argument here; put the title first: "
+                "mattstash put TITLE -i --value"
+            )
+        username = self.opt(args, "username", str)
+        if value_mode and (self.flag(args, "fields") or username or self.opt(args, "url", str)):
+            raise InputError("--value stores a simple secret: drop --value to be prompted for a username and password")
+        db_password_flag = self.flag(args, "db_password_explicit")
+        cli_password = self.opt(args, "password", str)
+        if cli_password and not db_password_flag and not value_mode:
+            raise InputError("-i prompts for the entry password: use --db-password for the database password")
+
+        require_terminal("-i")
+        if not title:
+            title = prompt_line("Key: ")
+            if not title:
+                raise InputError("a title is required")
+        if value_mode:
+            return PutRequest(title=title, fields=False, value=prompt_new_secret("Password"), db_password=cli_password)
+        if username is None:
+            username = prompt_line("Username: ") or None
+        return PutRequest(
+            title=title,
+            fields=True,
+            entry_password=prompt_new_secret("Password"),
+            db_password=cli_password if db_password_flag else None,
+            username=username,
+        )
 
     @staticmethod
     def _non_empty(option: str, value: str) -> str:
@@ -220,8 +285,8 @@ class PutHandler(BaseHandler):
             if not request.fields:
                 kwargs["value"] = request.value
             else:
-                if args.username:
-                    kwargs["username"] = args.username
+                if request.username:
+                    kwargs["username"] = request.username
                 if request.entry_password is not None:
                     kwargs["password"] = request.entry_password
                 if args.url:
@@ -234,12 +299,12 @@ class PutHandler(BaseHandler):
             if args.tags:
                 kwargs["tags"] = args.tags
 
-            result = client.put(args.title, **kwargs)
+            result = client.put(request.title, **kwargs)
 
             if args.json:
                 print(json.dumps(result, indent=2))
             else:
-                print(f"{args.title}: OK")
+                print(f"{request.title}: OK")
 
             return exit_codes.OK
 

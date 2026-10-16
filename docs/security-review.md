@@ -279,6 +279,12 @@ Interpretations made while building (change them if you disagree): `--upper` is 
 and exits 126/127 like `env`/`xargs`; `--driver` defaults to `auto`; `put --value` combined with `--username`/`--url` is an
 error instead of silently dropping them.
 
+**Interactive entry (added later):** `put -i` (also `mattstash -i`) prompts on the terminal: username and password by
+default, only the value with a bare `--value`; the title is prompted for when omitted. Secrets are read with `getpass`
+and confirmed; prompts go to stderr. It refuses a non-terminal stdin and any other secret source (`--value VALUE`,
+`--value-file`, `--entry-password*`), and a bare `--password` in fields mode (ambiguous: use `--db-password`). The
+user-suggested `--password` spelling for value mode was not used because `--password` is the database password.
+
 The CLI-to-server integration tests (`tests/integration`) used to need Docker and were skipped everywhere else. They now
 start the real server (`python -m app`) on a free localhost port with a throw-away database and run the real CLI against
 it, so they run in CI and on a laptop; they skip only when the server's dependencies are not installed.

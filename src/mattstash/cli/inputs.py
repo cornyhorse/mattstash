@@ -125,6 +125,34 @@ def read_stdin_line(option: str) -> str:
     return value
 
 
+def require_terminal(option: str) -> None:
+    """Interactive prompts need a terminal on stdin: a pipe would silently feed them (or block them)."""
+    if not _interactive(sys.stdin):
+        raise InputError(
+            f"{option} needs a terminal to prompt on; in scripts use --value -/--value-file or --entry-password-file"
+        )
+
+
+def prompt_line(label: str) -> str:
+    """One visible line from the terminal (prompt on stderr, so ``--json`` output stays clean), stripped."""
+    sys.stderr.write(label)
+    sys.stderr.flush()
+    line = sys.stdin.readline()
+    if not line:
+        raise InputError(f"{label.rstrip(': ')}: no data received (end of input)")
+    return line.strip()
+
+
+def prompt_new_secret(label: str) -> str:
+    """A secret typed twice without echo; empty input or a mismatch is an error."""
+    value = _hidden_prompt(label)
+    if not value:
+        raise InputError(f"{label}: empty value")
+    if _hidden_prompt(f"Repeat {label.lower()}") != value:
+        raise InputError(f"{label}: the two entries do not match")
+    return value
+
+
 def read_secret_file(option: str, path: str) -> str:
     """Read a secret value from ``path``, dropping one trailing newline. Rejects empty files."""
     path = os.path.expanduser(path)
