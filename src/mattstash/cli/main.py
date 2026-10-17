@@ -34,6 +34,7 @@ from .handlers import (
     VersionsHandler,
 )
 from .handlers.base import DB_ERRORS
+from .handlers.put import VALUE_PROMPT
 from .inputs import InputError, read_credential_file
 
 
@@ -217,6 +218,28 @@ def _add_global_options(parser: argparse.ArgumentParser, *, suppress_defaults: b
     )
 
 
+#: Global options that take a separate value (``--db X``); needed to find where the command starts.
+_GLOBAL_OPTIONS_WITH_VALUE = frozenset(
+    {"--db", "--password", "--db-password", "--db-password-file", "--server-url", "--api-key", "--api-key-file"}
+)
+
+
+def _expand_interactive_shortcut(argv: list[str]) -> list[str]:
+    """``mattstash [global options] -i ...`` is short for ``mattstash [global options] put -i ...``."""
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg in ("-i", "--interactive"):
+            return [*argv[:index], "put", *argv[index:]]
+        if arg in _GLOBAL_OPTIONS_WITH_VALUE:
+            index += 2
+        elif arg.startswith("--") and len(arg) > 2:
+            index += 1  # --verbose, --option=value
+        else:
+            break  # the command (or something argparse will report)
+    return argv
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """
     Simple CLI:
@@ -300,13 +323,23 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # put
     p_put = subparsers.add_parser("put", help="Create/update an entry", parents=[global_opts])
-    p_put.add_argument("title", help="KeePass entry title")
+    p_put.add_argument("title", nargs="?", help="KeePass entry title (prompted for with -i when omitted)")
+    p_put.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="Prompt for the secret on the terminal (without echo): username and password by default, only the "
+        "value with --value. 'mattstash -i ...' is short for 'mattstash put -i ...'",
+    )
     group = p_put.add_mutually_exclusive_group(required=False)
     group.add_argument(
         "--value",
         metavar="VALUE",
+        nargs="?",
+        const=VALUE_PROMPT,
         help="Simple secret value (credstash-like; stored in the password field). Use '-' to read it from stdin; "
-        "a value on the command line is visible via ps and shell history",
+        "a value on the command line is visible via ps and shell history. Without VALUE (or with -i) the value is "
+        "prompted for",
     )
     group.add_argument(
         "--value-file",
@@ -512,7 +545,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         parents=[global_opts],
     )
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_expand_interactive_shortcut(argv))
 
     # Handle the informational 'server' subcommand
     if args.cmd == "server":

@@ -22,7 +22,7 @@ import sys
 import time
 import weakref
 from types import TracebackType
-from typing import Optional
+from typing import ClassVar, Optional
 
 from .exceptions import DatabaseLockError
 from .fileops import match_owner
@@ -70,7 +70,7 @@ class FileLock:
     """
 
     #: Every live lock, so the at-fork hook can reset them in a child process.
-    _instances: "weakref.WeakSet[FileLock]" = weakref.WeakSet()
+    _instances: ClassVar["weakref.WeakSet[FileLock]"] = weakref.WeakSet()
 
     def __init__(
         self, path: str, timeout: float = 30.0, poll_interval: float = 0.02, reference: Optional[str] = None
