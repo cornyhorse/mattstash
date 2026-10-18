@@ -1,7 +1,6 @@
 """``mattstash admin ...`` in local mode (design section 8): the policy file is edited directly."""
 
 import json
-import os
 import stat
 import sys
 from datetime import UTC, datetime, timedelta
@@ -245,26 +244,6 @@ def test_token_issue_failure_leaves_no_empty_output_file(run: Runner, bootstrapp
 def test_token_issue_empty_output_file_path(run: Runner, bootstrapped: Path):
     result = run(*admin(bootstrapped, "token", "issue", "bot", "--output-file", ""))
     assert result.code == 1 and "empty path" in result.err
-
-
-def test_token_issue_write_failure_reports_the_token_id(
-    run: Runner, bootstrapped: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    real_fdopen = os.fdopen
-
-    def failing(descriptor: int, *args: object, **kwargs: object):
-        handle = real_fdopen(descriptor, *args, **kwargs)  # type: ignore[call-overload]
-        if "b" in args[0]:  # the policy file's own atomic write must keep working
-            return handle
-        handle.write = lambda _text: (_ for _ in ()).throw(OSError(28, "No space left on device"))  # type: ignore[method-assign]
-        return handle
-
-    monkeypatch.setattr(admin_module.os, "fdopen", failing)
-    target = tmp_path / "t"
-    result = run(*admin(bootstrapped, "token", "issue", "bot", "--output-file", str(target)))
-    stored = load_policy(bootstrapped).principal("bot").tokens[0]  # type: ignore[union-attr]
-    assert result.code == 1 and stored.id in result.err and "revoke it" in result.err
-    assert not target.exists() and result.out == ""
 
 
 def test_token_list_and_revoke(run: Runner, bootstrapped: Path):

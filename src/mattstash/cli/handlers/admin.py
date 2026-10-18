@@ -10,30 +10,36 @@ Two modes with one set of commands. A *backend* turns each operation into data s
 * local mode (``--policy-file`` / ``MATTSTASH_POLICY_FILE``): :class:`_LocalBackend` edits the policy file directly with
   :mod:`mattstash.authz` (bootstrapping the first admin, offline repair). The file's permissions are the access control.
 
-Token plaintext is printed once, alone on stdout (or written to a new 0600 file) and never logged.
+Token plaintext is printed once, alone on stdout (or written to a new 0600 file) and never logged. It is written to
+stdout directly and never falls back to stderr (which is routinely captured by logs): if it can't be delivered, the
+command fails and names the token id so the token can be revoked.
 """
 
 import argparse
 import contextlib
 import json
 import os
-import re
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, TextIO
 
 from ...authz import (
     ACTIONS,
     KINDS,
     Grant,
+    Policy,
     PolicyError,
     Principal,
     Token,
     edit_policy,
     evaluate,
+    is_valid_token_id,
     load_policy,
+    parse_duration,
     parse_duration_or_time,
+    parse_token,
     read_records,
     validate_pattern,
     validate_tag,
@@ -44,12 +50,14 @@ from .. import exit_codes
 from ..inputs import InputError
 from .base import BaseHandler
 
+if TYPE_CHECKING:
+    from ..http_client import MattStashServerClient
+
 POLICY_FILE_ENV = "MATTSTASH_POLICY_FILE"
 ACCESS_LOG_FILE_ENV = "MATTSTASH_ACCESS_LOG_FILE"
 DEFAULT_MIN_KEY_LENGTH = 32
 MAX_LOG_LIMIT = 1000
 _MAX_MIGRATION_FILE = 4 * 1024 * 1024
-_RELATIVE = re.compile(r"\d{1,6}[mhdw]", re.ASCII)
 
 Data = Dict[str, Any]
 
@@ -115,10 +123,14 @@ def _now() -> datetime:
 
 def _since(text: str, now: datetime) -> datetime:
     """``24h`` means 24 hours ago; anything else is an absolute date or time."""
-    cleaned = text.strip()
-    if _RELATIVE.fullmatch(cleaned):
-        return now - (parse_duration_or_time(cleaned, now) - now)
-    return parse_duration_or_time(cleaned, now)
+    try:
+        delta = parse_duration(text)
+    except PolicyError:
+        return parse_duration_or_time(text, now)
+    try:
+        return now - delta
+    except OverflowError:
+        raise PolicyError(f"{text!r} is outside the range of supported dates") from None
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +138,14 @@ def _since(text: str, now: datetime) -> datetime:
 # ---------------------------------------------------------------------------
 
 
-class _Backend(Protocol):
+class _LogReader(Protocol):
+    """What ``admin log`` needs: the newest matching access-log records."""
+
+    def log(self, principal: Optional[str], decision: Optional[str], since: Optional[str], limit: int) -> List[Data]:
+        """The newest matching access-log records, oldest first."""
+
+
+class _Backend(_LogReader, Protocol):
     """One method per operation; results have the shapes of the admin HTTP contract."""
 
     def principals(self) -> List[Data]:
@@ -178,41 +197,52 @@ class _Backend(Protocol):
     def check(self, principal: str, action: str, name: str, tags: List[str]) -> Data:
         """Would this be allowed, and by which grant?"""
 
+
+def _read_log(
+    log_file: Optional[str], principal: Optional[str], decision: Optional[str], since: Optional[str], limit: int
+) -> List[Data]:
+    if log_file is None:
+        raise AdminError("no access log file: use --log-file or set " + ACCESS_LOG_FILE_ENV)
+    moment = None if since is None else _since(since, _now())
+    return read_records(log_file, principal=principal, decision=decision, since=moment, limit=limit)
+
+
+class _LogFileBackend:
+    """``admin log`` without a policy file: just an access-log file on this machine."""
+
+    def __init__(self, log_file: str) -> None:
+        self.log_file = log_file
+
     def log(self, principal: Optional[str], decision: Optional[str], since: Optional[str], limit: int) -> List[Data]:
-        """The newest matching access-log records, oldest first."""
+        return _read_log(self.log_file, principal, decision, since, limit)
 
 
 class _LocalBackend:
     """Operations on a policy file (and an access-log file) on this machine."""
 
-    def __init__(self, policy_file: Optional[str], log_file: Optional[str]) -> None:
+    def __init__(self, policy_file: str, log_file: Optional[str]) -> None:
         self.policy_file = policy_file
         self.log_file = log_file
 
-    def _path(self) -> str:
-        if self.policy_file is None:  # pragma: no cover - only `log` runs without one, and it never calls this
-            raise AdminError("this command needs a policy file: use --policy-file or set " + POLICY_FILE_ENV)
-        return self.policy_file
-
-    def _load(self) -> Any:
-        path = self._path()
+    def _load(self) -> Policy:
         try:
-            return load_policy(path)
+            return load_policy(self.policy_file)
         except FileNotFoundError:
             raise AdminError(
-                f"policy file not found: {path} (create it with `mattstash admin --policy-file {path} "
+                f"policy file not found: {self.policy_file} (create it with `mattstash admin --policy-file "
+                f"{self.policy_file} "
                 "principal add NAME --kind human-device --admin`)"
             ) from None
 
     @staticmethod
-    def _find(policy: Any, name: str) -> Principal:
+    def _find(policy: Policy, name: str) -> Principal:
         found = policy.principal(name)
         if found is None:
             raise AdminError(f"Principal not found: {name}", exit_codes.NOT_FOUND)
-        return found  # type: ignore[no-any-return]
+        return found
 
     @classmethod
-    def _find_token(cls, policy: Any, principal: str, token_id: str) -> None:
+    def _find_token(cls, policy: Policy, principal: str, token_id: str) -> None:
         if all(token.id != token_id for token in cls._find(policy, principal).tokens):
             raise AdminError(f"Token not found: {token_id}", exit_codes.NOT_FOUND)
 
@@ -229,19 +259,19 @@ class _LocalBackend:
         return out
 
     def principal_add(self, name: str, kind: str, description: str, admin: bool) -> Data:
-        with edit_policy(self._path(), create=True) as editor:  # the first principal bootstraps the file
+        with edit_policy(self.policy_file, create=True) as editor:  # the first principal bootstraps the file
             created = editor.add_principal(name, kind, description, admin)
         return _principal_out(created, _now())
 
     def principal_set_disabled(self, name: str, disabled: bool) -> Data:
-        with edit_policy(self._path()) as editor:
+        with edit_policy(self.policy_file) as editor:
             self._find(editor.policy, name)
             editor.set_disabled(name, disabled)
             updated = self._find(editor.policy, name)
         return _principal_out(updated, _now())
 
     def principal_remove(self, name: str) -> Data:
-        with edit_policy(self._path()) as editor:
+        with edit_policy(self.policy_file) as editor:
             found = self._find(editor.policy, name)
             removed = editor.remove_principal(name)
         return {"detail": f"Principal removed: {found.name}", "grants_removed": removed}
@@ -253,13 +283,13 @@ class _LocalBackend:
     def token_issue(self, principal: str, expires: Optional[str], description: str) -> Data:
         now = _now()
         when = None if expires is None else parse_duration_or_time(expires, now)
-        with edit_policy(self._path(), now=now) as editor:
+        with edit_policy(self.policy_file, now=now) as editor:
             self._find(editor.policy, principal)
             token, plaintext = editor.issue_token(principal, when, description)
         return {"token": plaintext, "id": token.id, "expires": _ts(token.expires)}
 
     def token_revoke(self, principal: str, token_id: str) -> Data:
-        with edit_policy(self._path()) as editor:
+        with edit_policy(self.policy_file) as editor:
             self._find_token(editor.policy, principal, token_id)
             editor.revoke_token(principal, token_id)
         return {"detail": f"Token revoked: {token_id}"}
@@ -268,9 +298,9 @@ class _LocalBackend:
         self, principal: str, token_id: str, grace: Optional[str], expires: Optional[str], description: str
     ) -> Data:
         now = _now()
-        delay = timedelta(0) if grace is None else parse_duration_or_time(grace, now) - now
+        delay = timedelta(0) if grace is None else parse_duration(grace)
         when = None if expires is None else parse_duration_or_time(expires, now)
-        with edit_policy(self._path(), now=now) as editor:
+        with edit_policy(self.policy_file, now=now) as editor:
             self._find_token(editor.policy, principal, token_id)
             token, plaintext = editor.rotate_token(principal, token_id, delay, when, description)
             old_expires: Optional[str] = None
@@ -298,13 +328,13 @@ class _LocalBackend:
     ) -> Data:
         now = _now()
         when = None if expires is None else parse_duration_or_time(expires, now)
-        with edit_policy(self._path(), now=now) as editor:
+        with edit_policy(self.policy_file, now=now) as editor:
             self._find(editor.policy, principal)
             grant = editor.add_grant(principal, key, tag, actions, when, description)
         return _grant_out(grant, now)
 
     def grant_remove(self, grant_id: str) -> Data:
-        with edit_policy(self._path()) as editor:
+        with edit_policy(self.policy_file) as editor:
             try:
                 editor.remove_grant(grant_id)
             except PolicyError:
@@ -317,49 +347,46 @@ class _LocalBackend:
         return {"allowed": decision.allowed, "reason": decision.reason, "grant": decision.grant_id}
 
     def log(self, principal: Optional[str], decision: Optional[str], since: Optional[str], limit: int) -> List[Data]:
-        if self.log_file is None:
-            raise AdminError("no access log file: use --log-file or set " + ACCESS_LOG_FILE_ENV)
-        moment = None if since is None else _since(since, _now())
-        return read_records(self.log_file, principal=principal, decision=decision, since=moment, limit=limit)
+        return _read_log(self.log_file, principal, decision, since, limit)
 
 
 class _ServerBackend:
     """Operations through the server's admin API."""
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: "MattStashServerClient") -> None:
         self.client = client
 
     def principals(self) -> List[Data]:
-        return self.client.admin_principals()  # type: ignore[no-any-return]
+        return self.client.admin_principals()
 
     def principal(self, name: str) -> Data:
-        return self.client.admin_principal(name)  # type: ignore[no-any-return]
+        return self.client.admin_principal(name)
 
     def principal_add(self, name: str, kind: str, description: str, admin: bool) -> Data:
-        return self.client.admin_principal_add(name, kind, description, admin)  # type: ignore[no-any-return]
+        return self.client.admin_principal_add(name, kind, description, admin)
 
     def principal_set_disabled(self, name: str, disabled: bool) -> Data:
-        return self.client.admin_principal_update(name, {"disabled": disabled})  # type: ignore[no-any-return]
+        return self.client.admin_principal_update(name, {"disabled": disabled})
 
     def principal_remove(self, name: str) -> Data:
-        return self.client.admin_principal_remove(name)  # type: ignore[no-any-return]
+        return self.client.admin_principal_remove(name)
 
     def tokens(self, principal: str) -> List[Data]:
-        return self.client.admin_tokens(principal)  # type: ignore[no-any-return]
+        return self.client.admin_tokens(principal)
 
     def token_issue(self, principal: str, expires: Optional[str], description: str) -> Data:
-        return self.client.admin_token_issue(principal, expires, description)  # type: ignore[no-any-return]
+        return self.client.admin_token_issue(principal, expires, description)
 
     def token_revoke(self, principal: str, token_id: str) -> Data:
-        return self.client.admin_token_revoke(principal, token_id)  # type: ignore[no-any-return]
+        return self.client.admin_token_revoke(principal, token_id)
 
     def token_rotate(
         self, principal: str, token_id: str, grace: Optional[str], expires: Optional[str], description: str
     ) -> Data:
-        return self.client.admin_token_rotate(principal, token_id, grace, expires, description)  # type: ignore[no-any-return]
+        return self.client.admin_token_rotate(principal, token_id, grace, expires, description)
 
     def grants(self, principal: Optional[str]) -> List[Data]:
-        return self.client.admin_grants(principal)  # type: ignore[no-any-return]
+        return self.client.admin_grants(principal)
 
     def grant_add(
         self,
@@ -370,16 +397,16 @@ class _ServerBackend:
         expires: Optional[str],
         description: str,
     ) -> Data:
-        return self.client.admin_grant_add(principal, key, tag, actions, expires, description)  # type: ignore[no-any-return]
+        return self.client.admin_grant_add(principal, key, tag, actions, expires, description)
 
     def grant_remove(self, grant_id: str) -> Data:
-        return self.client.admin_grant_remove(grant_id)  # type: ignore[no-any-return]
+        return self.client.admin_grant_remove(grant_id)
 
     def check(self, principal: str, action: str, name: str, tags: List[str]) -> Data:
-        return self.client.admin_check(principal, action, name, tags)  # type: ignore[no-any-return]
+        return self.client.admin_check(principal, action, name, tags)
 
     def log(self, principal: Optional[str], decision: Optional[str], since: Optional[str], limit: int) -> List[Data]:
-        return self.client.admin_access_log(principal, decision, since, limit)  # type: ignore[no-any-return]
+        return self.client.admin_access_log(principal, decision, since, limit)
 
 
 # ---------------------------------------------------------------------------
@@ -393,10 +420,17 @@ def _clean(value: Any) -> str:
         return "-"
     if isinstance(value, bool):
         return "yes" if value else "no"
-    text = str(value)
-    return "".join(
-        ch if ch.isprintable() else f"\\x{ord(ch):02x}" if ord(ch) < 256 else f"\\u{ord(ch):04x}" for ch in text
-    )
+    return "".join(_escape(ch) for ch in str(value))
+
+
+def _escape(ch: str) -> str:
+    """``ch`` itself if printable, else ``\\xNN``, ``\\uNNNN`` or ``\\UNNNNNNNN`` (never ambiguous, never raw)."""
+    if ch.isprintable():
+        return ch
+    code = ord(ch)
+    if code < 0x100:
+        return f"\\x{code:02x}"
+    return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
 
 
 def _table(headers: List[str], rows: List[List[Any]]) -> str:
@@ -414,6 +448,10 @@ def _strip_hashes(value: Any) -> Any:
     if isinstance(value, list):
         return [_strip_hashes(v) for v in value]
     return value
+
+
+def _indent(text: str) -> str:
+    return "\n".join("  " + line for line in text.splitlines())
 
 
 def _state(item: Data) -> str:
@@ -484,6 +522,22 @@ def _open_output(path: str) -> int:
         raise AdminError(f"refusing to overwrite an existing file: {path}") from None
 
 
+def _open_token_file(descriptor: int) -> TextIO:
+    """The seam for opening the token file from its descriptor (tests replace it to simulate failures)."""
+    return os.fdopen(descriptor, "w", encoding="ascii")
+
+
+def _write_token_file(descriptor: int, token: str) -> None:
+    """Write ``token`` and a newline to the file behind ``descriptor``, which is closed whatever happens."""
+    try:
+        handle = _open_token_file(descriptor)
+    except BaseException:
+        os.close(descriptor)  # the handle never took ownership of it
+        raise
+    with handle:
+        handle.write(token + "\n")
+
+
 def _split_actions(text: str) -> List[str]:
     actions = [part.strip() for part in text.split(",") if part.strip()]
     unknown = [a for a in actions if a not in ACTIONS]
@@ -500,7 +554,7 @@ class AdminHandler(BaseHandler):
 
     def handle(self, args: argparse.Namespace) -> int:
         op = str(getattr(args, "admin_op", ""))
-        client: Any = None
+        client: Optional[MattStashServerClient] = None
         try:
             if op == "migrate-keys":
                 return self._migrate_keys(args)
@@ -522,7 +576,9 @@ class AdminHandler(BaseHandler):
             if client is not None:
                 client.close()
 
-    def _backend(self, args: argparse.Namespace, op: str) -> "tuple[Optional[_Backend], Any]":
+    def _backend(
+        self, args: argparse.Namespace, op: str
+    ) -> "tuple[Optional[_LogReader], Optional[MattStashServerClient]]":
         policy_file = self._policy_file(args)
         if self.is_server_mode(args):
             if self.opt(args, "policy_file", str) is not None:
@@ -535,6 +591,9 @@ class AdminHandler(BaseHandler):
                 "admin commands need a server (--server-url or MATTSTASH_SERVER_URL, with an admin token) or, "
                 f"for local mode, a policy file (--policy-file or {POLICY_FILE_ENV})"
             )
+        if policy_file is None:  # only `log` gets here, and only with a log file
+            assert log_file is not None
+            return _LogFileBackend(log_file), None
         return _LocalBackend(policy_file, log_file), None
 
     def _policy_file(self, args: argparse.Namespace) -> Optional[str]:
@@ -586,8 +645,8 @@ class AdminHandler(BaseHandler):
             lines.append("legacy:      yes (configured outside the policy file)")
         tokens = item.get("tokens") or []
         grants = item.get("grants") or []
-        lines += ["", "tokens:", _token_table(tokens) if tokens else "  (none)", "", "grants:"]
-        lines.append(_grant_table(grants) if grants else "  (none)")
+        lines += ["", "tokens:", _indent(_token_table(tokens)) if tokens else "  (none)", "", "grants:"]
+        lines.append(_indent(_grant_table(grants)) if grants else "  (none)")
         self.say("\n".join(lines))
         return exit_codes.OK
 
@@ -607,16 +666,22 @@ class AdminHandler(BaseHandler):
     def _op_principal_enable(self, backend: _Backend, args: argparse.Namespace) -> int:
         return self._set_disabled(backend, args, False)
 
-    def _confirm(self, question: str) -> bool:
+    @staticmethod
+    def _confirm(question: str) -> bool:
+        """Ask on stderr (stdout stays clean for pipes) and read one line from stdin; end of input means no."""
+        if sys.stdin is None:
+            return False
+        sys.stderr.write(f"{question} [y/N] ")
+        sys.stderr.flush()
         try:
-            answer = input(f"{question} [y/N] ")
-        except EOFError:
+            answer = sys.stdin.readline()
+        except (OSError, ValueError):
             return False
         return answer.strip().lower() in ("y", "yes")
 
     def _op_principal_remove(self, backend: _Backend, args: argparse.Namespace) -> int:
         if not self.flag(args, "yes"):
-            if not sys.stdin.isatty():
+            if sys.stdin is None or not sys.stdin.isatty():
                 raise AdminError("refusing to remove a principal without --yes when stdin is not a terminal")
             if not self._confirm(f"Remove principal {args.name!r} and all of its grants and tokens?"):
                 self.say("not removed", err=True)
@@ -629,11 +694,12 @@ class AdminHandler(BaseHandler):
 
     # ---- tokens -----------------------------------------------------------
 
-    def _deliver_token(self, args: argparse.Namespace, issue: "Any") -> int:
+    def _deliver_token(self, args: argparse.Namespace, issue: Callable[[], Data]) -> int:
         """Run ``issue()`` (which returns the contract answer with a plaintext ``token``) and hand the token over.
 
         With ``--output-file`` the file is created first, so a path problem is found before a token exists that
-        nobody could receive.
+        nobody could receive. The plaintext goes to stdout or that file and nowhere else, never to stderr: when it
+        can't be delivered the command fails and names the token id, so the token can be revoked.
         """
         path = self.opt(args, "output_file", str)
         descriptor: Optional[int] = None
@@ -649,31 +715,48 @@ class AdminHandler(BaseHandler):
                 with contextlib.suppress(OSError):
                     os.unlink(path)  # type: ignore[arg-type]
             raise
-        token = str(result["token"])
-        expires = result.get("expires")
+        token_id = result.get("id")
+        token = result.get("token")
+        label = f"id {_clean(token_id)}" if is_valid_token_id(token_id) else "id unknown"
+        if not isinstance(token, str) or parse_token(token) is None:
+            if descriptor is not None:
+                os.close(descriptor)
+                with contextlib.suppress(OSError):
+                    os.unlink(path)  # type: ignore[arg-type]
+            raise AdminError(
+                f"the server created a token ({label}) but did not return a usable secret; "
+                "revoke it with `mattstash admin token revoke` and issue another"
+            )
         if descriptor is not None:
             try:
-                with os.fdopen(descriptor, "w", encoding="ascii") as handle:
-                    handle.write(token + "\n")
-            except (OSError, UnicodeEncodeError) as exc:
+                _write_token_file(descriptor, token)
+            except Exception as exc:
                 with contextlib.suppress(OSError):
                     os.unlink(path)  # type: ignore[arg-type]
                 raise AdminError(
-                    f"the token (id {result['id']}) was issued but could not be written to {path}: "
+                    f"the token ({label}) was issued but could not be written to {path}: "
                     f"{getattr(exc, 'strerror', None) or type(exc).__name__}; revoke it and issue another"
                 ) from None
         else:
-            self.say(token)
+            try:
+                sys.stdout.write(token + "\n")
+                sys.stdout.flush()
+            except (OSError, ValueError, AttributeError) as exc:  # closed, full, or no stdout at all
+                raise AdminError(
+                    f"the token ({label}) was issued but could not be written to stdout: "
+                    f"{getattr(exc, 'strerror', None) or type(exc).__name__}; revoke it and issue another"
+                ) from None
+        expires = result.get("expires")
         where = f", written to {path}" if path else ""
         self.say(
-            f"token id {result['id']}, expires {_clean(expires) if expires else 'never'}{where}. "
-            "Shown once; store it now.",
+            f"token {label}, expires {_clean(expires) if expires else 'never'}{where}. Shown once; store it now.",
             err=True,
         )
         old = result.get("old_token_expires")
         if "old_token_expires" in result:
             self.say(
-                f"the old token {args.token_id} " + (f"stays valid until {old}" if old else "is revoked"), err=True
+                f"the old token {args.token_id} " + (f"stays valid until {_clean(old)}" if old else "is revoked"),
+                err=True,
             )
         return exit_codes.OK
 
@@ -685,7 +768,8 @@ class AdminHandler(BaseHandler):
 
     def _op_token_rotate(self, backend: _Backend, args: argparse.Namespace) -> int:
         self._check_expiry(args.expires)
-        self._check_expiry(args.grace)
+        if args.grace is not None:
+            parse_duration(args.grace)  # relative only: 30m, 24h, 7d, 2w (in both modes, before anything is sent)
         return self._deliver_token(
             args,
             lambda: backend.token_rotate(
@@ -704,6 +788,14 @@ class AdminHandler(BaseHandler):
         return exit_codes.OK
 
     @staticmethod
+    def _filter(args: argparse.Namespace, name: str) -> Optional[str]:
+        """A filter option: ``None`` if not given. An empty value is an error, not "no filter"."""
+        value = BaseHandler.opt(args, name, str)
+        if value is not None and not value.strip():
+            raise AdminError(f"--{name} was given an empty value")
+        return value
+
+    @staticmethod
     def _check_expiry(text: Optional[str]) -> None:
         """Reject an unreadable duration or date here, with the library's message, in both modes."""
         if text is not None:
@@ -712,7 +804,7 @@ class AdminHandler(BaseHandler):
     # ---- grants -----------------------------------------------------------
 
     def _op_grant_list(self, backend: _Backend, args: argparse.Namespace) -> int:
-        items = backend.grants(self.opt(args, "principal", str))
+        items = backend.grants(self._filter(args, "principal"))
         self._output(args, items, _grant_table(items))
         return exit_codes.OK
 
@@ -758,13 +850,13 @@ class AdminHandler(BaseHandler):
         return exit_codes.ERROR
 
     def _op_log(self, backend: _Backend, args: argparse.Namespace) -> int:
-        since = self.opt(args, "since", str)
+        since = self._filter(args, "since")
         if since is not None:
             _since(since, _now())  # reject an unreadable value here, with the library's message, in both modes
-        records = backend.log(self.opt(args, "principal", str), self.opt(args, "decision", str), since, args.limit)
+        records = backend.log(self._filter(args, "principal"), self._filter(args, "decision"), since, args.limit)
         if self.flag(args, "json"):
             for record in records:
-                self.say(json.dumps(record, separators=(",", ":")))
+                self.say(json.dumps(_strip_hashes(record), separators=(",", ":")))
         else:
             self.say(_log_table(records) if records else "(none)")
         return exit_codes.OK

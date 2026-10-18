@@ -639,10 +639,11 @@ class MattStashServerClient:
     def admin_token_issue(self, principal: str, expires: Optional[str] = None, description: str = "") -> Dict[str, Any]:
         """``POST /admin/principals/{name}/tokens``; the answer holds the plaintext token (shown once)."""
         body: Dict[str, Any] = {"description": description}
-        if expires:
+        if expires is not None:
             body["expires"] = expires
         result = self._admin("POST", f"principals/{segment(principal)}/tokens", body=body)
-        self._require(result, "token", str)
+        # The id is required (it is what lets a caller revoke a token it could not use). The plaintext is checked by
+        # the caller, which can then name the id instead of failing here with a token nobody knows about.
         self._require(result, "id", str)
         return result
 
@@ -662,19 +663,18 @@ class MattStashServerClient:
     ) -> Dict[str, Any]:
         """``POST /admin/principals/{name}/tokens/{token_id}/rotate``."""
         body: Dict[str, Any] = {"description": description}
-        if grace:
+        if grace is not None:
             body["grace"] = grace
-        if expires:
+        if expires is not None:
             body["expires"] = expires
         path = f"principals/{segment(principal)}/tokens/{segment(token_id)}/rotate"
         result = self._admin("POST", path, body=body)
-        self._require(result, "token", str)
-        self._require(result, "id", str)
+        self._require(result, "id", str)  # the plaintext is checked by the caller, see admin_token_issue
         return result
 
     def admin_grants(self, principal: Optional[str] = None) -> List[Dict[str, Any]]:
         """``GET /admin/grants[?principal=]``."""
-        params = {"principal": principal} if principal else None
+        params = None if principal is None else {"principal": principal}
         return self._admin_list(self._admin("GET", "grants", params=params), "grants")
 
     def admin_grant_add(
@@ -692,7 +692,7 @@ class MattStashServerClient:
             body["key"] = key
         if tag is not None:
             body["tag"] = tag
-        if expires:
+        if expires is not None:
             body["expires"] = expires
         result = self._admin("POST", "grants", body=body)
         self._require(result, "id", str)
@@ -723,10 +723,10 @@ class MattStashServerClient:
     ) -> List[Dict[str, Any]]:
         """``GET /admin/access-log``."""
         params: Dict[str, Any] = {"limit": limit}
-        if principal:
+        if principal is not None:
             params["principal"] = principal
-        if decision:
+        if decision is not None:
             params["decision"] = decision
-        if since:
+        if since is not None:
             params["since"] = since
         return self._admin_list(self._admin("GET", "access-log", params=params), "records")
