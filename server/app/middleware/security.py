@@ -84,6 +84,11 @@ def _authenticate(raw_headers: list[tuple[bytes, bytes]]) -> AuthResult:
         raise _KeyStoreUnavailable from None
 
 
+def _masked(path: str) -> str:
+    """The path for the log: a segment that starts like a token (``mst_``) is a secret pasted where an id belongs."""
+    return "/".join("mst_…" if part.startswith("mst_") else part for part in path.split("/"))
+
+
 class SecurityMiddleware:
     def __init__(self, app: Callable[[Scope, Receive, Send], Awaitable[None]]) -> None:
         self.app = app
@@ -96,7 +101,7 @@ class SecurityMiddleware:
         started = time.monotonic()
         client = client_ip(scope)
         bucket = client_bucket(scope)
-        method, path = printable(scope["method"]), printable(scope["path"])
+        method, path = printable(scope["method"]), _masked(printable(scope["path"]))
         logged = scope["path"] not in public_paths()  # probes and docs are not access-logged
         status: dict[str, Any] = {"code": 500, "principal": "-", "legacy": False, "replaced": False}
         access = accesslog.access_state(scope)

@@ -781,3 +781,33 @@ def test_stat_and_mode_of_temp_files_are_private(policy_path: Path, monkeypatch:
     monkeypatch.setattr(os, "open", spy)
     save_policy(policy_path, empty_policy())
     assert modes == [0o600]
+
+
+def test_edit_policy_locks_the_real_path_not_the_symlink(tmp_path: Path):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    real = real_dir / "policy.json"
+    with edit_policy(real, now=NOW, create=True) as editor:
+        editor.add_principal("matt", "human-device", "", admin=True)
+    link = tmp_path / "link.json"
+    link.symlink_to(real)
+
+    seen: list[str] = []
+    original = store_module.FileLock
+
+    def spy(path: str, *args: Any, **kwargs: Any) -> Any:
+        seen.append(path)
+        return original(path, *args, **kwargs)
+
+    store_module.FileLock = spy  # type: ignore[misc,assignment]
+    try:
+        with edit_policy(link, now=NOW) as editor:
+            editor.add_principal("bot", "agent", "")
+        with edit_policy(real, now=NOW) as editor:
+            editor.add_principal("bot2", "agent", "")
+    finally:
+        store_module.FileLock = original  # type: ignore[misc]
+
+    assert seen == [str(real.resolve()) + ".lock"] * 2  # both routes take the same lock
+    assert not (tmp_path / "link.json.lock").exists()  # no stray lock next to the link
+    assert link.is_symlink() and {p.name for p in load_policy(real).principals} == {"matt", "bot", "bot2"}

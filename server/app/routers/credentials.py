@@ -316,6 +316,7 @@ def delete_credential(
     - **name**: Credential name
     """
     require_valid_name(name)
+    note(request, version=version)
     authorize_name(request, caller, "delete", "delete", name)
     response.headers["Cache-Control"] = "no-store"
     with translate_errors("delete"):

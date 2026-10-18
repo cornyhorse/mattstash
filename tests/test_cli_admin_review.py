@@ -199,7 +199,7 @@ def test_no_stdout_at_all_is_the_same_failure(run: Runner, tmp_path: Path, monke
         {"id": "aaaaaaaaaaaa", "token": "mst_aaaaaaaaaaaa_two words"},
     ],
 )
-@pytest.mark.parametrize("tail", [["token", "issue", "bot"], ["token", "rotate", "bot", "tid"]])
+@pytest.mark.parametrize("tail", [["token", "issue", "bot"], ["token", "rotate", "bot", "bbbbbbbbbbbb"]])
 def test_a_token_without_a_usable_secret_reports_the_id(
     run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: dict[str, Any], tail: list[str]
 ) -> None:

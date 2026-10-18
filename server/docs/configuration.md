@@ -324,7 +324,8 @@ When the line is written:
   log gets `Access log write failed`. If the file cannot even be opened at startup, the server does not start.
 - Each request produces exactly one line.
 
-Never logged: tokens or API keys, secret values, usernames, URLs, notes, request bodies. Failed authentications show
+Never logged: tokens or API keys, secret values, usernames, URLs, notes, descriptions or any other free text. Request bodies are not logged
+as such: only the names, patterns and actions listed in the field table are. Failed authentications show
 `principal` `-` and the client address. Everything that comes from the request (path, names, filters) is escaped to
 printable ASCII (`\x0a` for a newline) and capped at 256 characters, so a client cannot forge log lines. Legacy keys
 appear as `legacy-env` (from `MATTSTASH_API_KEY`) or `legacy-1`, `legacy-2`... (file order) or their v1 `id`; the name is

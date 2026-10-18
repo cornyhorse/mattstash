@@ -52,6 +52,7 @@ class FakeAdminServer:
         self.is_admin = True
         self.read_only = False
         self.no_policy = False
+        self.warning: Optional[str] = None  # saved but not active: every successful mutation carries this text
         self.forced: Optional[Callable[[httpx.Request], Optional[httpx.Response]]] = None
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> "FakeAdminServer":
@@ -102,6 +103,8 @@ class FakeAdminServer:
         except PolicyError as exc:
             text = str(exc)
             return self._reply(400, {"detail": text})
+        if self.warning is not None and mutating and status < 300 and isinstance(payload, dict):
+            payload = {**payload, "warning": self.warning}
         return self._reply(status, payload)
 
     def _route(self, request: httpx.Request, b: _LocalBackend, parts: list[str], body: dict[str, Any]) -> Any:

@@ -430,6 +430,13 @@ class _ServerBackend:
         return self.client.admin_access_log(principal, decision, since, limit)
 
 
+def _require_token_id(value: str) -> None:
+    """Refuse anything that is not shaped like a token id before it is used, sent or shown. A full token pasted by
+    mistake is a secret, so the message does not repeat the value."""
+    if not is_valid_token_id(value):
+        raise AdminError("malformed token id (expected the 12-character id, not the token itself)")
+
+
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
@@ -642,6 +649,16 @@ class AdminHandler(BaseHandler):
         else:
             self.say(table if data else "(none)")
 
+    def _warned(self, result: Data) -> int:
+        """``OK`` unless the server says the change was saved but is not active (``warning``): then the text is shown
+        on stderr (printable, bounded; it is a fixed server text) and the exit status is non-zero."""
+        warning = result.get("warning")
+        if not warning:
+            return exit_codes.OK
+        text = _clean(warning)[:300] if isinstance(warning, str) else "the change was saved but is not active"
+        self.say(f"warning: {text}", err=True)
+        return exit_codes.ERROR
+
     # ---- principals -------------------------------------------------------
 
     def _op_principal_list(self, backend: _Backend, args: argparse.Namespace) -> int:
@@ -674,12 +691,12 @@ class AdminHandler(BaseHandler):
     def _op_principal_add(self, backend: _Backend, args: argparse.Namespace) -> int:
         item = backend.principal_add(args.name, args.kind, args.description or "", bool(args.admin))
         self.say(f"created principal {_clean(item.get('name'))} ({_clean(item.get('kind'))})")
-        return exit_codes.OK
+        return self._warned(item)
 
     def _set_disabled(self, backend: _Backend, args: argparse.Namespace, disabled: bool) -> int:
         item = backend.principal_set_disabled(args.name, disabled)
         self.say(f"{_clean(item.get('name'))}: {'disabled' if disabled else 'enabled'}")
-        return exit_codes.OK
+        return self._warned(item)
 
     def _op_principal_disable(self, backend: _Backend, args: argparse.Namespace) -> int:
         return self._set_disabled(backend, args, True)
@@ -692,7 +709,7 @@ class AdminHandler(BaseHandler):
             raise AdminError("nothing to change: pass --admin, --no-admin or --description")
         item = backend.principal_update(args.name, args.admin, args.description)
         self.say(f"{_clean(item.get('name'))}: admin={'yes' if item.get('admin') else 'no'}")
-        return exit_codes.OK
+        return self._warned(item)
 
     @staticmethod
     def _confirm(question: str) -> bool:
@@ -718,7 +735,7 @@ class AdminHandler(BaseHandler):
         removed = result.get("grants_removed")
         suffix = f" ({removed} grant{'' if removed == 1 else 's'} removed)" if isinstance(removed, int) else ""
         self.say(f"removed principal {args.name}{suffix}")
-        return exit_codes.OK
+        return self._warned(result)
 
     # ---- tokens -----------------------------------------------------------
 
@@ -782,11 +799,14 @@ class AdminHandler(BaseHandler):
         )
         old = result.get("old_token_expires")
         if "old_token_expires" in result:
-            self.say(
-                f"the old token {args.token_id} " + (f"stays valid until {_clean(old)}" if old else "is revoked"),
-                err=True,
-            )
-        return exit_codes.OK
+            if old:
+                claim = f"stays valid until {_clean(old)}"
+            elif result.get("warning"):
+                claim = "is NOT known to be revoked: the change is not active yet"
+            else:
+                claim = "is revoked"
+            self.say(f"the old token {args.token_id} {claim}", err=True)
+        return self._warned(result)
 
     def _op_token_issue(self, backend: _Backend, args: argparse.Namespace) -> int:
         self._check_expiry(args.expires)
@@ -795,6 +815,7 @@ class AdminHandler(BaseHandler):
         )
 
     def _op_token_rotate(self, backend: _Backend, args: argparse.Namespace) -> int:
+        _require_token_id(args.token_id)
         self._check_expiry(args.expires)
         if args.grace is not None:
             parse_duration(args.grace)  # relative only: 30m, 24h, 7d, 2w (in both modes, before anything is sent)
@@ -811,9 +832,10 @@ class AdminHandler(BaseHandler):
         return exit_codes.OK
 
     def _op_token_revoke(self, backend: _Backend, args: argparse.Namespace) -> int:
-        backend.token_revoke(args.principal, args.token_id)
+        _require_token_id(args.token_id)
+        result = backend.token_revoke(args.principal, args.token_id)
         self.say(f"revoked token {args.token_id} of {args.principal}")
-        return exit_codes.OK
+        return self._warned(result)
 
     @staticmethod
     def _filter(args: argparse.Namespace, name: str) -> Optional[str]:
@@ -859,12 +881,12 @@ class AdminHandler(BaseHandler):
                 )
         grant = backend.grant_add(args.principal, key, tag, actions, args.expires, args.description or "")
         self.say(str(grant["id"]))
-        return exit_codes.OK
+        return self._warned(grant)
 
     def _op_grant_remove(self, backend: _Backend, args: argparse.Namespace) -> int:
-        backend.grant_remove(args.grant_id)
+        result = backend.grant_remove(args.grant_id)
         self.say(f"removed grant {args.grant_id}")
-        return exit_codes.OK
+        return self._warned(result)
 
     # ---- check and log ----------------------------------------------------
 

@@ -278,8 +278,8 @@ admin request:
   `target_token` is the id of the token being revoked or rotated (the OLD one; the id of a token that issue or
   rotate creates exists only in the response, because the line is written before it is minted); `grant_key`,
   `grant_tag` and `actions` (comma-separated) describe a grant being added.
-- **Never logged:** the token or any part of its secret, secret values, usernames, URLs, notes, request bodies,
-  query strings other than the filter fields above. For a malformed token, only the parsed `token_id` is
+- **Never logged:** the token or any part of its secret, secret values, usernames, URLs, notes, descriptions and other free text (of a request body only the names, patterns and
+  actions named above are logged), query strings other than the filter fields above. For a malformed token, only the parsed `token_id` is
   logged, and only if it has the right shape. Every string is escaped to printable ASCII and capped at 256
   characters, so a client can't forge lines.
 - **`decision` is present only if the request reached an authorization decision.** A request rejected before one
@@ -345,7 +345,8 @@ Reading it: `mattstash admin log [--principal P] [--decision denied] [--since 24
   keeps each digest as `sha256:<hex>`, so existing callers keep their keys. Re-issue tokens later to move to the
   salted scheme. Migrated keys are ordinary file principals, not `legacy`: a key with the v1 `admin` op becomes a
   `human-device` admin, every other key an `agent`. Because a v2 admin can do far more than v1's reload and
-  invalidate, the CLI warns for each key that became an admin; demote it if it only needs to reload.
+  invalidate, the CLI warns for each key that became an admin; demote it (`principal update --no-admin`) if it should
+  not manage the policy.
 - `MATTSTASH_POLICY_FILE` and the legacy sources can be configured together while migrating.
 
 ## 8. CLI
@@ -455,12 +456,14 @@ access log. Role definitions (allowed Unix principals, TTL, extensions) live in 
 
 ## 12. Migration guide
 
-Both examples use the commands in §8. Set these once (the host path is where the server's policy file lives):
+Both examples use the commands in §8. Set this once (the host path is where the server's policy file lives):
 
 ```bash
-export MATTSTASH_SERVER_URL=https://mattstash.example.com
 export POLICY=/srv/mattstash/config/policy.json   # host path; the server sees it as MATTSTASH_POLICY_FILE
 ```
+
+A server URL (`--server-url` or `MATTSTASH_SERVER_URL`) takes precedence over `--policy-file`, so run the local-mode
+bootstrap in step (a)1 *before* exporting `MATTSTASH_SERVER_URL`.
 
 Keep the policy file on its own volume, not the data volume, and mount it **read-write**: a read-only file makes
 every admin change answer `409`. For example, mount `/srv/mattstash/config` at `/config` and set
@@ -481,10 +484,11 @@ name), and each request it makes is logged with `"kind":"legacy"` and answered w
    ```
 
    Without `--output-file` the token goes to stdout. With it, the token is written only to that file, mode 0600,
-   and an existing file is never overwritten. Restart the server with `MATTSTASH_POLICY_FILE` set. Then point the
-   CLI at the server with the admin token:
+   and an existing file is never overwritten. Restart the server with `MATTSTASH_POLICY_FILE` set (keep
+   `MATTSTASH_API_KEY` for now). Then point the CLI at the server with the admin token:
 
    ```bash
+   export MATTSTASH_SERVER_URL=https://mattstash.example.com
    export MATTSTASH_API_KEY_FILE="$HOME/.config/mattstash/admin.key"
    ```
 
@@ -512,8 +516,9 @@ name), and each request it makes is logged with `"kind":"legacy"` and answered w
    mattstash admin token issue hermes --description "replaces MATTSTASH_API_KEY" --output-file ./hermes.key
    ```
 
-   Move the file to hermes's secret store, point hermes at it with `MATTSTASH_API_KEY_FILE=<path>` instead of
-   `MATTSTASH_API_KEY`, restart hermes, and delete `./hermes.key`. While both keys work there is no downtime. Confirm
+   Hermes sends `MATTSTASH_API_KEY` from its profile `.env` as the `X-API-Key` header. Put the new token there in
+   place of the old key (each profile that uses mattstash), restart hermes, and delete `./hermes.key`. That variable
+   is hermes's own client setting; the *server's* `MATTSTASH_API_KEY` stays until step 6. While both keys work there is no downtime. Confirm
    with `mattstash admin log --principal hermes --since 1h`: the records show `"kind":"agent"` and `allowed`.
 
 5. **Narrow hermes's grant** to what the log shows, then remove the broad one:
@@ -569,7 +574,9 @@ mattstash admin migrate-keys --from /srv/secrets/keys.json --policy-file "$POLIC
 
 This runs in local mode only. It prints the name of each new principal and stores each key's digest as `sha256:<hex>`,
 so every existing caller keeps its key. Each key becomes a principal named after its `id`: a key with `admin` in its
-`ops` becomes a `human-device` admin, any other key an `agent`. `ops: read` becomes `list,read`, `write` and `delete`
+`ops` becomes a `human-device` admin, any other key an `agent`. A v1 `admin` key could only reload; as a v2 admin it
+can create principals and grants, so the command warns for each one. If it should not manage the policy, demote it
+with `mattstash admin principal update <id> --no-admin` (a non-admin can't call reload either). `ops: read` becomes `list,read`, `write` and `delete`
 stay as they are, and each prefix `p` becomes the pattern `p*`. A migrated principal is not of kind `legacy`, so its
 calls do not show as `"kind":"legacy"` in the access log: watch them by principal name (`admin log --principal <id>`)
 instead. Issue the principal a new token with `token issue` and move its callers to it; new tokens use the salted

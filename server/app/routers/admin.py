@@ -26,6 +26,7 @@ from mattstash.authz import (
     Token,
     edit_policy,
     evaluate,
+    is_valid_token_id,
     parse_duration,
     parse_duration_or_time,
     read_records,
@@ -175,6 +176,13 @@ def _legacy_refusal() -> HTTPException:
     return _bad_request("Legacy keys are configured through MATTSTASH_API_KEY / MATTSTASH_API_KEYS_FILE, not here")
 
 
+def _token_id_or_404(token_id: str) -> None:
+    """A token id has a fixed shape. Anything else (a full token pasted by mistake, say) is answered with a fixed
+    text that does not repeat it."""
+    if not is_valid_token_id(token_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Token not found")
+
+
 def _principal_or_404(state: AuthState, name: str) -> Principal:
     found = state.policy.principal(name)
     if found is None:
@@ -267,7 +275,7 @@ def _file_principal(editor: PolicyEditor, name: str) -> Principal:
 
 def _expiry(text: Optional[str], now: datetime) -> Optional[datetime]:
     try:
-        return parse_duration_or_time(text, now) if text else None
+        return parse_duration_or_time(text, now) if text is not None else None
     except PolicyError as exc:
         raise _bad_request(str(exc)) from None
 
@@ -398,6 +406,7 @@ def issue_token(
 )
 @limiter.limit(_WRITE_LIMIT)
 def revoke_token(request: Request, name: str, token_id: str) -> JSONResponse:
+    _token_id_or_404(token_id)
     with _editing(request, reduces=True) as editor:
         principal = _file_principal(editor, name)
         if all(t.id != token_id for t in principal.tokens):
@@ -416,6 +425,7 @@ def rotate_token(
     token_id: str,
     body: Annotated[RotateTokenRequest, Body(default_factory=RotateTokenRequest)],
 ) -> JSONResponse:
+    _token_id_or_404(token_id)
     # Not ``reduces``: the new token is shown only in this answer, so a 409 would lose it. A rotation that is saved but
     # not active is answered 201 with the warning instead; the old token then keeps working until the reload succeeds.
     with _editing(request) as editor:

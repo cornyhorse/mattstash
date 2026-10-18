@@ -667,6 +667,7 @@ def edit_policy(
     moment = utcnow() if now is None else now
     if create:
         target.parent.mkdir(parents=True, exist_ok=True)
+    target = Path(os.path.realpath(target))  # the file is replaced at its real path, so the lock lives there too
     with FileLock(str(target.with_name(target.name + ".lock")), reference=str(target)):
         try:
             before = load_policy(target)

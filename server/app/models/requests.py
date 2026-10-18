@@ -70,13 +70,17 @@ class UpdatePrincipalRequest(_AdminRequest):
 
 
 class IssueTokenRequest(_AdminRequest):
-    expires: str | None = Field(None, max_length=64, description="Duration (90d, 24h) or date (2027-01-01)")
+    expires: str | None = Field(
+        None, min_length=1, max_length=64, description="Duration (90d, 24h) or date (2027-01-01)"
+    )
     description: str = Field("", max_length=500)
 
 
 class RotateTokenRequest(_AdminRequest):
-    grace: str | None = Field(None, max_length=64, description="How long the old token keeps working (24h)")
-    expires: str | None = Field(None, max_length=64)
+    grace: str | None = Field(
+        None, min_length=1, max_length=64, description="How long the old token keeps working (24h)"
+    )
+    expires: str | None = Field(None, min_length=1, max_length=64)
     description: str = Field("", max_length=500)
 
 
@@ -85,7 +89,7 @@ class CreateGrantRequest(_AdminRequest):
     key: str | None = Field(None, max_length=300)
     tag: str | None = Field(None, max_length=100)
     actions: list[Annotated[str, Field(max_length=16)]] | None = Field(None, max_length=8)
-    expires: str | None = Field(None, max_length=64)
+    expires: str | None = Field(None, min_length=1, max_length=64)
     description: str = Field("", max_length=500)
 
 

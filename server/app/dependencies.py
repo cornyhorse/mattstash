@@ -10,7 +10,7 @@ from typing import Annotated, Any, Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from mattstash import MattStash
-from mattstash.authz import LEGACY_KIND, Decision, Policy, Principal, admin_decision, evaluate
+from mattstash.authz import LEGACY_KIND, Decision, Policy, Principal, admin_decision, evaluate, is_valid_token_id
 from mattstash.authz.models import utcnow
 
 from .accesslog import STATE_CHANGING, commit, note
@@ -149,10 +149,14 @@ def require_grant_for(action: str, route: str) -> Callable[..., Caller]:
     return dependency
 
 
+#: The routes whose request body names something that the access line records (see :func:`body_fields`).
+_BODY_LOGGED = frozenset({"admin.principal.add", "admin.grant.add", "admin.check"})
+
+
 def _json_object(raw: bytes) -> dict[str, Any]:
     try:
         parsed = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):  # bad bytes, or nesting deeper than the parser's recursion limit
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
@@ -173,9 +177,7 @@ def body_fields(route: str, body: dict[str, Any]) -> dict[str, Any]:
             "grant_tag": _text(body.get("tag")),
             "actions": ",".join(a for a in actions if isinstance(a, str)) if isinstance(actions, list) else None,
         }
-    if route == "admin.check":
-        return {"key": _text(body.get("principal"))}
-    return {}
+    return {"key": _text(body.get("principal"))}  # admin.check: the only other route in _BODY_LOGGED
 
 
 def require_admin(route: str, *, scoped_legacy_ok: bool = False) -> Callable[..., Caller]:
@@ -192,9 +194,12 @@ def require_admin(route: str, *, scoped_legacy_ok: bool = False) -> Callable[...
             decision = Decision(False, "legacy-scoped")
         fields: dict[str, Any] = {
             "key": request.path_params.get("name") or request.path_params.get("grant_id"),
-            "target_token": request.path_params.get("token_id"),  # revoke / rotate: the OLD token
+            "target_token": None,
         }
-        if decision.allowed and request.method in STATE_CHANGING:
+        token_id = request.path_params.get("token_id")
+        if is_valid_token_id(token_id):  # revoke / rotate: the OLD token; anything else (a pasted secret) is not logged
+            fields["target_token"] = token_id
+        if decision.allowed and request.method in STATE_CHANGING and route in _BODY_LOGGED:
             # The body is only looked at after the decision, and only to name the target in the line (it is already
             # read and cached by the framework by now; an invalid one yields nothing and fails validation later).
             fields.update(body_fields(route, _json_object(await request.body())))

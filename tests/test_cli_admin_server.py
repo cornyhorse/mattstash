@@ -343,8 +343,8 @@ def test_rate_limit_and_unreachable_server(run: Runner, server: FakeAdminServer,
         ["principal", "remove", "x", "--yes"],
         ["token", "list", "x"],
         ["token", "issue", "x"],
-        ["token", "revoke", "x", "tid"],
-        ["token", "rotate", "x", "tid"],
+        ["token", "revoke", "x", "abcdefghijkl"],
+        ["token", "rotate", "x", "abcdefghijkl"],
         ["grant", "list"],
         ["grant", "add", "x", "--key", "a"],
         ["grant", "remove", "g_1"],
@@ -370,8 +370,8 @@ def test_lists_of_non_objects_are_errors(run: Runner, server: FakeAdminServer, a
 
 def test_names_are_percent_encoded(run: Runner, server: FakeAdminServer):
     server.forced = lambda _request: httpx.Response(404, json={"detail": "Principal not found: a/b"})
-    run(*ADMIN_ARGS, "token", "revoke", "a/b#c", "t?x")
-    assert path_of(last(server)) == "/api/v1/admin/principals/a%2Fb%23c/tokens/t%3Fx"
+    run(*ADMIN_ARGS, "token", "revoke", "a/b#c", "abcdefghijkl")
+    assert path_of(last(server)) == "/api/v1/admin/principals/a%2Fb%23c/tokens/abcdefghijkl"
 
 
 def test_server_url_wins_over_policy_file(run: Runner, server: FakeAdminServer, tmp_path: Path):

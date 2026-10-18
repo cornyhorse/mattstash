@@ -77,7 +77,9 @@ class AuthState:
     tokens: Mapping[str, tuple[Principal, Token]]  # token id -> owner, for salted (mst_) file tokens
     digests: tuple[_Digest, ...]  # legacy keys and sha256: file tokens
     legacy_sources: tuple[str, ...]
-    legacy_admin: bool  # a legacy key can administer, so the last file admin may be removed
+    legacy_admin: (
+        bool  # an UNSCOPED legacy key (env / plain list) can administer, so the last file admin may be removed
+    )
     unscoped: frozenset[str]  # names of the legacy keys that always had full access (env key, plain-list keys)
     sha256_tokens: int  # file tokens that use the deprecated unsalted scheme
     file_signature: Optional[Signature]
@@ -214,7 +216,7 @@ def load_auth_state() -> AuthState:
         tokens=tokens,
         digests=tuple(digests),
         legacy_sources=tuple(sources),
-        legacy_admin=any(can_admin(key.principal) for key in legacy_keys),
+        legacy_admin=any(can_admin(key.principal) for key in legacy_keys if key.principal.name in unscoped_names),
         unscoped=frozenset(unscoped_names),
         sha256_tokens=len(sha256_digests),
         file_signature=signature,
