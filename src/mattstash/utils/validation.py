@@ -21,6 +21,9 @@ ALLOW_SLASH_NAMES_ENV = "MATTSTASH_ALLOW_SLASH_NAMES"
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
 
+RESERVED_LAST_SEGMENT = "versions"
+
+
 def slash_names_allowed() -> bool:
     """Is writing names that contain ``/`` enabled (``MATTSTASH_ALLOW_SLASH_NAMES=true``)? Read on every call."""
     return os.environ.get(ALLOW_SLASH_NAMES_ENV, "").strip().lower() in _TRUE
@@ -55,7 +58,9 @@ def validate_credential_title(title: str, *, allow_slash: Optional[bool] = None)
     Forward slashes (/) are refused unless slash names are enabled (``MATTSTASH_ALLOW_SLASH_NAMES=true`` or
     ``allow_slash=True``); use ``.`` as the separator (``myapp.db-password``). When enabled, ``/`` separates segments
     (e.g. ``cloud/hetzner/s3-key``) and the name must not start or end with ``/``, contain ``//`` or have a ``.`` or
-    ``..`` segment. Only *writing* is restricted: existing entries with ``/`` can always be read, listed and deleted.
+    ``..`` segment, and its last segment must not be exactly ``versions`` (case-sensitive; the server's
+    ``/credentials/{name}/versions`` route would read it as the versions of the shorter name).
+    Only *writing* is restricted: existing entries with ``/`` can always be read, listed and deleted.
 
     Args:
         title: Credential title to validate
@@ -88,6 +93,11 @@ def validate_credential_title(title: str, *, allow_slash: Optional[bool] = None)
         problem = slash_name_problem(title)
         if problem:
             raise InvalidCredentialError(f"Credential title {problem}")
+        if title.rsplit("/", 1)[-1] == RESERVED_LAST_SEGMENT:
+            raise InvalidCredentialError(
+                f"Credential title must not end in '/{RESERVED_LAST_SEGMENT}': that URL path is the server's "
+                "versions route. Choose another last segment (existing entries with that name stay readable)"
+            )
 
 
 def validate_username(username: Optional[str]) -> None:

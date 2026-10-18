@@ -1,5 +1,7 @@
 """MATTSTASH_ALLOW_SLASH_NAMES on the server: ``/`` in names is a 404 unless enabled, then path-style routes work."""
 
+from unittest import mock
+
 import pytest
 
 from .conftest import DB, auth
@@ -26,15 +28,21 @@ def tokens(tmp_path):
 
 @pytest.fixture
 def seeded(seed):
-    return seed(
+    stash = seed(
         **{
             "cloud/hetzner/s3-key": {"value": "s3-secret", "allow_slash": True},
             "cloud/db": {**DB, "allow_slash": True},
             "other/thing": {"value": "private", "allow_slash": True},
-            "cloud/versions": {"value": "named-versions", "allow_slash": True},
             "plain": {"value": "p"},
         }
     )
+    # An entry whose last segment is 'versions' predates the write rule: seed it around the check.
+    with (
+        mock.patch("mattstash.core.entry_manager.validate_credential_title"),
+        mock.patch("mattstash.core.mattstash.validate_credential_title"),
+    ):
+        stash.put("cloud/versions", value="named-versions", allow_slash=True)
+    return stash
 
 
 def make(make_client, tmp_path, **overrides):
@@ -116,6 +124,18 @@ def test_a_name_ending_in_versions_uses_the_new_versions_route(on, tokens):
     assert (
         on.get("/api/v1/credentials/cloud/versions", headers=auth(tokens["mixed"])).status_code == 404
     )  # no such entry
+
+
+@pytest.mark.parametrize("sep", ["/", "%2F"])
+def test_posting_a_name_ending_in_versions_is_a_400_and_stores_nothing(on, tokens, seeded, sep):
+    h = auth(tokens["writer"])
+    posted = on.post(f"/api/v1/credentials/cloud{sep}new{sep}versions", json={"value": "v"}, headers=h)
+    assert posted.status_code == 400 and "versions route" in posted.json()["detail"]
+    assert seeded.get("cloud/new/versions") is None
+    # the existing one can still be read through the new route and deleted
+    assert on.get("/api/v1/versions/cloud/versions", headers=h).json()["versions"] == ["0000000001"]
+    assert on.delete("/api/v1/credentials/cloud/versions", headers=h).status_code == 200
+    assert seeded.get("cloud/versions") is None
 
 
 def test_both_versions_routes_serve_plain_names_when_enabled(on, tokens):

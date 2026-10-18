@@ -1,6 +1,7 @@
 """``/`` in names over HTTP: opt-in on both sides (MATTSTASH_ALLOW_SLASH_NAMES), against a real server subprocess."""
 
 from typing import Dict, Generator, NamedTuple
+from unittest import mock
 
 import pytest
 
@@ -20,6 +21,12 @@ def _start(tmp_path_factory: pytest.TempPathFactory, allow: bool) -> Generator[S
     workdir = tmp_path_factory.mktemp("slash-on" if allow else "slash-off")
     db_path = workdir / "slash.kdbx"
     MattStash.create(str(db_path), password=DB_PASSWORD, sidecar=False)
+    if allow:  # an entry whose last segment is 'versions' (the write rule would refuse it now), seeded around the check
+        with (
+            mock.patch("mattstash.core.entry_manager.validate_credential_title"),
+            mock.patch("mattstash.core.mattstash.validate_credential_title"),
+        ):
+            MattStash(path=str(db_path), password=DB_PASSWORD).put("cloud/versions", value="old", allow_slash=True)
     policy = workdir / "policy.json"
     with edit_policy(policy, create=True) as editor:
         editor.add_principal("writer", "agent", "slash tests")
@@ -60,9 +67,11 @@ def test_slash_names_round_trip_through_the_cli_when_both_sides_opt_in(slash_on:
     assert "cloud/hetzner/s3-key" in listed.stdout
     versions = run_cli(["versions", "cloud/hetzner/s3-key", "--json"], e)
     assert versions.returncode == 0 and '"0000000002"' in versions.stdout
-    assert run_cli(["put", "cloud/versions", "--value", "named-versions"], e).returncode == 0
-    ambiguous = run_cli(["versions", "cloud/versions", "--json"], e)
-    assert ambiguous.returncode == 0 and "0000000001" in ambiguous.stdout
+    refused = run_cli(["put", "cloud/versions", "--value", "named-versions"], e)
+    assert refused.returncode != 0 and "versions route" in refused.stderr
+    existing = run_cli(["versions", "cloud/versions", "--json"], e)  # an older entry stays reachable
+    assert existing.returncode == 0 and "0000000001" in existing.stdout
+    assert run_cli(["delete", "cloud/versions"], e).returncode == 0
     assert run_cli(["delete", "cloud/hetzner/s3-key"], e).returncode == 0
     assert run_cli(["get", "cloud/hetzner/s3-key", "--raw"], e).returncode != 0
 

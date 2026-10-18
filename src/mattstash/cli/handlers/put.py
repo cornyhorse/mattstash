@@ -23,7 +23,7 @@ from typing import Optional
 from ...models.credential import serialize_credential
 from ...module_functions import put
 from ...utils.exceptions import InvalidCredentialError
-from ...utils.validation import validate_credential_title
+from ...utils.validation import ALLOW_SLASH_NAMES_ENV, slash_names_allowed, validate_credential_title
 from .. import exit_codes
 from ..inputs import (
     InputError,
@@ -281,7 +281,13 @@ class PutHandler(BaseHandler):
             try:
                 validate_credential_title(request.title)
             except InvalidCredentialError as exc:
-                self.error(str(exc))
+                note = ""
+                if not slash_names_allowed():
+                    note = (
+                        f". In server mode the SERVER must also have {ALLOW_SLASH_NAMES_ENV}=true, "
+                        "otherwise it answers 404 for such names"
+                    )
+                self.error(f"{exc}{note}")
                 return exit_codes.ERROR
         try:
             client = self.get_server_client(args)

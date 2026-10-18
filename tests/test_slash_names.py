@@ -98,6 +98,7 @@ def test_cli_server_mode_refuses_before_sending_anything(monkeypatch: pytest.Mon
     base = ["--server-url", "http://localhost:8000", "--api-key", KEY]
     assert main([*base, "put", "cloud/new", "--value", "x"]) == exit_codes.ERROR
     assert "use '.' as the separator" in caplog.text
+    assert "SERVER must also have MATTSTASH_ALLOW_SLASH_NAMES" in caplog.text
     assert server.requests == [] and server.store == {}
 
 
@@ -105,11 +106,53 @@ def test_cli_server_mode_with_the_variable_uses_path_routes(monkeypatch: pytest.
     server = FakeServer(api_key=KEY).install(monkeypatch)
     monkeypatch.setenv("MATTSTASH_ALLOW_SLASH_NAMES", "true")
     base = ["--server-url", "http://localhost:8000", "--api-key", KEY]
-    assert main([*base, "put", "cloud/versions", "--value", "x"]) == 0
-    assert list(server.store) == ["cloud/versions"]
+    assert main([*base, "put", "cloud/hetzner/s3-key", "--value", "x"]) == 0
+    assert list(server.store) == ["cloud/hetzner/s3-key"]
+    server.store["cloud/versions"] = server.store["cloud/hetzner/s3-key"]  # an entry that predates the rule
     capsys.readouterr()
     assert main([*base, "versions", "cloud/versions", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == ["0000000001"]
     paths = [r.url.raw_path.decode() for r in server.requests]
-    assert paths[0] == "/api/v1/credentials/cloud/versions"
+    assert paths[0] == "/api/v1/credentials/cloud/hetzner/s3-key"
     assert "/api/v1/versions/cloud/versions" in paths
+
+
+def _seed_reserved(db: Path) -> None:
+    """An entry whose last segment is 'versions', as one made before the rule (or by another tool) would be."""
+    from unittest import mock
+
+    with (
+        mock.patch("mattstash.core.entry_manager.validate_credential_title"),
+        mock.patch("mattstash.core.mattstash.validate_credential_title"),
+    ):
+        MattStash(path=str(db), password=PW).put("cloud/versions", value="old", allow_slash=True)
+
+
+def test_a_last_segment_of_versions_is_refused_for_writing(db: Path, monkeypatch: pytest.MonkeyPatch, caplog):
+    monkeypatch.setenv("MATTSTASH_ALLOW_SLASH_NAMES", "true")
+    stash = MattStash(path=str(db), password=PW)
+    for name in ("cloud/versions", "versions/versions", "a/b/versions"):
+        with pytest.raises(InvalidCredentialError, match="versions route"):
+            stash.put(name, value="x")
+        assert stash.get(name) is None
+    assert run(db, "put", "cloud/versions", "--value", "x") == exit_codes.ERROR
+    assert "versions route" in caplog.text
+    # only the exact, case-sensitive LAST segment is reserved
+    for name in ("versions", "versions/x", "cloud/Versions", "cloud/versions2", "cloud/my-versions"):
+        stash.put(name, value="ok")
+
+
+def test_an_existing_entry_named_versions_stays_listable_readable_and_deletable(
+    db: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    _seed_reserved(db)
+    stash = MattStash(path=str(db), password=PW)
+    assert stash.get("cloud/versions", show_password=True)["value"] == "old"  # type: ignore[index]
+    assert "cloud/versions@0000000001" in {c.credential_name for c in stash.list()}
+    assert run(db, "get", "cloud/versions", "--raw") == 0
+    assert capsys.readouterr().out == "old\n"
+    with pytest.raises(InvalidCredentialError):  # but it cannot get a new version
+        monkeypatch.setenv("MATTSTASH_ALLOW_SLASH_NAMES", "true")
+        stash.put("cloud/versions", value="new")
+    assert run(db, "delete", "cloud/versions") == 0
+    assert stash.get("cloud/versions") is None
