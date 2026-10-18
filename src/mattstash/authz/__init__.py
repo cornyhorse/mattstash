@@ -5,7 +5,7 @@ Design: docs/design/principals-and-grants.md.
 One implementation of "may this principal do this?" shared by the server, the CLI's local mode and ``admin check``.
 """
 
-from .accesslog import format_record, now_iso, read_records
+from .accesslog import GAP_EVENT, PROBE_EVENT, format_record, now_iso, read_records
 from .errors import PolicyError
 from .evaluate import admin_decision, can_admin, evaluate, explain, visible
 from .legacy import migrate_v1, v1_admin_ids
@@ -69,6 +69,8 @@ __all__ = [
     "load_policy",
     "migrate_v1",
     "now_iso",
+    "GAP_EVENT",
+    "PROBE_EVENT",
     "parse_duration",
     "parse_duration_or_time",
     "parse_policy",

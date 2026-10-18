@@ -446,6 +446,22 @@ def test_log_table_includes_rotated_backups(run: Runner, access_log: Path):
     assert "no-grant" in result.out and "10.0.0.1" in result.out
 
 
+def test_log_labels_the_events_about_the_log_itself_instead_of_an_empty_row(run: Runner, tmp_path: Path):
+    log = tmp_path / "events.jsonl"
+    log.write_text(
+        '{"ts":"2026-10-18T10:00:00.000Z","principal":"hermes","action":"read","key":"a","decision":"allowed"}\n'
+        '{"ts":"2026-10-18T10:00:05.000Z","event":"access-log-gap","lost":3}\n'
+        '{"ts":"2026-10-18T10:00:06.000Z","event":"access-log-probe"}\n'
+    )
+    table = run("admin", "log", "--log-file", str(log)).out.splitlines()
+    gap = next(line for line in table if "access-log-gap" in line)
+    assert "lost=3" in gap and "(log event)" in gap and "2026-10-18T10:00:05.000Z" in gap
+    assert any("access-log-probe" in line and "(log event)" in line for line in table)
+    raw = [json.loads(line) for line in run("admin", "log", "--log-file", str(log), "--json").out.splitlines()]
+    assert [r.get("event") for r in raw] == [None, "access-log-gap", "access-log-probe"]  # --json stays raw
+    assert len(run("admin", "log", "--log-file", str(log), "--principal", "hermes", "--json").out.splitlines()) == 1
+
+
 def test_log_filters(run: Runner, access_log: Path):
     def keys(*argv: str) -> list[str]:
         out = run("admin", "log", "--log-file", str(access_log), "--json", *argv).out

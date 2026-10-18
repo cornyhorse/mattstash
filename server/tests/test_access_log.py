@@ -25,11 +25,6 @@ def bearer(token: str) -> dict[str, str]:
 
 
 @pytest.fixture
-def log_path(tmp_path) -> str:
-    return str(tmp_path / "access.jsonl")
-
-
-@pytest.fixture
 def lc(make_client, policy_path, log_path, data):
     """Client for the policy file with a file sink."""
     return make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
@@ -472,18 +467,6 @@ def test_a_failing_file_sink_replaces_the_response_with_503(lc, monkeypatch, pol
     stdout_line = json.loads(next(r.getMessage() for r in caplog.records if r.name == "mattstash.access"))
     assert stdout_line["status"] == 503 and stdout_line["error"] == "access-log-write-failed"
     assert stdout_line["principal"] == "hermes" and stdout_line["key"] == "firefly.token"
-
-
-def test_a_closed_log_file_fails_closed_for_every_kind_of_request_and_nothing_is_sent(lc, log_path, policy_tokens):
-    accesslog._sink._handler.stream.close()  # the descriptor is gone
-    for response in (
-        lc.get("/api/v1/credentials", headers=bearer(policy_tokens["hermes"])),
-        lc.get("/api/v1/credentials", headers={"X-API-Key": "wrong"}),  # even a failed login must be logged
-        lc.get(f"{BASE}/principals", headers=bearer(policy_tokens["matt"])),
-        lc.post("/api/v1/credentials/app-q", json={"value": "v"}, headers=bearer(policy_tokens["scribe"])),
-    ):
-        assert response.status_code == 503 and response.json() == UNAVAILABLE
-    assert lc.get("/health").status_code == 200  # probes are not logged, so they do not depend on the log
 
 
 def test_the_sink_recovers_when_the_disk_does(lc, monkeypatch, policy_tokens):

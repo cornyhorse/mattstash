@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 MAX_VALUE_LENGTH = 256
+#: Records with an ``event`` field are about the log itself, not a request: ``access-log-probe`` (written by the
+#: readiness probe of a failing file) and ``access-log-gap`` (``lost`` request lines the file missed). They have no
+#: principal, action or key; readers should label them, not show an empty row.
+PROBE_EVENT = "access-log-probe"
+GAP_EVENT = "access-log-gap"
 #: Leading fields, in this order; any other field follows in the order given.
 FIELD_ORDER = (
     "ts",
@@ -146,6 +151,9 @@ def read_records(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """The last ``limit`` matching records of the log and its rotated backups, in chronological order.
+
+    Event records (see :data:`GAP_EVENT`) are returned like any other record unless a filter excludes them (a
+    ``principal`` or ``decision`` filter does); callers label them by their ``event`` field.
 
     Lines that are not a JSON object are skipped (a crash can leave a torn last line), and so are lines longer than
     ``MAX_LINE_BYTES`` and lines too deeply nested to parse. A file that can't be read (absent, rotated away while

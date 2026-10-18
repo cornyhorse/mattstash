@@ -25,15 +25,17 @@ Nothing secret is ever passed in: names, decisions and token ids only.
 """
 
 import contextlib
+import errno
 import logging
 import os
 import threading
+import time
 from collections.abc import Mapping, MutableMapping
 from logging.handlers import RotatingFileHandler
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request, status
-from mattstash.authz import format_record, now_iso
+from mattstash.authz import GAP_EVENT, PROBE_EVENT, format_record, now_iso
 
 from .client_ip import client_ip
 from .config import config
@@ -79,32 +81,103 @@ def note(request: Request, **fields: object) -> None:
 
 
 class _PrivateRotatingHandler(RotatingFileHandler):
-    """Opens (and, after each rotation, re-opens) the file with mode 0600, whatever the umask is."""
+    """Opens (and, after each rotation, re-opens) the file with mode 0600, whatever the umask is.
+
+    The stream is UNBUFFERED binary: a line reaches the kernel in the write itself, so a failed write leaves nothing
+    in a Python buffer that a later flush could write out after the request it belonged to was answered 503.
+    """
 
     def _open(self):  # type: ignore[no-untyped-def]
-        descriptor = os.open(self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        # O_NONBLOCK: opening a named pipe nobody reads must fail at once, not park a worker thread for good.
+        descriptor = os.open(self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NONBLOCK, 0o600)
         with contextlib.suppress(OSError):  # tighten a file that already existed; not possible if it is not ours
             os.fchmod(descriptor, 0o600)
-        return os.fdopen(descriptor, self.mode, encoding=self.encoding, errors=self.errors)
+        return os.fdopen(descriptor, "ab", buffering=0)
+
+
+#: ``/ready`` tries a failing sink again at most this often (seconds); in between it answers from the cached flag.
+READY_PROBE_INTERVAL = 5.0
+#: The "Access log write failed" error is logged for the first failure and then at most this often (seconds).
+FAILURE_REPORT_INTERVAL = 60.0
+_NEVER = float("-inf")
+
+
+def _now() -> float:
+    return time.monotonic()
 
 
 class FileSink:
-    """Appends lines to a rotating file; raises on any failure."""
+    """Appends lines to a rotating file; raises on any failure.
+
+    After a failed write the file is closed (whatever was half written is dropped with the stream) and opened again at
+    the next write, so a recovered disk, a replaced file or a rotated-away descriptor all heal on their own. A
+    fragment of a line a failing disk accepted is ended with a newline before the next line, so it cannot swallow it.
+    The first line written after a failure is preceded by one ``access-log-gap`` event that says how many request
+    lines the file missed.
+    """
 
     def __init__(self, path: str, max_bytes: int, backups: int) -> None:
         self._handler = _PrivateRotatingHandler(
             path, mode="a", maxBytes=max_bytes, backupCount=backups, encoding="utf-8", delay=False
         )
         self._lock = threading.Lock()
+        self._healthy = True  # False after a failed write or open, until a write succeeds; changes under _lock
+        self._lost = 0  # request lines the file missed since it last wrote one; changes under _lock
+        self._torn = False  # the last failed write may have left a partial line
+        self.last_probe = _NEVER
+
+    @property
+    def healthy(self) -> bool:
+        with self._lock:
+            return self._healthy
+
+    def _put(self, line: str) -> None:
+        """Append one line (under the lock): reopen if needed, rotate if due, write all of it."""
+        handler = self._handler
+        if handler.stream is None:
+            handler.stream = handler._open()
+        if handler.shouldRollover(logging.makeLogRecord({"msg": line})):
+            handler.doRollover()
+        data = memoryview((("\n" if self._torn else "") + line + "\n").encode("utf-8"))
+        while data:  # an unbuffered write may be partial
+            written = handler.stream.write(data)
+            if not written:
+                raise OSError(errno.EIO, "the log file accepted no bytes")
+            data = data[written:]
+            if data:
+                self._torn = True  # a fragment is in the file now; if the rest fails, the next line starts afresh
+        self._torn = False
 
     def write(self, line: str) -> None:
-        record = logging.makeLogRecord({"msg": line})  # only used by shouldRollover to measure the line
         with self._lock:
-            if self._handler.shouldRollover(record):
-                self._handler.doRollover()
-            stream = self._handler.stream
-            stream.write(line + "\n")
-            stream.flush()
+            try:
+                if self._lost:
+                    self._put(format_record({"ts": now_iso(), "event": GAP_EVENT, "lost": self._lost}))
+                    self._lost = 0
+                self._put(line)
+            except Exception:
+                self._discard()
+                raise
+
+    def _discard(self) -> None:
+        """After a failed write (lock held): drop the stream; the next write opens the file afresh."""
+        self._healthy = False
+        handler = self._handler
+        stream, handler.stream = handler.stream, None
+        if stream is not None:
+            with contextlib.suppress(OSError, ValueError):
+                stream.close()
+
+    def record_failure(self, lost_line: bool = True) -> None:
+        """A write through this sink failed (the caller saw the exception)."""
+        with self._lock:
+            self._healthy = False
+            if lost_line:
+                self._lost += 1
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._healthy = True
 
     def close(self) -> None:
         with self._lock, contextlib.suppress(OSError, ValueError):  # shutting down: a broken stream is not news
@@ -112,20 +185,25 @@ class FileSink:
 
 
 _sink: Optional[FileSink] = None
-#: False after a failed write or open, until a write succeeds. ``/ready`` reports it (both fail modes).
-_sink_ok = True
+#: True when the file could not be opened at startup (the server then does not start).
+_open_failed = False
+_report_lock = threading.Lock()
+_last_report = _NEVER
+_failures_unreported = 0
 
 
 def open_file_sink() -> None:
     """Open the configured file (startup: a bad path stops the server instead of failing every request)."""
-    global _sink, _sink_ok
+    global _sink, _open_failed, _last_report, _failures_unreported
     close_file_sink()
-    _sink_ok = True
+    _open_failed = False
+    with _report_lock:
+        _last_report, _failures_unreported = _NEVER, 0
     if config.ACCESS_LOG_FILE:
         try:
             _sink = FileSink(config.ACCESS_LOG_FILE, config.ACCESS_LOG_MAX_BYTES, config.ACCESS_LOG_BACKUPS)
         except Exception:
-            _sink_ok = False
+            _open_failed = True
             raise
 
 
@@ -138,37 +216,58 @@ def close_file_sink() -> None:
 
 def sink_healthy() -> bool:
     """False while the last attempt to write the access-log file failed (and none has succeeded since)."""
-    return _sink_ok
+    sink = _sink
+    return not _open_failed and (sink is None or sink.healthy)
+
+
+def _report_failure(exc: Exception) -> None:
+    """Log "Access log write failed" for the first failure, then at most once per minute, with how many there were."""
+    global _last_report, _failures_unreported
+    with _report_lock:
+        _failures_unreported += 1
+        now = _now()
+        if now - _last_report < FAILURE_REPORT_INTERVAL:
+            return
+        count, _failures_unreported, _last_report = _failures_unreported, 0, now
+    logger.error("Access log write failed: %s (%d failure(s) since the last report)", type(exc).__name__, count)
 
 
 def probe_sink() -> bool:
-    """Is the file sink usable? Healthy sinks answer from the last write. An unhealthy one is tried again with a small
-    marker line, so a pod taken out of rotation (no traffic, so no writes) can recover. Never raises."""
-    global _sink_ok
+    """Is the file sink usable? A healthy sink answers from the last write. An unhealthy one is tried again with a
+    small marker line, so a pod taken out of rotation (no traffic, so no writes) can recover, but at most once every
+    :data:`READY_PROBE_INTERVAL` seconds; in between the cached flag (unhealthy) is the answer, so a monitor polling
+    ``/ready`` cannot hammer a failing disk. Never raises."""
     sink = _sink
-    if sink is None or _sink_ok:
+    if sink is None:
         return True
+    with sink._lock:
+        if sink._healthy:
+            return True
+        now = _now()
+        if now - sink.last_probe < READY_PROBE_INTERVAL:
+            return False
+        sink.last_probe = now
     try:
-        sink.write(format_record({"ts": now_iso(), "event": "access-log-probe"}))
+        sink.write(format_record({"ts": now_iso(), "event": PROBE_EVENT}))
     except Exception as exc:
-        logger.error("Access log write failed: %s", type(exc).__name__)
+        sink.record_failure(lost_line=False)
+        _report_failure(exc)
         return False
-    _sink_ok = True
+    sink.record_success()
     return True
 
 
 def emit(fields: Mapping[str, object]) -> None:
     """Write one line to the file (if any), then stdout. Raises if the file write fails (nothing reaches stdout)."""
-    global _sink_ok
     line = format_record(fields)
     sink = _sink
     if sink is not None:
         try:
             sink.write(line)
         except Exception:
-            _sink_ok = False
+            sink.record_failure()
             raise
-        _sink_ok = True
+        sink.record_success()
     access_logger.info(line)
 
 
@@ -198,7 +297,7 @@ def write_line(scope: MutableMapping[str, Any], code: Optional[int] = None, erro
     try:
         emit(fields)
     except Exception as exc:
-        logger.error("Access log write failed: %s", type(exc).__name__)
+        _report_failure(exc)
         emit_failed(fields)
         return config.ACCESS_LOG_FAIL_OPEN
     return True

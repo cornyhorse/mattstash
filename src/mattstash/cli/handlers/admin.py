@@ -594,8 +594,18 @@ def _grant_table(items: List[Data]) -> str:
 _LOG_COLUMNS = ("ts", "principal", "kind", "action", "key", "decision", "reason", "client", "status")
 
 
+def _log_row(record: Data) -> List[Any]:
+    """A table row. A record about the log itself (``access-log-gap``: request lines the file missed;
+    ``access-log-probe``) has no principal or key: label it instead of showing an empty row."""
+    event = record.get("event")
+    if event is None:
+        return [record.get(c) for c in _LOG_COLUMNS]
+    detail = f"{_clean(event)}" + (f" lost={_clean(record['lost'])}" if "lost" in record else "")
+    return [record.get("ts"), "-", "-", "(log event)", detail, "-", "-", "-", "-"]
+
+
 def _log_table(records: List[Data]) -> str:
-    return _table([c.upper() for c in _LOG_COLUMNS], [[r.get(c) for c in _LOG_COLUMNS] for r in records])
+    return _table([c.upper() for c in _LOG_COLUMNS], [_log_row(r) for r in records])
 
 
 # ---------------------------------------------------------------------------

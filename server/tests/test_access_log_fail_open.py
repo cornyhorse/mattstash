@@ -8,13 +8,13 @@ import pytest
 
 from app import accesslog
 
-from .test_access_log import BASE, UNAVAILABLE, bearer, file_records, lc, log_path  # noqa: F401  (fixtures)
+from .test_access_log import BASE, UNAVAILABLE, bearer, file_records, lc  # noqa: F401  (fixtures)
 
 NOT_READY = {"detail": "Not ready"}
 
 
 @pytest.fixture
-def fail_open_client(make_client, policy_path, log_path, data):  # noqa: F811
+def fail_open_client(make_client, policy_path, log_path, data):
     return make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True, ACCESS_LOG_FAIL_OPEN=True)
 
 
@@ -66,7 +66,7 @@ def test_fail_open_lets_decision_time_writes_through(fail_open_client, disk, pol
     admin = fail_open_client.post(
         f"{BASE}/principals/hermes/tokens", json={"description": "x"}, headers=bearer(policy_tokens["matt"])
     )
-    assert admin.status_code in (200, 201)
+    assert admin.status_code == 201
     lines = stdout_lines(caplog)
     assert len(lines) == 3 and all(line["error"] == "access-log-write-failed" for line in lines)
     assert all(line.get("status") != 503 for line in lines)
@@ -83,7 +83,9 @@ def test_fail_closed_refuses_both_write_paths(lc, disk, policy_tokens):  # noqa:
 
 @pytest.mark.parametrize("fail_open", [False, True])
 @pytest.mark.parametrize("prefix", ["", "/api"])
-def test_ready_follows_the_file_sink(make_client, policy_path, log_path, data, disk, policy_tokens, fail_open, prefix):  # noqa: F811
+def test_ready_follows_the_file_sink(
+    make_client, policy_path, log_path, data, disk, clock, policy_tokens, fail_open, prefix
+):
     client = make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ACCESS_LOG_FAIL_OPEN=fail_open)
     assert client.get(f"{prefix}/ready").status_code == 200  # nothing has failed yet
     client.get("/api/v1/credentials", headers=bearer(policy_tokens["hermes"]))  # the write fails
@@ -94,17 +96,21 @@ def test_ready_follows_the_file_sink(make_client, policy_path, log_path, data, d
         assert log_path not in response.text
     assert client.get(f"{prefix}/health").status_code == 200  # liveness is unaffected
     disk["full"] = False
+    assert client.get(f"{prefix}/ready").status_code == 503  # the disk is back, but the probe was tried a moment ago
+    clock.advance(accesslog.READY_PROBE_INTERVAL)
     assert client.get(f"{prefix}/ready").status_code == 200  # the probe write succeeded
     assert accesslog.sink_healthy() is True
-    assert any(r.get("event") == "access-log-probe" for r in file_records(log_path))
+    events = [r["event"] for r in file_records(log_path) if "event" in r]
+    assert events == ["access-log-gap", "access-log-probe"]  # one gap marker, then the probe line
 
 
-def test_a_successful_request_write_makes_the_sink_healthy_again(lc, disk, policy_tokens):  # noqa: F811
+def test_a_successful_request_write_makes_the_sink_healthy_again(lc, disk, clock, policy_tokens):  # noqa: F811
     h = bearer(policy_tokens["hermes"])
     assert lc.get("/api/v1/credentials", headers=h).status_code == 503
     assert lc.get("/ready").status_code == 503
     disk["full"] = False
-    accesslog._sink_ok = False  # unhealthy, and a request (not a probe) is what notices the recovery
+    # no time has passed, so /ready still answers from the cached flag: a REQUEST is what notices the recovery
+    assert lc.get("/ready").status_code == 503
     assert lc.get("/api/v1/credentials", headers=h).status_code == 200
     assert accesslog.sink_healthy() is True and lc.get("/ready").status_code == 200
 
