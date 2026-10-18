@@ -23,6 +23,8 @@ _SCRUBBED_ENV = (
     "MATTSTASH_API_KEY",
     "MATTSTASH_API_KEY_FILE",
     "MATTSTASH_ALLOW_INSECURE_HTTP",
+    "MATTSTASH_POLICY_FILE",
+    "MATTSTASH_ACCESS_LOG_FILE",
     # a developer's or CI machine's proxy settings change what the HTTP client does (and warns about)
     "HTTP_PROXY",
     "HTTPS_PROXY",

@@ -17,6 +17,7 @@ from typing import Any, Optional
 from ..utils.exceptions import MattStashError
 from . import exit_codes
 from .handlers import (
+    AdminHandler,
     BackupHandler,
     ConfigHandler,
     DbUrlHandler,
@@ -33,6 +34,7 @@ from .handlers import (
     SetupHandler,
     VersionsHandler,
 )
+from .handlers.admin import add_admin_parser
 from .handlers.base import DB_ERRORS
 from .handlers.put import VALUE_PROMPT
 from .inputs import InputError, read_credential_file
@@ -251,6 +253,7 @@ def main(argv: Optional[list[str]] = None) -> int:
       - env/exec: hand secrets to scripts and containers as environment variables
       - backup/rotate-password: operate on the database file
       - db-url/s3-test: build a database URL / an S3 client from a credential
+      - admin: principals, tokens, grants and the access log (server or local policy file)
     """
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -545,6 +548,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         parents=[global_opts],
     )
 
+    # admin
+    add_admin_parser(subparsers, global_opts)
+
     args = parser.parse_args(_expand_interactive_shortcut(argv))
 
     # Handle the informational 'server' subcommand
@@ -590,6 +596,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "db-url": DbUrlHandler(),
         "s3-test": S3TestHandler(),
         "config": ConfigHandler(),
+        "admin": AdminHandler(),
     }
 
     # Get the appropriate handler and execute it
