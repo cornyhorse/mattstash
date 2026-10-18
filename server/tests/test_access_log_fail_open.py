@@ -15,9 +15,7 @@ NOT_READY = {"detail": "Not ready"}
 
 @pytest.fixture
 def fail_open_client(make_client, policy_path, log_path, data):  # noqa: F811
-    return make_client(
-        API_KEY=None, POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True, ACCESS_LOG_FAIL_OPEN=True
-    )
+    return make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True, ACCESS_LOG_FAIL_OPEN=True)
 
 
 @pytest.fixture
@@ -86,9 +84,7 @@ def test_fail_closed_refuses_both_write_paths(lc, disk, policy_tokens):  # noqa:
 @pytest.mark.parametrize("fail_open", [False, True])
 @pytest.mark.parametrize("prefix", ["", "/api"])
 def test_ready_follows_the_file_sink(make_client, policy_path, log_path, data, disk, policy_tokens, fail_open, prefix):  # noqa: F811
-    client = make_client(
-        API_KEY=None, POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ACCESS_LOG_FAIL_OPEN=fail_open
-    )
+    client = make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ACCESS_LOG_FAIL_OPEN=fail_open)
     assert client.get(f"{prefix}/ready").status_code == 200  # nothing has failed yet
     client.get("/api/v1/credentials", headers=bearer(policy_tokens["hermes"]))  # the write fails
     assert accesslog.sink_healthy() is False

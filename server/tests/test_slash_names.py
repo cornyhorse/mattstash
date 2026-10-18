@@ -38,7 +38,7 @@ def seeded(seed):
 
 
 def make(make_client, tmp_path, **overrides):
-    return make_client(API_KEY=None, POLICY_FILE=str(tmp_path / "policy.json"), ALLOW_WRITES=True, **overrides)
+    return make_client(POLICY_FILE=str(tmp_path / "policy.json"), ALLOW_WRITES=True, **overrides)
 
 
 NAMES = ["cloud/hetzner/s3-key", "cloud%2Fhetzner%2Fs3-key"]
