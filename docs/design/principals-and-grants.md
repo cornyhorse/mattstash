@@ -48,7 +48,7 @@ A principal is a named identity that presents tokens.
   "disabled": false,
   "created": "2026-10-18T12:00:00Z",
   "tokens": [
-    {"id": "k7m2q9xw4h3a", "hash": "hmac-sha256:9f0c…:4be1…", "created": "2026-10-18T12:00:00Z",
+    {"id": "k7m2q7xw4h3a", "hash": "hmac-sha256:9f0c…:4be1…", "created": "2026-10-18T12:00:00Z",
      "expires": "2027-01-18T00:00:00Z", "description": "initial"}
   ]
 }
@@ -244,7 +244,7 @@ One JSON object per line, written for every authenticated request, every failed 
 admin request:
 
 ```json
-{"ts":"2026-10-18T12:03:44.120Z","principal":"hermes-finance","kind":"agent","token":"k7m2q9xw4h3a",
+{"ts":"2026-10-18T12:03:44.120Z","principal":"hermes-finance","kind":"agent","token":"k7m2q7xw4h3a",
  "action":"read","route":"get","key":"firefly.token","decision":"allowed","grant":"g_3fd9a1c2",
  "client":"100.101.7.3","status":200}
 ```
