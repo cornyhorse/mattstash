@@ -13,13 +13,14 @@ from limits import parse_many
 from mattstash.models.config import config as lib_config
 from slowapi.errors import RateLimitExceeded
 
+from . import accesslog
 from .config import config
 from .dependencies import initialize_mattstash, reload_mattstash_if_changed
 from .logging_setup import configure_logging
 from .middleware.security import SecurityMiddleware
 from .rate_limit import limiter, rate_limit_exceeded_handler
 from .routers import admin, credentials, db_url, health
-from .security.api_keys import get_key_policy
+from .security.api_keys import get_auth_state
 
 logger = logging.getLogger("mattstash.api")
 
@@ -70,22 +71,30 @@ async def lifespan(app: FastAPI):
     # Validate configuration (do not log paths, keys or raw errors)
     try:
         config.get_kdbx_password()
-        policy = get_key_policy(force=True)
+        state = get_auth_state(force=True)
         config.validate_tls()
         try:
             parse_many(config.RATE_LIMIT)
         except Exception:
             raise ValueError(f"MATTSTASH_RATE_LIMIT is not a valid rate limit: {config.RATE_LIMIT!r}") from None
-        logger.info("Configuration validated successfully (%d API key(s))", len(policy))
+        accesslog.open_file_sink()  # a path that cannot be written stops the server now, not on the first request
+        logger.info("Configuration validated successfully (%d credential(s))", state.credential_count)
     except Exception:
         logger.error("Configuration validation failed - check environment variables")
         raise
 
-    if policy.legacy_count:
+    for source in state.legacy_sources:
         logger.warning(
-            "%d legacy API key(s) with FULL access are configured; migrate to a scoped key policy "
-            "(see server/docs/configuration.md) and set MATTSTASH_REQUIRE_SCOPED_KEYS=true",
-            policy.legacy_count,
+            "Deprecated: legacy API key(s) from %s are configured. They keep working (responses carry "
+            "'Deprecation: true'), but move to principals and tokens: docs/design/principals-and-grants.md, "
+            "`mattstash admin migrate-keys`",
+            source,
+        )
+    if state.sha256_tokens:
+        logger.warning(
+            "Deprecated: %d token(s) in the policy file use the unsalted 'sha256:' hash (migrated v1 keys); "
+            "re-issue them with `mattstash admin token rotate` to get salted tokens",
+            state.sha256_tokens,
         )
     _check_sidecar()
 
@@ -112,6 +121,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    accesslog.close_file_sink()
     poller_task.cancel()
     try:
         await poller_task

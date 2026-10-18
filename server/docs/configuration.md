@@ -25,6 +25,9 @@ volume holding the `.kdbx`.
 | `KDBX_PASSWORD` / `KDBX_PASSWORD_FILE` | - | Database master password (one is required). The sidecar file is *not* read by the server. |
 | `MATTSTASH_API_KEY` | - | A single *legacy* (full-access) key. |
 | `MATTSTASH_API_KEYS_FILE` | - | Legacy key list **or** a JSON key policy (see below). |
+| `MATTSTASH_POLICY_FILE` | - | JSON policy of principals, tokens and grants (see `docs/design/principals-and-grants.md`). Changes are picked up on the next request; the admin API edits it. |
+| `MATTSTASH_ACCESS_LOG_FILE` | - | Also write the JSON access log to this file (mode 0600, rotated). If a line cannot be written the request is refused with `503`. It always goes to stdout too. |
+| `MATTSTASH_ACCESS_LOG_MAX_BYTES` / `MATTSTASH_ACCESS_LOG_BACKUPS` | `10485760` / `10` | Rotation size (1 KiB-1 GiB) and number of kept files (1-100). |
 | `MATTSTASH_MIN_KEY_LENGTH` | `32` | Minimum length of plaintext keys (8-256). Startup fails on weaker keys. |
 | `MATTSTASH_REQUIRE_SCOPED_KEYS` | `false` | Refuse to start if any legacy full-access key is configured. |
 | `MATTSTASH_ALLOW_WRITES` | `false` | Enable `POST`/`DELETE`. Otherwise they return `405`. |
