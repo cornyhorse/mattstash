@@ -3,8 +3,9 @@
 #   * MATTSTASH_ALLOW_WRITES is "false": POST/DELETE answer 405 and nothing ever writes the database.
 #   * The database is mounted from a Secret (mattstash-db): read-only by construction, identical in
 #     every replica. Update the Secret to roll out a new database; see secret.example.yaml.
-#   * The master password and API keys come from a second Secret (mattstash-secrets) mounted at a
-#     different path, so the data volume alone is never enough to open the database.
+#   * The master password and the policy file (principals, token hashes, grants) come from a second
+#     Secret (mattstash-secrets) mounted at a different path, so the data volume alone is never enough
+#     to open the database.
 #
 # For a server that accepts writes use writable/deployment.yaml INSTEAD of this file (single replica,
 # strategy Recreate, PersistentVolumeClaim). Never combine write mode with more than one replica.

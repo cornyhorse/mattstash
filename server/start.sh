@@ -7,8 +7,9 @@
 #   ./start.sh --down       stop the stack started with the same flags
 #
 # What it does:
-#   * creates data/ and secrets/ (mode 0700) if they are missing;
-#   * generates a strong random API key in secrets/api_keys.txt if there is none;
+#   * creates data/, secrets/, policy/ and tokens/ (mode 0700) if they are missing;
+#   * creates a policy file (policy/policy.json) with one admin principal and writes its token to
+#     tokens/admin.token if there is no policy file (needs the `mattstash` CLI: pip install mattstash);
 #   * checks that the master password file and the database exist;
 #   * starts the stack and waits until the container reports healthy.
 #
@@ -75,40 +76,27 @@ if [ "$DOWN" = true ]; then
     exit 0
 fi
 
-# ---- directories and API key -------------------------------------------------------------------
+# ---- directories and policy file ---------------------------------------------------------------
 umask 077
-mkdir -p data secrets
+mkdir -p data secrets policy tokens
 
-generate_key() {
-    # 32 random bytes, base64 -> 43/44 characters (the server requires at least 32).
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -base64 32
-    elif command -v python3 >/dev/null 2>&1; then
-        python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
-    else
-        head -c 32 /dev/urandom | base64 | tr -d '\n'
-        echo
+# The server needs a policy file: principals, the HASHES of their tokens, and their grants. Without one it does not
+# start. An admin principal (no access to any secret by itself) is enough to begin with; its token goes to
+# tokens/admin.token, which is NOT mounted into the container. Add one principal per client yourself, e.g.
+#   mattstash admin --policy-file policy/policy.json principal add myapp --kind agent
+#   mattstash admin --policy-file policy/policy.json grant add myapp --key 'myapp.*'
+#   mattstash admin --policy-file policy/policy.json token issue myapp --output-file tokens/myapp.token
+if [ ! -s policy/policy.json ]; then
+    if [ -e secrets/api_keys.txt ]; then
+        echo "note: secrets/api_keys.txt is no longer read (API keys were removed in 0.3). To keep your clients working" >&2
+        echo "      without downtime, import their keys into the policy file: see docs/upgrading-to-0.3.md." >&2
     fi
-}
-
-if [ ! -s secrets/api_keys.txt ]; then
-    key="$(generate_key)"
-    [ "${#key}" -ge 32 ] || die "could not generate a strong API key"
-    printf '%s\n' "$key" >secrets/api_keys.txt
-    chmod 0600 secrets/api_keys.txt
-    echo "Generated a new API key in secrets/api_keys.txt (read it with: head -n1 secrets/api_keys.txt)."
-    unset key
-elif ! head -c 4096 secrets/api_keys.txt | grep -Eq '^[[:space:]]*[{[]'; then
-    # Plain one-key-per-line file (a JSON policy file is validated by the server instead).
-    weak=false
-    while IFS= read -r line || [ -n "$line" ]; do
-        line="${line//[[:space:]]/}"
-        case "$line" in '' | '#'*) continue ;; esac
-        if [ "${#line}" -lt 32 ]; then weak=true; fi
-    done <secrets/api_keys.txt
-    if [ "$weak" = true ]; then
-        die "secrets/api_keys.txt contains a key shorter than 32 characters; the server will refuse to start. Replace it (openssl rand -base64 32)."
-    fi
+    command -v mattstash >/dev/null 2>&1 ||
+        die "policy/policy.json is missing and the mattstash CLI is not installed to create it (pip install mattstash)."
+    mattstash admin --policy-file policy/policy.json principal add admin --kind human-device --admin \
+        --description "created by start.sh" >/dev/null
+    mattstash admin --policy-file policy/policy.json token issue admin --output-file tokens/admin.token --expires 365d
+    echo "Created policy/policy.json with an admin principal; its token is in tokens/admin.token (valid 365 days)."
 fi
 
 # ---- master password and database (never created here) -----------------------------------------
@@ -178,7 +166,8 @@ else
     fi
     echo "Liveness:   curl http://127.0.0.1:8000/health"
     echo "Readiness:  curl http://127.0.0.1:8000/ready"
-    echo "Try it:     curl -H \"X-API-Key: \$(head -n1 secrets/api_keys.txt)\" http://127.0.0.1:8000/api/v1/credentials"
+    echo "Try it:     curl -H \"X-API-Key: \$(cat tokens/admin.token)\" http://127.0.0.1:8000/api/v1/admin/principals"
+    echo "            (the admin token manages principals and grants; it reads no secret. Issue a token per client.)"
     echo "API docs (unless disabled with MATTSTASH_DISABLE_DOCS): http://127.0.0.1:8000/api/v1/docs"
 fi
 echo "Logs:       ${COMPOSE[*]} ${COMPOSE_FILES[*]} logs -f"

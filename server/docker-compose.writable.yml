@@ -16,8 +16,8 @@
 #   3. Back the directory up (the .kdbx is the only copy of your secrets), and keep the master
 #      password OUTSIDE it (it comes from the separate /secrets mount or the `secrets:` entries
 #      of the base file).
-#   4. Every API key you issue can write unless you use a scoped key policy; see
-#      docs/configuration.md.
+#   4. Only principals with a `write` or `delete` grant can change anything; give those grants sparingly
+#      (`mattstash admin grant add`; see docs/configuration.md).
 #
 # The database must already exist (create it with `mattstash setup`); the server never creates one.
 

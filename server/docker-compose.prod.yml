@@ -38,10 +38,21 @@
 # Secrets: create the two files with restricted permissions, keep them out of version control, and
 # make them readable by the container user (${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}; file
 # secrets are bind mounts, so host permissions apply):
-#   mkdir -p secrets && (umask 077; openssl rand -base64 32 > secrets/api_keys.txt)
+#   mkdir -p secrets policy tokens
 #   (umask 077; openssl rand -base64 32 > secrets/kdbx_password.txt)
 #   mattstash --db data/mattstash.kdbx setup --password-file secrets/kdbx_password.txt
 # For Swarm / external secret stores, replace `file:` with `external: true`.
+#
+# Who may use the server: a policy file (principals, token HASHES, grants) is REQUIRED; the server does not
+# start without one. It is mounted as the DIRECTORY ./policy (read-only), not as a Compose secret: a single-file
+# bind mount keeps showing the old inode when the CLI replaces the file, so edits would need a restart. Create it
+# on the host (see docs/upgrading-to-0.3.md for moving over from API keys):
+#   mattstash admin --policy-file policy/policy.json principal add admin --kind human-device --admin
+#   mattstash admin --policy-file policy/policy.json token issue admin --output-file tokens/admin.token
+#   mattstash admin --policy-file policy/policy.json principal add myapp --kind agent
+#   mattstash admin --policy-file policy/policy.json grant add myapp --key 'myapp.*'
+#   mattstash admin --policy-file policy/policy.json token issue myapp --output-file tokens/myapp.token
+# Mount ./policy writable (drop `:ro`) only if the admin API should be able to change the policy.
 
 services:
   mattstash-api:
@@ -55,7 +66,7 @@ services:
     environment:
       MATTSTASH_DB_PATH: /data/mattstash.kdbx
       KDBX_PASSWORD_FILE: /run/secrets/kdbx_password
-      MATTSTASH_API_KEYS_FILE: /run/secrets/mattstash_api_keys
+      MATTSTASH_POLICY_FILE: /policy/policy.json
       # Read-only mode (the default). docker-compose.writable.yml turns it on.
       MATTSTASH_ALLOW_WRITES: "false"
       MATTSTASH_LOG_LEVEL: warning # less verbose in production
@@ -69,11 +80,12 @@ services:
 
     secrets:
       - kdbx_password
-      - mattstash_api_keys
 
     volumes:
       # Read-only; the master password is NOT in here (it comes from `secrets:`).
       - ./data:/data:ro
+      # The policy file (token hashes, grants), as a directory so that a replaced file is seen at once.
+      - ./policy:/policy:ro
 
     networks:
       - backend
@@ -155,5 +167,3 @@ networks:
 secrets:
   kdbx_password:
     file: ./secrets/kdbx_password.txt
-  mattstash_api_keys:
-    file: ./secrets/api_keys.txt

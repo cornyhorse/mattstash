@@ -72,18 +72,22 @@ Two Secrets, mounted at two different paths so the data volume alone never opens
 
 | Secret | Contents | Mounted at |
 |---|---|---|
-| `mattstash-secrets` | `kdbx-password` (master password), `api-keys` | `/secrets` |
+| `mattstash-secrets` | `kdbx-password` (master password), `policy.json` (principals, token hashes, grants) | `/secrets` |
 | `mattstash-db` | `mattstash.kdbx` (read-only mode only) | `/data` |
 
 Create them from files that live **outside** the repository:
 
 ```bash
-# API keys: at least 32 characters each, one per line (or a JSON policy file; see docs/configuration.md)
-openssl rand -base64 32 > api_keys.txt
+# The policy file: who may use the server. It holds token HASHES; the tokens go to the clients.
+mattstash admin --policy-file policy.json principal add admin --kind human-device --admin
+mattstash admin --policy-file policy.json token issue admin --output-file admin.token
+mattstash admin --policy-file policy.json principal add myapp --kind agent
+mattstash admin --policy-file policy.json grant add myapp --key 'myapp.*'
+mattstash admin --policy-file policy.json token issue myapp --output-file myapp.token
 
 kubectl -n mattstash create secret generic mattstash-secrets \
   --from-file=kdbx-password=./kdbx_password.txt \
-  --from-file=api-keys=./api_keys.txt
+  --from-file=policy.json=./policy.json
 
 # Read-only mode only: the database itself
 kubectl -n mattstash create secret generic mattstash-db \
@@ -93,18 +97,21 @@ kubectl -n mattstash create secret generic mattstash-db \
 Notes:
 
 - **Never commit real secrets.** `secret.example.yaml` is a template with deliberately invalid placeholders
-  (`CHANGE-ME` is shorter than the 32-character key minimum, so an unedited copy refuses to start). A copy named
+  (`CHANGE-ME` is not a policy file, so an unedited copy refuses to start). A copy named
   `secret.yaml` is git-ignored. Keep any filled-in manifest out of git, or keep only an *encrypted* form:
   [Sealed Secrets](https://github.com/bitnami-labs/sealed-secrets), [SOPS](https://github.com/getsops/sops), or sync
   from a vault with [External Secrets Operator](https://external-secrets.io/) or the Secrets Store CSI driver
   (Vault, AWS/GCP/Azure secret managers).
 - **A Secret is base64, not encryption.** Enable encryption at rest for Secrets in etcd, and use RBAC to limit who
   can `get`/`list`/`watch` secrets in this namespace and who can `exec` into the pods; either can read your master
-  password and API keys.
+  password and the policy file.
 - **Size limit.** A Secret holds at most 1 MiB including base64 overhead, i.e. roughly 700 KiB of `.kdbx`: ample for
   thousands of entries. A larger database, or write mode, uses the PVC instead.
-- **API keys** must be at least 32 characters; the server refuses to start with weaker ones. Never reuse the sample
-  placeholders, never share one key between all clients; use a scoped key policy (`docs/configuration.md`).
+- **The policy file** is required: the server refuses to start without `MATTSTASH_POLICY_FILE`, or while
+  `MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE` or `MATTSTASH_REQUIRE_SCOPED_KEYS` is set (removed in 0.3; see
+  `docs/upgrading-to-0.3.md`). Give every client its own principal and token, with only the grants it needs. To
+  change the policy, re-create the Secret (the pods pick it up without a restart); the admin API cannot write a
+  Secret volume, so manage the policy with the CLI.
 - **File modes.** Secret volumes use `defaultMode: 0400`. Because the pod sets `fsGroup`, the kubelet makes the files
   group-readable by that group (0440) so the non-root user can read them; the library may log a one-line
   "insecure permissions" warning about the database file. This is expected for Secret volumes.
@@ -159,7 +166,7 @@ Things to know about write mode:
   second pod.
 - `strategy: Recreate` means a brief outage during updates. That is the price of a single writer.
 - **Back up the volume** (VolumeSnapshot, Velero, ...). The database is the only copy of your secrets.
-- Any API key that may write can change or delete secrets. Use scoped keys.
+- Any principal with a `write` or `delete` grant can change or delete secrets. Grant those sparingly.
 
 ## 5. Allow clients (NetworkPolicy)
 
@@ -203,7 +210,7 @@ kubectl -n mattstash logs -f deployment/mattstash-api
 kubectl -n mattstash port-forward svc/mattstash-api 8000:8000 &
 curl -s http://localhost:8000/health   # liveness: 200 whenever the process runs, never touches the database
 curl -s http://localhost:8000/ready    # readiness: 200 only when the database opened, otherwise 503
-curl -s -H "X-API-Key: $(head -n1 api_keys.txt)" http://localhost:8000/api/v1/credentials
+curl -s -H "X-API-Key: $(cat myapp.token)" http://localhost:8000/api/v1/credentials
 ```
 
 Probes: **liveness `/health`** (so a database problem can never get healthy processes killed), **readiness `/ready`**
@@ -227,11 +234,11 @@ spec:
       value: "http://mattstash-api.mattstash.svc.cluster.local:8000"
     - name: MATTSTASH_ALLOW_INSECURE_HTTP   # in-cluster plain http is the documented pattern;
       value: "1"                            # the CLI warns about http:// to non-loopback hosts otherwise
-    - name: MATTSTASH_API_KEY
-      valueFrom:
+    - name: MATTSTASH_API_KEY               # the client's variable keeps its name; the value is the token issued
+      valueFrom:                            # for this client (`mattstash admin token issue myapp`)
         secretKeyRef:
           name: my-app-secrets
-          key: mattstash-api-key
+          key: mattstash-token
 ```
 
 ## Hardening applied by the manifests
@@ -239,7 +246,7 @@ spec:
 - Pod Security Admission `restricted` on the namespace; pods run as non-root (uid 1000), `RuntimeDefault` seccomp,
   all capabilities dropped, no privilege escalation, read-only root filesystem (writable `/tmp` is a small emptyDir).
 - Dedicated ServiceAccount with no token and no RBAC bindings; `enableServiceLinks: false`.
-- Secret volumes `defaultMode: 0400`; master password and API keys in a different mount from the database.
+- Secret volumes `defaultMode: 0400`; master password and policy file in a different mount from the database.
 - Resource requests and limits; topology spread for the replicas; PodDisruptionBudget (read-only).
 - NetworkPolicy: default-deny ingress, allow-list of client namespaces, no egress.
 - Pinned image tag/digest (never `:latest`).
@@ -261,7 +268,7 @@ kubectl -n mattstash get events --sort-by='.lastTimestamp'
 | Symptom | Likely cause |
 |---|---|
 | Pod never Ready, `/ready` returns 503 | Wrong master password, database missing/corrupt, or the `mattstash-db` Secret not mounted. The logs name the problem (never the password). |
-| Pod crash-loops at start | Config invalid: API key shorter than 32 characters (e.g. the `CHANGE-ME` placeholder), unreadable `KDBX_PASSWORD_FILE`, missing database. |
+| Pod crash-loops at start | Config invalid: no usable policy file (e.g. the `CHANGE-ME` placeholder, a missing `MATTSTASH_POLICY_FILE`, or a policy with no unexpired token), a removed setting such as `MATTSTASH_API_KEY` still set (the log names it; see `docs/upgrading-to-0.3.md`), unreadable `KDBX_PASSWORD_FILE`, missing database. |
 | `405` on POST/DELETE | Read-only mode is on (the default). Use the writable deployment if you really need writes. |
 | Writes fail in write mode ("cannot create lock file", permission denied) | The volume's directory is not writable by uid 1000; see section 4b. |
 | Clients time out | The client namespace lacks the `allowed-to-mattstash=true` label (or the pod label, if you use the stricter rule); or the ingress controller's namespace is not allowed. |

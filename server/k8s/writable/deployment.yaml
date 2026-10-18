@@ -12,8 +12,8 @@
 #     and pykeepass writes a temporary file next to the database before renaming it. fsGroup: 1000
 #     makes that so on most storage drivers; if yours ignores fsGroup, fix ownership with an
 #     initContainer or the storage class.
-#   * MATTSTASH_ALLOW_WRITES is "true". Anyone holding an API key that may write can change or delete
-#     secrets - prefer a scoped key policy (docs/configuration.md) and back up the volume.
+#   * MATTSTASH_ALLOW_WRITES is "true". Any principal with a write or delete grant can change or delete
+#     secrets - grant those sparingly (docs/configuration.md) and back up the volume.
 #
 # Create the database first with setup-job.yaml (the server never creates one).
 apiVersion: apps/v1
