@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException, status
 
+from .. import accesslog
 from ..config import config
 from ..dependencies import get_mattstash
 from ..models.responses import HealthResponse
@@ -20,7 +21,9 @@ async def health_check() -> HealthResponse:
 
 @router.get("/ready", response_model=HealthResponse, include_in_schema=False)
 def readiness_check() -> HealthResponse:
-    """Readiness: the database can be opened and read. 503 otherwise (no details are disclosed)."""
+    """Readiness: the database can be read and the access-log file is writable. 503 otherwise (no details)."""
+    if not accesslog.probe_sink():  # the audit file cannot be written (in both fail modes); no paths are disclosed
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Not ready")
     try:
         get_mattstash().list_versions("readiness-probe")
     except Exception as exc:

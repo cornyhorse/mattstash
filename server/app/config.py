@@ -66,6 +66,8 @@ class Config:
     # Structured access log: always on stdout (logger ``mattstash.access``); also this file when set. A request whose
     # line cannot be written to the file is refused (fail closed), so put it on a volume that has room.
     ACCESS_LOG_FILE: Optional[str] = (os.getenv("MATTSTASH_ACCESS_LOG_FILE") or "").strip() or None
+    # Opt-out of fail-closed: a failed file write is logged as an error and the request proceeds (/ready says 503).
+    ACCESS_LOG_FAIL_OPEN: bool = _get_bool_env("MATTSTASH_ACCESS_LOG_FAIL_OPEN")
     ACCESS_LOG_MAX_BYTES: int = _get_int_env(
         "MATTSTASH_ACCESS_LOG_MAX_BYTES", 10 * 1024 * 1024, minimum=1024, maximum=1024 * 1024 * 1024
     )

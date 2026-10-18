@@ -14,8 +14,11 @@ When it is written depends on the request:
 Either way a request produces exactly one line (:func:`write_line` marks it written). Sinks:
 
 * the ``mattstash.access`` logger, which :func:`app.logging_setup.configure_logging` points at stdout, always;
-* when ``MATTSTASH_ACCESS_LOG_FILE`` is set, a rotating file (mode 0600) that fails CLOSED: if a line cannot be
-  written the caller refuses the request. That is why the file is not written through ``logging`` handlers: they
+* when ``MATTSTASH_ACCESS_LOG_FILE`` is set, a rotating file (mode 0600) that fails CLOSED by default: if a line
+  cannot be written the caller refuses the request. With ``MATTSTASH_ACCESS_LOG_FAIL_OPEN=true`` a failed file write is
+  logged as an error instead, the stdout line (marked ``error: access-log-write-failed``) is still emitted and the
+  request proceeds. Either way the sink's health is tracked (:func:`sink_healthy`) and ``/ready`` answers 503 while
+  it is unhealthy. That is why the file is not written through ``logging`` handlers: they
   swallow write errors (``Handler.handleError``), and here an error must reach the middleware.
 
 Nothing secret is ever passed in: names, decisions and token ids only.
@@ -109,14 +112,21 @@ class FileSink:
 
 
 _sink: Optional[FileSink] = None
+#: False after a failed write or open, until a write succeeds. ``/ready`` reports it (both fail modes).
+_sink_ok = True
 
 
 def open_file_sink() -> None:
     """Open the configured file (startup: a bad path stops the server instead of failing every request)."""
-    global _sink
+    global _sink, _sink_ok
     close_file_sink()
+    _sink_ok = True
     if config.ACCESS_LOG_FILE:
-        _sink = FileSink(config.ACCESS_LOG_FILE, config.ACCESS_LOG_MAX_BYTES, config.ACCESS_LOG_BACKUPS)
+        try:
+            _sink = FileSink(config.ACCESS_LOG_FILE, config.ACCESS_LOG_MAX_BYTES, config.ACCESS_LOG_BACKUPS)
+        except Exception:
+            _sink_ok = False
+            raise
 
 
 def close_file_sink() -> None:
@@ -126,25 +136,58 @@ def close_file_sink() -> None:
         sink.close()
 
 
+def sink_healthy() -> bool:
+    """False while the last attempt to write the access-log file failed (and none has succeeded since)."""
+    return _sink_ok
+
+
+def probe_sink() -> bool:
+    """Is the file sink usable? Healthy sinks answer from the last write. An unhealthy one is tried again with a small
+    marker line, so a pod taken out of rotation (no traffic, so no writes) can recover. Never raises."""
+    global _sink_ok
+    sink = _sink
+    if sink is None or _sink_ok:
+        return True
+    try:
+        sink.write(format_record({"ts": now_iso(), "event": "access-log-probe"}))
+    except Exception as exc:
+        logger.error("Access log write failed: %s", type(exc).__name__)
+        return False
+    _sink_ok = True
+    return True
+
+
 def emit(fields: Mapping[str, object]) -> None:
     """Write one line to the file (if any), then stdout. Raises if the file write fails (nothing reaches stdout)."""
+    global _sink_ok
     line = format_record(fields)
     sink = _sink
     if sink is not None:
-        sink.write(line)
+        try:
+            sink.write(line)
+        except Exception:
+            _sink_ok = False
+            raise
+        _sink_ok = True
     access_logger.info(line)
 
 
 def emit_failed(fields: Mapping[str, object]) -> None:
-    """Stdout only: the file refused the line, so the request was answered 503 instead of what the route decided."""
-    access_logger.info(format_record({**fields, "status": 503, "error": "access-log-write-failed"}))
+    """Stdout only: the file refused the line. Failing closed, the request was answered 503 instead of what the route
+    decided (so the line says 503); failing open, it proceeds and the line keeps its own status."""
+    extra: dict[str, object] = {"error": "access-log-write-failed"}
+    if not config.ACCESS_LOG_FAIL_OPEN:
+        extra["status"] = 503
+    access_logger.info(format_record({**fields, **extra}))
 
 
 def write_line(scope: MutableMapping[str, Any], code: Optional[int] = None, error: Optional[str] = None) -> bool:
     """Write this request's one line (``code`` and ``error`` become ``status`` and ``error`` when given).
 
-    False if the file sink refused it; the line then goes to stdout alone, marked ``status: 503``. The request counts
-    as written either way, so nothing writes a second line for it.
+    False if the file sink refused it and the log fails closed (the caller refuses the request); the line then goes to
+    stdout alone, marked ``status: 503``. With ``MATTSTASH_ACCESS_LOG_FAIL_OPEN`` the same failure is logged as an
+    error, the stdout line is marked ``error: access-log-write-failed`` and this returns True. The request counts as
+    written either way, so nothing writes a second line for it.
     """
     scope.setdefault("state", {})["access_written"] = True
     fields: dict[str, object] = {"ts": now_iso(), **access_state(scope), "client": client_ip(scope)}
@@ -157,7 +200,7 @@ def write_line(scope: MutableMapping[str, Any], code: Optional[int] = None, erro
     except Exception as exc:
         logger.error("Access log write failed: %s", type(exc).__name__)
         emit_failed(fields)
-        return False
+        return config.ACCESS_LOG_FAIL_OPEN
     return True
 
 
