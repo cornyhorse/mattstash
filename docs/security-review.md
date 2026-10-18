@@ -2,7 +2,7 @@
 
 Review date: 2026-10-07 · Reviewed version: 0.1.19 (`a4751d4`) · Branch: `claude/security-hardening`
 
-**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · three independent reviews acted on ✅ (4e, 4h, 4i) · 100% line coverage ✅ · principals, grants and access log (H-3 follow-up, 4k): design ✅, library ✅, CLI and server not yet on this branch
+**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · three independent reviews acted on ✅ (4e, 4h, 4i) · 100% line coverage ✅ · principals, grants and access log (H-3 follow-up, 4k): design ✅, library ✅, CLI ✅, server ✅; legacy server keys removed in 0.3 (decision 4 in 4k)
 
 Target use cases: (1) CLI on machines you log into, (2) API service in a docker-compose stack,
 (3) secrets service inside a k8s cluster, plus other library/CLI uses.
@@ -62,15 +62,15 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
 ### H-3 No authorisation model; no key identity in logs — Read (+ confirmed by behaviour)
 > **Extended, 2026-10-18:** the v1 key policy below is superseded by principals, default-deny grants and a structured
 > access log (section 4k; [design](design/principals-and-grants.md)). The `[x]` items record the v1 work and are kept as
-> history. The v1 file still loads (deprecated) and converts with `mattstash admin migrate-keys`.
+> history. The server no longer loads the v1 file (removed in 0.3); `mattstash admin migrate-keys` converts it.
 
 - **Evidence:** `get_api_keys()` returns a flat set; any valid key can read/write/delete everything and call
   `/admin/*`. Logs contain only client IP, so actions cannot be attributed.
 - **Plan (Q2):**
-  - [x] Key policy file (`MATTSTASH_API_KEYS_FILE`, JSON): `{id, key | key_sha256, ops: [read,write,delete,admin], prefixes: [...]}`.
+  - [x] Key policy file (`MATTSTASH_API_KEYS_FILE`, JSON): `{id, key | key_sha256, ops: [read,write,delete,admin], prefixes: [...]}`. *(Removed in 0.3, decision 4.)*
   - [x] Enforce on every endpoint: name/prefix check, list results filtered by prefix, `/versions`, `/db-url`, `/admin/*`.
   - [x] Log `key_id` (never the key) on every request and every unmasked/secret-returning call.
-  - [x] Legacy plain-text key lines keep working per Q2 decision.
+  - [x] ~~Legacy plain-text key lines keep working per Q2 decision.~~ *(Superseded: removed in 0.3, decision 4.)*
   - [x] Tests: scope matrix (op × prefix), list filtering, legacy-key behaviour, hashed-key verification, constant-time compare.
 
 ### H-4 Silent data-loss and "wrong thing" paths — Verified
@@ -406,22 +406,22 @@ credentials stay in GitHub; agents never hold them.
 ## 4k. Principals, grants and the access log (H-3 follow-up)
 
 Design: [design/principals-and-grants.md](design/principals-and-grants.md). It replaces the v1 scoped key policy of H-3
-with named principals and tokens, default-deny grants, and a structured access log. Every existing key keeps working
-(section 7 of the design), deprecated.
+with named principals and tokens, default-deny grants, and a structured access log. The 0.2 server keys were kept as
+deprecated principals in round 1 and **removed in 0.3** by the decisions below (design section 7;
+[upgrading to 0.3](upgrading-to-0.3.md)).
 
 | ID | Finding | Status |
 |----|---------|--------|
-| H-3a | Keys identify no one; any key can be an admin; `list` and `read` are one permission; a raw prefix `firefly` also matches `firefly-mcp`; no expiry or rotation | Design ✅. Library ✅ (`mattstash.authz`: principals, `mst_` tokens with salted HMAC, grants with `*`/prefix patterns, default-deny evaluation, policy store with lockout protection, tests). CLI (`mattstash admin`) and server routes: not yet on this branch. |
-| H-3b | Audit is a free-text log line, so "what did an agent read?" cannot be answered | Design ✅. Library ✅ (escaping record formatter; reader across rotated files). Server writes, rotation, the admin log API and `admin log`: not yet on this branch. |
+| H-3a | Keys identify no one; any key can be an admin; `list` and `read` are one permission; a raw prefix `firefly` also matches `firefly-mcp`; no expiry or rotation | Design ✅. Library ✅ (`mattstash.authz`: principals, `mst_` tokens with salted HMAC, grants with `*`/prefix patterns, default-deny evaluation, policy store with lockout protection, tests). CLI (`mattstash admin`) ✅ and server routes ✅. |
+| H-3b | Audit is a free-text log line, so "what did an agent read?" cannot be answered | Design ✅. Library ✅ (escaping record formatter; reader across rotated files). Server writes, rotation, the admin log API and `admin log` ✅. |
 | H-3c | Admin rights could be given to any key | Design ✅: admin is a `human-device` property, checked at load and at each admin request. Library ✅. |
-| H-3d | No migration path off the v1 key policy | Library ✅ (`migrate_v1` keeps each digest as `sha256:<hex>`). `migrate-keys` CLI: not yet on this branch. |
+| H-3d | No migration path off the v1 key policy | Library ✅ (`migrate_v1` keeps each digest as `sha256:<hex>`). `migrate-keys` CLI ✅ (non-admin principals, `--kind`); `token import` ✅ for keys that must keep working. |
 
-Known gaps to close before this is marked done:
+Known gaps, and how the round-2 decisions below closed them:
 
-- The design (section 7) says a migrated v1 key becomes a `legacy` principal. The library creates a `human-device`
-  (admin keys) or `agent` principal instead, so migrated callers do not appear as `"kind":"legacy"` in the access
-  log. The docs describe the library's behaviour; the design text needs to be reconciled.
-- Local-mode CLI edits always apply the lockout rule, because the CLI cannot see the server's legacy admin keys.
+- The design (section 7) said a migrated v1 key becomes a `legacy` principal. Closed: legacy principals no longer exist.
+  `migrate-keys` creates non-admin principals of the kind chosen with `--kind` (default `agent`).
+- Local-mode CLI edits always apply the lockout rule. Still true, and now the only rule: the CLI sees no legacy keys.
 
 Review round 1 of the library and CLI (fixed, each with a test):
 
@@ -455,14 +455,46 @@ Review round 2 of the server (fixed, each with a test; `server/tests/test_review
   `legacy-*` names that do not exist are `404`; empty query values mean "not given"; lock timeouts are told apart by
   type; the log file is closed if startup fails; tag lookup uses `MattStash.tags_of` instead of listing the vault.
 
-Decisions still open (design section 11): runners as admins; tag-based writes; 
-the legacy removal timeline; whether `*` grants for agents are forbidden; whether list-only entries show username and
-URL.
+### Decisions of the second decision round (2026-10-18)
 
-Decided in round 2: fail-closed logging stays the default, with the opt-out `MATTSTASH_ACCESS_LOG_FAIL_OPEN=true` (a failed
-file write is logged as an error, the stdout line is marked `access-log-write-failed`, the request proceeds); `/ready`
-and `/api/ready` answer 503 with a fixed body while the file cannot be written, in both modes. Names with `/` over HTTP:
-opt-in (Q9 above).
+These answer the questions of design section 11, which holds the full text.
+
+1. **Runners are never admins.** Only `human-device` principals may be admins (checked at load and per request). Kept.
+2. **Tag grants stay `list` and `read`.** Kept. Tag-based write grants are future work (design 4.3).
+3. **Access log stays fail-closed by default.** Opt-out `MATTSTASH_ACCESS_LOG_FAIL_OPEN=true`: a failed write is logged
+   as an error, the stdout line is marked `access-log-write-failed`, the request proceeds. `/ready` and `/api/ready`
+   answer `503` with a fixed body while the file sink is failing (the last write or open failed, with no success since),
+   in both modes.
+4. **Legacy server keys are removed, not deprecated.** `MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE` (plain or v1 JSON)
+   and `MATTSTASH_REQUIRE_SCOPED_KEYS` are not credentials any more. If one is set in the server's environment, startup
+   fails with a secret-free message that points to `docs/upgrading-to-0.3.md`. `MATTSTASH_POLICY_FILE` is required.
+   Removed with them: the `legacy` principal kind, the `Deprecation` header, the legacy-scoped admin rules,
+   `legacy_admin_available`, `server/app/keytool.py`. The library's `legacy.py` keeps only v1 parsing and `migrate_v1`.
+   `mattstash admin token import` (stdin only, min length 32, `--min-length` down to 16, no `mst_` keys, no duplicate
+   digests) and `POST /api/v1/admin/principals/{name}/tokens/import` keep existing keys working as `sha256:` tokens.
+   The client side is unchanged.
+5. **`*` is for `human-device` only.** An `agent` or `runner` with a `*` grant is a validation error in the library
+   (policy load and editor), so the admin API answers `400` and the CLI refuses before sending. A raw prefix such as
+   `a*` is still allowed.
+6. **List-only entries** keep their behaviour: name and version, value masked, other fields `null`. For a simple
+   key:value secret the `password` field is the value and is masked unless the principal has `read`. Pinned by a test.
+7. **`/` in names is opt-in.** Default: a name with `/` is refused when created or written (library, CLI, server), with
+   a hint to use `.`. Reading, listing and deleting existing entries keeps working locally. `MATTSTASH_ALLOW_SLASH_NAMES=true`
+   opts in, and then the server addresses such names with the `{name:path}` routes (see Q9).
+8. **`migrate-keys` creates non-admin principals**, with `--kind` (default `agent`). A v1 key without prefixes needs `*`,
+   so the command fails for it unless `--kind human-device` is given. It prints that reloading now needs an admin.
+9. **Admin-token expiry warning.** The one-hour lockout horizon stays. When every usable admin token expires within 14
+   days, `admin_expiry_warning(policy, now, horizon=14 days)` is logged by the server at startup and after each policy
+   load, and the CLI prints it on stderr (local mode after admin commands; `admin principal list` in both modes).
+10. **Check, then save.** An admin change is checked by building the complete auth state from the edited policy before
+    it is saved. A failure is answered `409` (`The change would leave a policy the server cannot load: ...`) with nothing
+    saved. A reload failure after a save keeps the round-1 handling (`409` for access-reducing changes, otherwise `2xx`
+    with `warning` and `X-Policy-Active: false`).
+
+**Future work:** tag-based write grants (design 4.3). Anyone who can write an entry can change its tags, so a write grant
+by tag needs a rule for who may change tags first.
+
+Names with `/` over HTTP: opt-in (decision 7, Q9 above).
 
 ---
 
@@ -484,7 +516,7 @@ session scratchpad and are re-created as proper regression tests rather than com
 | # | Question | Decision |
 |---|----------|----------|
 | Q1 | Server write policy | **Read-only by default.** Writes need `MATTSTASH_ALLOW_WRITES=true`; when off, POST/DELETE return `405` with a clear message (never a 500). Shipped examples are read-only; a separate writable example (PVC, `replicas: 1`, `Recreate`) is provided. |
-| Q2 | API-key authorisation format | **Scoped JSON policy, legacy keys still work.** Plain-text key lines and `MATTSTASH_API_KEY` keep full access and log a startup warning; `MATTSTASH_REQUIRE_SCOPED_KEYS=true` makes legacy keys a startup error. |
+| Q2 | API-key authorisation format | **Scoped JSON policy, legacy keys still work.** *(Superseded: the legacy keys were removed in 0.3; see decision 4 above. The policy file is now required.)* Plain-text key lines and `MATTSTASH_API_KEY` kept full access and logged a startup warning. |
 | Q3 | Who may auto-create a DB | **Only explicit `mattstash setup`** (strict). No other command, the Python API (`MattStash(...)`) or the server ever creates a database or sidecar. |
 | Q4 | Master-password posture | **Sidecar becomes opt-in.** `setup` prompts for a password (confirm) by default; `--sidecar` generates one into the sidecar (old behaviour); `--password-file`, `--password-stdin`, `--generate` (print once) also available. Existing sidecars keep working as the *last* resort in the precedence chain, so current installs are not locked out. |
 | Q5 | Python API on DB errors | **Raise typed exceptions** (`DatabaseNotFoundError`, `DatabaseAccessError`); `get()` returns `None` only for a genuinely missing secret. Breaking → release as **0.2.0** (use `[minor]` in the merge commit; the release workflow bumps by commit-message tag). |

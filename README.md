@@ -145,13 +145,19 @@ The API server is distributed as a Docker image — it is **not** a CLI subcomma
 docker run -d \
   -e MATTSTASH_DB_PATH=/data/mattstash.kdbx \
   -e KDBX_PASSWORD=<password> \
-  -e MATTSTASH_API_KEY=<api-key> \
+  -e MATTSTASH_POLICY_FILE=/policy/policy.json \
   -v /path/to/data:/data:ro \
+  -v /path/to/policy:/policy:ro \
   -p 8000:8000 \
   ghcr.io/cornyhorse/mattstash:latest
 ```
 
-The server exposes a health check at `/api/health` and credential endpoints under `/api/v1/`.
+The server needs a **policy file** (`MATTSTASH_POLICY_FILE`) that holds at least one principal with a usable token; it
+refuses to start without one. Create it as shown under [Access control](#access-control). The server exposes a health
+check at `/api/health`, a readiness check at `/api/ready` and credential endpoints under `/api/v1/`.
+
+> The server's `MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE` and `MATTSTASH_REQUIRE_SCOPED_KEYS` were removed in 0.3
+> and make startup fail. See [upgrading to 0.3](docs/upgrading-to-0.3.md).
 
 > **Tip:** Run `mattstash server` for a quick-reference of these instructions.
 
@@ -181,14 +187,14 @@ a compose or cluster network. See the [CLI reference](docs/cli-reference.md#mode
 ### Access control
 
 Each client is a **principal** (a Mac, an AI agent or a runner) that presents one or more **tokens**. Access is
-default-deny: a principal may do only what a **grant** allows, on a name pattern (`firefly.*`, or `*` for every name)
-or a KeePass entry tag, with the actions `list`, `read`, `write` and `delete`. Principals and grants live in a policy
+default-deny: a principal may do only what a **grant** allows, on a name pattern (`firefly.*`, or `firefly` for one
+name), or a KeePass entry tag, with the actions `list`, `read`, `write` and `delete`. Only a `human-device` principal
+may hold the `*` grant (every name); agents and runners may not. Principals and grants live in the policy
 file (`MATTSTASH_POLICY_FILE`), separate from the vaults, and are managed with `mattstash admin`. Every request, including
 every denial, is written to an **access log** (one JSON line per request, never a secret or a token).
 
-Existing `MATTSTASH_API_KEY` and key files keep working as principals `legacy-*`, but they are deprecated: the server
-warns at startup, marks responses with `Deprecation: true` and logs `"kind":"legacy"`, so you can find every caller
-before you remove the key. The migration steps are in [section 12 of the design](docs/design/principals-and-grants.md#12-migration-guide).
+Upgrading from 0.2 (where `MATTSTASH_API_KEY` and key files were the server's credentials)? Those server settings are
+removed, and the zero-downtime steps for moving each client to a token are in [upgrading to 0.3](docs/upgrading-to-0.3.md).
 
 Quickstart (local mode, on the server's policy file):
 

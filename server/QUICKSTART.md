@@ -29,7 +29,7 @@ docker compose up -d --build
 
 # 4. Test
 curl http://127.0.0.1:8000/health    # liveness: process is up
-curl http://127.0.0.1:8000/ready     # readiness: database opened (503 if not)
+curl http://127.0.0.1:8000/ready     # readiness: database opened, access log writable (503 if not)
 ```
 
 `./start.sh` does the policy part of step 1 (an `admin` principal and its token) and steps 3-4 for you, and tells you
@@ -205,12 +205,12 @@ curl http://127.0.0.1:8000/ready
 ```
 
 `/health` fine but `/ready` returns 503: the database could not be opened (wrong master password, missing file,
-unreadable password file). The logs say which.
+unreadable password file), or the access-log file (`MATTSTASH_ACCESS_LOG_FILE`) cannot be written. The logs say which.
 
 ### Container exits or restarts
-- No `MATTSTASH_POLICY_FILE` (or a policy with no unexpired token), `MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE`
-  or `MATTSTASH_REQUIRE_SCOPED_KEYS` still set in the environment (removed in 0.3), or no master password makes the
-  server refuse to start. The log names the problem, never a value.
+- No `MATTSTASH_POLICY_FILE` (or a policy with no unexpired token), or one of the removed 0.2 settings
+  (`MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE`, `MATTSTASH_REQUIRE_SCOPED_KEYS`) still set in the server's
+  environment, or no master password, makes the server refuse to start. The log names the problem, never a value.
 - Files in `data/` and `secrets/` must be readable by the container user (`MATTSTASH_UID`/`MATTSTASH_GID`).
 
 ### Authentication errors

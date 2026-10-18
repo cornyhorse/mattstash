@@ -12,8 +12,8 @@ containers or pods query it for credentials, authenticating with a token that be
 
 - **Read-only by default.** The database is mounted read-only and writes are off; `POST`/`DELETE` answer `405`.
   Writing is an explicit opt-in (`MATTSTASH_ALLOW_WRITES=true`) with its own deployment files.
-- **API-key authentication** on every credential endpoint. Keys must be at least 32 characters. Per-key scopes are
-  available (see [docs/configuration.md](docs/configuration.md)).
+- **Token authentication** on every credential endpoint. Each client presents a token of its own principal, and a
+  grant decides what it may touch (see [Principals, tokens and grants](#principals-tokens-and-grants)).
 - **Optional in-app TLS**, and TLS-terminating proxy/ingress examples. Plain HTTP is the default listener; see
   [TLS](#tls).
 - **Container-native**: Docker Compose and Kubernetes examples, liveness and readiness endpoints, non-root user,
@@ -126,7 +126,8 @@ GET /ready         GET /api/ready
 ```
 
 No authentication. `/health` is **liveness**: it answers `200` as long as the process runs and never touches the
-database. `/ready` is **readiness**: `200` only if the database was opened successfully, `503` otherwise. Use
+database. `/ready` is **readiness**: `200` only if the database was opened successfully and the access-log file (when
+`MATTSTASH_ACCESS_LOG_FILE` is set) can be written, `503` otherwise (with a fixed body that names no path). Use
 `/health` for Docker/Compose health checks and Kubernetes liveness, `/ready` for Kubernetes readiness. Both paths of
 each pair behave identically (`/api/...` exists so a single ingress prefix can expose it).
 
@@ -542,8 +543,10 @@ secrets:
 - Check file permissions on the mounted data and secrets: the container user (uid/gid `1000` by default) must be able
   to read them. In write mode it must be able to write the data **directory**.
 
-**`/ready` returns 503:** the database could not be opened: wrong master password, missing or corrupt file, or an
-unreadable password file. The logs say which; they never contain the password.
+**`/ready` returns 503:** the database could not be opened (wrong master password, missing or corrupt file, or an
+unreadable password file), or the access-log file cannot be written (full disk, permissions; see
+`MATTSTASH_ACCESS_LOG_FAIL_OPEN` in [docs/configuration.md](docs/configuration.md)). The logs say which; they never
+contain the password.
 
 **`405` on POST/DELETE:** the server is in read-only mode (the default). See
 [Read-only and writable mode](#read-only-and-writable-mode).

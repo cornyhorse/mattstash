@@ -67,8 +67,8 @@ from stdin is one line typed without echo; use a pipe or `--value-file` for a mu
 | `KDBX_PASSWORD` | Database password |
 | `KDBX_PASSWORD_FILE` | File holding the database password (Docker/Kubernetes secrets) |
 | `MATTSTASH_SERVER_URL` | Server URL (enables server mode) |
-| `MATTSTASH_API_KEY` | Server API key |
-| `MATTSTASH_API_KEY_FILE` | File holding the server API key (or a principal's token) |
+| `MATTSTASH_API_KEY` | This client's token (the server's key, for `--server-url`) |
+| `MATTSTASH_API_KEY_FILE` | File holding this client's token |
 | `MATTSTASH_POLICY_FILE` | `admin`, local mode: the policy file to edit (see [`admin`](#admin---principals-tokens-grants-and-the-access-log)) |
 | `MATTSTASH_ACCESS_LOG_FILE` | `admin log`, local mode: the access log file to read |
 | `MATTSTASH_ALLOW_SLASH_NAMES` | `1`/`true`/`yes`: allow `/` in the names `put` writes (refused by default; use `.`) |
@@ -599,6 +599,7 @@ mattstash admin principal update NAME [--admin | --no-admin] [--description TEXT
 mattstash admin principal remove NAME [--yes]
 
 mattstash admin token issue PRINCIPAL [--expires WHEN] [--description TEXT] [--output-file PATH]
+mattstash admin token import PRINCIPAL [--expires WHEN] [--description TEXT] [--min-length N]   # key on stdin
 mattstash admin token list PRINCIPAL [--json]
 mattstash admin token revoke PRINCIPAL TOKEN_ID
 mattstash admin token rotate PRINCIPAL TOKEN_ID [--grace DURATION] [--expires WHEN] [--description TEXT] [--output-file PATH]
@@ -609,12 +610,12 @@ mattstash admin grant remove GRANT_ID
 
 mattstash admin check PRINCIPAL {list,read,write,delete} NAME [--tag TAG ...]
 mattstash admin log [--principal NAME] [--decision {allowed,denied}] [--since WHEN] [--limit N] [--json] [--log-file PATH]
-mattstash admin migrate-keys --from KEYS_JSON [--min-length N] [--policy-file PATH]
+mattstash admin migrate-keys --from KEYS_JSON [--kind {human-device,agent,runner}] [--min-length N] [--policy-file PATH]
 ```
 
 Principals are the named identities that present tokens (a Mac, an AI agent, a runner). A **token** is a longer API
 key, `mst_<id>_<secret>`. A **grant** says what a principal may do: `list`, `read`, `write`, `delete` on a name
-pattern (`firefly.*`, or `*` for every name) or on a KeePass entry tag. Access is denied unless a grant allows it. The
+pattern (`firefly.*`, or `*` for every name, which only a `human-device` principal may hold) or on a KeePass entry tag. Access is denied unless a grant allows it. The
 design is in [design/principals-and-grants.md](design/principals-and-grants.md); the server side is in
 [configuration.md](configuration.md#server-access-control) and [server/docs/configuration.md](../server/docs/configuration.md#principals-tokens-and-grants).
 
@@ -635,14 +636,14 @@ subcommand.
 
 | Option | Meaning |
 |--------|---------|
-| `--kind` | `human-device` (a Mac; the only kind that may be an admin), `agent` (an AI agent or MCP server) or `runner` (a CI or Ansible host) |
+| `--kind` | `human-device` (a Mac; the only kind that may be an admin, and the only kind that may hold `*`), `agent` (an AI agent or MCP server) or `runner` (a CI or Ansible host). `migrate-keys`: the kind of the new principals, default `agent` |
 | `--admin` | The principal may change principals, tokens and grants, and read the access log. Only `human-device` may be an admin; the grants still decide what it can read. |
 | `--no-admin` | `principal update`: drop the admin flag (refused if it would leave no admin with a valid token). |
 | `--yes` | `principal remove` without asking. Without it, removal needs an interactive terminal. |
 | `--expires WHEN` | `90d`, `24h`, `2w`, a date (`2027-01-01`) or a full RFC 3339 time. Tokens and grants. |
 | `--output-file PATH` | Write the token to this new file (mode 0600) instead of stdout. An existing file is never overwritten. |
 | `--grace DURATION` | `token rotate`: keep the old token valid this long. Default: revoke it now. |
-| `--key PATTERN` | `firefly.*` (prefix), `firefly` (exactly this name) or `*` (every name). A `*` on an agent prints a warning. |
+| `--key PATTERN` | `firefly.*` (prefix), `firefly` (exactly this name) or `*` (every name). `*` is only for a `human-device` principal: for an agent or runner it is refused (exit 1, nothing sent). |
 | `--tag TAG` | A KeePass entry tag. Tag grants allow `list` and `read` only. |
 | `--actions LIST` | Comma-separated subset of `list,read,write,delete`. Default `list,read`. |
 | `--principal NAME` | `grant list`, `log`: only this principal. |
@@ -650,21 +651,37 @@ subcommand.
 | `--limit N` | `log`: at most `N` records, 1 to 1000, newest last. Default 100. |
 | `--decision` | `log`: `allowed` or `denied`. |
 | `--json` | Print JSON. For `log`, one JSON record per line. |
+| `--expires WHEN` (with `token import`) | As for `token issue`. |
+| `--min-length N` | `token import`, `migrate-keys`: shortest existing key to accept. Default 32; never below 16. |
 | `--from KEYS_JSON` | `migrate-keys`: the v1 JSON key policy to convert. |
-| `--min-length N` | `migrate-keys`: shortest key to accept. Default 32, the server's minimum. |
 
 **Output.** `token issue` and `token rotate` print only the token on stdout, once, and nothing else on stdout. The token
 id, its expiry and any old-token notice go to stderr. The token is never stored or shown again, so store it at once.
-`grant add` prints the grant id. `check` prints `allowed (grant g_…)` or `denied (<reason>)`. Denial reasons include
-`no-grant`, `not-admin`, `unknown-token`, `bad-token`, `expired-token`, `disabled` and `no-token`.
+`token import` prints the new token's id (never the key). `grant add` prints the grant id. `check` prints
+`allowed (grant g_…)` or `denied (<reason>)`. Denial reasons include `no-grant`, `not-admin`, `unknown-token`,
+`bad-token`, `expired-token`, `disabled` and `no-token`.
+
+**Early warning.** When every usable admin token expires within 14 days, the CLI prints a warning on stderr after admin
+commands in local mode, and after `admin principal list` in both modes. Issue a new admin token before then.
 
 **Exit codes:** `0` success (for `check`, allowed), `1` other failures and a denied `check`, `2` not found (principal,
 token or grant).
 
 **Changes that are refused** (exit 1, nothing changed) include removing, disabling or expiring the last admin with a
-valid token, and giving `--admin` to anything but a `human-device` principal. In local mode the lockout rule always
-applies, because the CLI cannot see the server's legacy keys: while a legacy admin key is the only admin, make the
-change in server mode.
+valid token, giving `--admin` to anything but a `human-device` principal, and a `*` grant for an `agent` or `runner`.
+The server also refuses (`409`, nothing saved) any change that would leave a policy it cannot load.
+
+**Importing an existing key.** `token import` stores a key a client already has (for example an old `MATTSTASH_API_KEY`)
+as a token of the principal, so the client keeps working. The key is read from **standard input only**, never from an
+argument: pipe it, or type it at the prompt without echo. It must be printable ASCII with at least 32 characters (`--min-length`
+lowers that, to 16 at least), and a key in `mst_` format is refused (issue or rotate those instead). It is stored as an
+unsalted `sha256:<hex>` hash and a key that another token already holds is refused. The server does the same through
+`POST /api/v1/admin/principals/{name}/tokens/import`. Then rotate the client to an `mst_` token and revoke the imported one
+(see [upgrading to 0.3](upgrading-to-0.3.md#moving-over-without-downtime)).
+
+```bash
+mattstash admin --policy-file policy.json token import billing --description "billing's old key" < /path/to/billing.key
+```
 
 **Client mode is unchanged.** A principal's token is a longer API key: `--api-key-file` or `MATTSTASH_API_KEY_FILE`
 works for `get`, `list`, `keys`, `put`, `delete`, `versions`, `db-url`, `env` and `exec` exactly as before. Under a
@@ -709,10 +726,15 @@ record holds the time, principal, kind, token id, action, route, key name or fil
 decision, allowing grant or denial reason, client address and HTTP status. It never holds a token, a secret value,
 a username, a URL or a note.
 
-**Converting a v1 key policy:** `migrate-keys` keeps each old key working (stored as `sha256:<hex>`) and makes each key
-a principal named after its `id`: `human-device` if the key had `admin`, `agent` otherwise. Those principals are not
-of kind `legacy`, so watch their calls by principal name. Issue new tokens later to move callers to the salted format.
-See the migration guide in [the design](design/principals-and-grants.md#12-migration-guide).
+**Converting a v1 key policy:** `migrate-keys` keeps each old key working (stored as an imported `sha256:<hex>` token)
+and makes each key a principal named after its `id`. The new principals are never admins (the v1 `admin` op only
+reloaded the vault; reloading now needs an admin, and the server polls the vault every 5 seconds). `--kind` sets their
+kind, default `agent`. A key with no prefixes can read every name and so needs the `*` grant, which only
+`human-device` may hold: such a key makes the command fail, naming the key, and you re-run with
+`--kind human-device` or narrow the key in the file. Nothing is written when it fails. It edits a local policy file only.
+Promote a principal yourself if you mean to: `mattstash admin principal update NAME --admin` (a `human-device` only).
+Watch the migrated callers by principal name, and issue new tokens later to move them to the salted scheme.
+See [upgrading to 0.3](upgrading-to-0.3.md#migrating-a-v1-json-key-policy).
 
 ## Exit Codes
 

@@ -214,8 +214,8 @@ curl -s -H "X-API-Key: $(cat myapp.token)" http://localhost:8000/api/v1/credenti
 ```
 
 Probes: **liveness `/health`** (so a database problem can never get healthy processes killed), **readiness `/ready`**
-(a pod whose database cannot be opened is kept out of the Service), and a **startup probe on `/ready`** that allows up
-to a minute for the database to open. Docker/compose health checks use `/health`.
+(a pod whose database cannot be opened, or whose access-log file cannot be written, is kept out of the Service), and a
+**startup probe on `/ready`** that allows up to a minute for the database to open. Docker/compose health checks use `/health`.
 
 ## Using the API from another pod
 
@@ -267,7 +267,7 @@ kubectl -n mattstash get events --sort-by='.lastTimestamp'
 
 | Symptom | Likely cause |
 |---|---|
-| Pod never Ready, `/ready` returns 503 | Wrong master password, database missing/corrupt, or the `mattstash-db` Secret not mounted. The logs name the problem (never the password). |
+| Pod never Ready, `/ready` returns 503 | Wrong master password, database missing/corrupt, the `mattstash-db` Secret not mounted, or the access-log file (`MATTSTASH_ACCESS_LOG_FILE`) not writable. The logs name the problem (never the password). |
 | Pod crash-loops at start | Config invalid: no usable policy file (e.g. the `CHANGE-ME` placeholder, a missing `MATTSTASH_POLICY_FILE`, or a policy with no unexpired token), a removed setting such as `MATTSTASH_API_KEY` still set (the log names it; see `docs/upgrading-to-0.3.md`), unreadable `KDBX_PASSWORD_FILE`, missing database. |
 | `405` on POST/DELETE | Read-only mode is on (the default). Use the writable deployment if you really need writes. |
 | Writes fail in write mode ("cannot create lock file", permission denied) | The volume's directory is not writable by uid 1000; see section 4b. |

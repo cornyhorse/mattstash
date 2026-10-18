@@ -3,6 +3,9 @@
 0.2 is a security and correctness release (see [security-review.md](security-review.md) for the findings behind
 each change). Several behaviours changed on purpose; this page lists what to do about each.
 
+> **Later:** 0.3 removed the server's `MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE` and `MATTSTASH_REQUIRE_SCOPED_KEYS`.
+> If you are moving from 0.2 to 0.3, follow [upgrading to 0.3](upgrading-to-0.3.md).
+
 For the API server see also [server/docs/configuration.md](../server/docs/configuration.md#upgrading-from-01x).
 
 ## Checklist
