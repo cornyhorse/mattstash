@@ -458,6 +458,30 @@ adds `ssh_role`, with a new action `sign`. `POST /api/v1/ssh/sign` with a public
 issues a short-lived certificate whose key ID is `principal/token_id`, so the SSH server's logs tie back to the
 access log. Role definitions (allowed Unix principals, TTL, extensions) live in the policy file next to grants.
 
+### 10.5 A Postgres storage backend (assessed 2026-10-18, deferred)
+Replacing the `.kdbx` with Postgres and encrypted columns was assessed and **deferred**. Encrypted columns protect
+against someone holding the database or a backup without the key. They do not protect against a compromised server,
+which must hold the key to answer reads, so they give nothing over today's master password. Tier separation needs a
+key per tier either way, and separate vault files already provide that (§10.1). In exchange, Postgres would cost:
+
+- confidentiality of names, usernames, URLs and tags (grants match on names, so they would be plaintext; a `.kdbx`
+  encrypts everything);
+- KeePassXC and the single-file local mode;
+- recovery from one file plus a password;
+- a dependency-free bootstrap (the secrets server would need database credentials that other apps get from it).
+
+It would gain transactions, concurrent writers, replicas for availability, a real versions table and an append-only
+audit table. None of those is binding at the current scale. If it is needed later:
+
+- put a storage interface in the library and keep KeePass as a backend;
+- encrypt in the application with an AEAD (AES-256-GCM or XChaCha20-Poly1305, via `cryptography`), never `pgcrypto`
+  (its keys travel in SQL);
+- bind each ciphertext to vault, name and version as associated data;
+- wrap each secret's data key with a per-tier key held outside the database;
+- use a dedicated cluster, and keep a KeePass export for disaster recovery.
+
+The authorization layer (principals, grants, access log) is storage-independent and does not change.
+
 ## 11. Decisions
 
 Decided on 2026-10-18 (the second decision round). The questions are kept in the history of the PR; each decision is
