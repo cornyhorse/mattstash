@@ -318,8 +318,22 @@ def test_parse_policy_range_and_size_errors() -> None:
 def test_v1_json_with_a_huge_number_or_deep_nesting_is_a_policy_error() -> None:
     with pytest.raises(PolicyError, match="too large"):
         migrate_v1('{"keys":[{"id":"a","key":"' + KEY + '","ops":["read"],"x":' + "9" * 4400 + "}]}", Policy(), 16, NOW)
-    with pytest.raises(PolicyError, match="nested too deeply"):
+    # Whether deep nesting surfaces as RecursionError or as a decode error depends on the Python version (3.14's
+    # decoder reports it as invalid JSON); either way it must be a PolicyError.
+    with pytest.raises(PolicyError):
         migrate_v1("[" * 100000, Policy(), 16, NOW)
+
+
+def _recursion_error(*args: object, **kwargs: object) -> object:
+    raise RecursionError
+
+
+def test_recursion_while_parsing_is_a_policy_error_on_every_python(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(json, "loads", _recursion_error)
+    with pytest.raises(PolicyError, match="API keys file is nested too deeply"):
+        migrate_v1('{"keys": []}', Policy(), 16, NOW)
+    with pytest.raises(PolicyError, match="policy file is nested too deeply"):
+        parse_policy('{"version": 2}')
 
 
 def test_revision_overflow_cannot_happen_through_edit(tmp_path: Path) -> None:
