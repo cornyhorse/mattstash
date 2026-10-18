@@ -48,7 +48,7 @@ from ...authz import (
     validate_tag,
 )
 from ...authz.models import utcnow
-from ...authz.store import MIN_IMPORT_KEY_LENGTH_FLOOR
+from ...authz.store import MIN_IMPORT_KEY_LENGTH, MIN_IMPORT_KEY_LENGTH_FLOOR
 from ...utils.exceptions import ServerError
 from ...utils.validation import api_key_problem
 from .. import exit_codes
@@ -204,7 +204,9 @@ class _Backend(_LogReader, Protocol):
     def token_issue(self, principal: str, expires: Optional[str], description: str) -> Data:
         """Issue a token; the result holds the plaintext."""
 
-    def token_import(self, principal: str, key: str, expires: Optional[str], description: str, min_length: int) -> Data:
+    def token_import(
+        self, principal: str, key: str, expires: Optional[str], description: str, min_length: Optional[int]
+    ) -> Data:
         """Store an existing plain key as a token; the result holds the id, never the key."""
 
     def token_revoke(self, principal: str, token_id: str) -> Data:
@@ -326,7 +328,7 @@ class _LocalBackend:
         return _principal_out(updated, _now())
 
     def principal_remove(self, name: str) -> Data:
-        with edit_policy(self.policy_file) as editor:
+        with edit_policy(self.policy_file, lenient=True) as editor:  # may repair a pre-0.3 agent '*' grant
             found = self._find(editor.policy, name)
             removed = editor.remove_principal(name)
         return {"detail": f"Principal removed: {found.name}", "grants_removed": removed}
@@ -343,12 +345,16 @@ class _LocalBackend:
             token, plaintext = editor.issue_token(principal, when, description)
         return {"token": plaintext, "id": token.id, "expires": _ts(token.expires)}
 
-    def token_import(self, principal: str, key: str, expires: Optional[str], description: str, min_length: int) -> Data:
+    def token_import(
+        self, principal: str, key: str, expires: Optional[str], description: str, min_length: Optional[int]
+    ) -> Data:
         now = _now()
         when = None if expires is None else parse_duration_or_time(expires, now)
         with edit_policy(self.policy_file, now=now) as editor:
             self._find(editor.policy, principal)
-            token = editor.import_token(principal, key, min_length, when, description)
+            token = editor.import_token(
+                principal, key, MIN_IMPORT_KEY_LENGTH if min_length is None else min_length, when, description
+            )
         return {"id": token.id, "expires": _ts(token.expires)}
 
     def token_revoke(self, principal: str, token_id: str) -> Data:
@@ -397,7 +403,7 @@ class _LocalBackend:
         return _grant_out(grant, now)
 
     def grant_remove(self, grant_id: str) -> Data:
-        with edit_policy(self.policy_file) as editor:
+        with edit_policy(self.policy_file, lenient=True) as editor:  # may repair a pre-0.3 agent '*' grant
             try:
                 editor.remove_grant(grant_id)
             except PolicyError:
@@ -448,7 +454,9 @@ class _ServerBackend:
     def token_issue(self, principal: str, expires: Optional[str], description: str) -> Data:
         return self.client.admin_token_issue(principal, expires, description)
 
-    def token_import(self, principal: str, key: str, expires: Optional[str], description: str, min_length: int) -> Data:
+    def token_import(
+        self, principal: str, key: str, expires: Optional[str], description: str, min_length: Optional[int]
+    ) -> Data:
         return self.client.admin_token_import(principal, key, expires, description, min_length)
 
     def token_revoke(self, principal: str, token_id: str) -> Data:
@@ -903,18 +911,31 @@ class AdminHandler(BaseHandler):
         return key
 
     def _op_token_import(self, backend: _Backend, args: argparse.Namespace) -> int:
+        if getattr(args, "key_on_command_line", None):
+            # The value is deliberately not repeated. It is already in the shell history and the process list.
+            raise AdminError(
+                "the key must be piped to standard input, not given as an argument. It was exposed on the command "
+                "line (shell history, process list): rotate it, then import the new key"
+            )
         self._check_expiry(args.expires)
-        minimum = int(args.min_length)
-        if minimum < MIN_IMPORT_KEY_LENGTH_FLOOR:
+        given = args.min_length  # None: local mode applies 32; server mode lets the server decide
+        if given is not None and given < MIN_IMPORT_KEY_LENGTH_FLOOR:
             raise AdminError(f"--min-length cannot be below {MIN_IMPORT_KEY_LENGTH_FLOOR}")
+        minimum = given
         key = self._read_key()
         problem = api_key_problem(key)  # the same checks in both modes, before anything is sent
         if problem is not None:
             raise AdminError(problem)
-        if len(key) < minimum:
-            raise AdminError(f"the key is shorter than {minimum} characters (--min-length lowers this, down to 16)")
-        if parse_token(key) is not None:
-            raise AdminError("this key is already in mst_ token format; use `token issue` or `token rotate` instead")
+        if key.startswith("mst_"):
+            raise AdminError(
+                "this key starts with 'mst_', the prefix of issued tokens, so it cannot be imported; use "
+                "`token issue` or `token rotate` instead"
+            )
+        # Without --min-length only the absolute floor is checked here: local mode applies 32 in the editor and the
+        # server applies its own minimum, so neither is guessed (or sent) by the client.
+        needed = MIN_IMPORT_KEY_LENGTH_FLOOR if minimum is None else minimum
+        if len(key) < needed:
+            raise AdminError(f"the key is shorter than {needed} characters (--min-length lowers this, down to 16)")
         result = backend.token_import(args.principal, key, args.expires, args.description or "", minimum)
         token_id = result.get("id")
         self.say(_clean(token_id) if is_valid_token_id(token_id) else "id unknown")
@@ -1033,10 +1054,24 @@ class AdminHandler(BaseHandler):
         for name in names:
             self.say(name)
         for name in v1_admin_ids(text, args.min_length, names):
-            self.warning(
-                f"{name} had the v1 'admin' op (reload only); it is migrated as a non-admin {kind}. "
-                "If it must manage the policy, make it a human-device principal and run: "
-                f"mattstash admin principal update {name} --admin"
+            if kind == "human-device":
+                how = (
+                    f"if it must manage the policy, issue it an mst_ token and revoke the imported one, then run: "
+                    f"mattstash admin principal update {name} --admin (an imported key cannot belong to an admin)"
+                )
+            else:  # a principal's kind cannot be changed afterwards
+                how = (
+                    "if someone must manage the policy, create a human-device admin: "
+                    "mattstash admin principal add NAME --kind human-device --admin, then token issue NAME "
+                    f"({kind} principals can never be admins)"
+                )
+            self.warning(f"{name} had the v1 'admin' op (reload only); it is migrated as a non-admin {kind}; {how}")
+        if kind == "human-device":
+            self.say(
+                f"--kind human-device applies to every key: all {len(names)} migrated principal"
+                f"{'' if len(names) == 1 else 's'} are human-device (a kind cannot be changed later), which is "
+                "what lets a key without prefixes hold '*'. Keys with prefixes only have their prefixes.",
+                err=True,
             )
         self.say(
             f"migrated {len(names)} key{'' if len(names) == 1 else 's'} as non-admin {kind} principals; each keeps "
@@ -1165,10 +1200,14 @@ def add_admin_parser(subparsers: Any, global_opts: argparse.ArgumentParser) -> N
     t_import.add_argument(
         "--min-length",
         type=_min_length,
-        default=DEFAULT_MIN_KEY_LENGTH,
+        default=None,
         metavar="N",
-        help=f"Shortest key to accept (default {DEFAULT_MIN_KEY_LENGTH}, at least {MIN_IMPORT_KEY_LENGTH_FLOOR})",
+        help=f"Shortest key to accept (at least {MIN_IMPORT_KEY_LENGTH_FLOOR}). Default {MIN_IMPORT_KEY_LENGTH} "
+        "locally; with --server-url the server's own minimum (MATTSTASH_MIN_KEY_LENGTH, never below 16) applies and "
+        "this can only raise it",
     )
+    # A key typed as an argument must never be echoed back (argparse would print it in "unrecognized arguments").
+    t_import.add_argument("key_on_command_line", nargs="*", help=argparse.SUPPRESS)
     t_list = leaf(token, "list", "token.list", "List a principal's tokens (ids and expiry, never secrets)")
     t_list.add_argument("principal")
     as_json(t_list)

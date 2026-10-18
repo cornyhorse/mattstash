@@ -25,7 +25,7 @@ from app.logsafe import printable
 from app.security import api_keys
 from app.security.throttle import FailureTracker
 
-from .conftest import APP_KEY, DB_PASSWORD, FULL_KEY, READ_KEY, auth
+from .conftest import APP_KEY, DB_PASSWORD, FULL_KEY, READ_KEY, auth, import_plain_key
 
 H = auth()
 SERVER_DIR = Path(__file__).resolve().parent.parent
@@ -57,7 +57,7 @@ def _auditor_policy(tmp_path) -> str:
     with edit_policy(tmp_path / "policy.json", create=True) as ed:
         ed.add_principal("auditor", "agent")
         ed.add_grant("auditor", key="some-*", actions=["list", "read"])
-        ed.import_token("auditor", FULL_KEY)
+        import_plain_key(ed, "auditor", FULL_KEY)
     return str(tmp_path / "policy.json")
 
 
@@ -334,7 +334,7 @@ def test_invalidate_works_on_a_freshly_booted_host(monkeypatch, default_policy):
     monkeypatch.setattr(api_keys.time, "monotonic", lambda: 100.0)  # host booted 100 s ago
     assert api_keys.verify_api_key(FULL_KEY)
     with edit_policy(default_policy) as ed:
-        ed.import_token("full", "n" * 40)
+        import_plain_key(ed, "full", "n" * 40)
         ed.revoke_token("full", ed.policy.principal("full").tokens[0].id)
     api_keys.invalidate_api_key_cache()
     assert not api_keys.verify_api_key(FULL_KEY) and api_keys.verify_api_key("n" * 40)

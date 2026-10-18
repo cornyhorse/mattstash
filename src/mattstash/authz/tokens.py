@@ -21,7 +21,7 @@ _SALT_HEX_RE = re.compile(r"[0-9a-f]{32}", re.ASCII)
 _DIGEST_HEX_RE = re.compile(r"[0-9a-f]{64}", re.ASCII)
 
 HMAC_SCHEME = "hmac-sha256"
-LEGACY_SCHEME = "sha256"
+UNSALTED_SCHEME = "sha256"
 
 #: A well-formed hash that no token matches. Verifying an unknown token id against it costs the same HMAC as a
 #: known id, so unknown and wrong-secret answers take the same time.
@@ -63,14 +63,14 @@ def hash_token(plaintext: str) -> str:
 
 
 def _split_hash(stored: object) -> Optional[tuple[str, str, str]]:
-    """``(scheme, salt_hex, digest_hex)`` for a well-formed stored hash (salt is empty for the legacy scheme)."""
+    """``(scheme, salt_hex, digest_hex)`` for a well-formed stored hash (salt is empty for the unsalted scheme)."""
     if not isinstance(stored, str):
         return None
     parts = stored.split(":")
     if len(parts) == 3 and parts[0] == HMAC_SCHEME:
         if _SALT_HEX_RE.fullmatch(parts[1]) and _DIGEST_HEX_RE.fullmatch(parts[2]):
             return parts[0], parts[1], parts[2]
-    elif len(parts) == 2 and parts[0] == LEGACY_SCHEME and _DIGEST_HEX_RE.fullmatch(parts[1]):
+    elif len(parts) == 2 and parts[0] == UNSALTED_SCHEME and _DIGEST_HEX_RE.fullmatch(parts[1]):
         return parts[0], "", parts[1]
     return None
 
@@ -93,10 +93,10 @@ def validate_token_hash(stored: object) -> None:
     """Raise :class:`PolicyError` if ``stored`` is not a supported hash. The message never repeats the value."""
     if _split_hash(stored) is None:
         raise PolicyError(
-            f"token hash is malformed; expected '{HMAC_SCHEME}:<32 hex>:<64 hex>' or '{LEGACY_SCHEME}:<64 hex>'"
+            f"token hash is malformed; expected '{HMAC_SCHEME}:<32 hex>:<64 hex>' or '{UNSALTED_SCHEME}:<64 hex>'"
         )
 
 
-def is_legacy_hash(stored: object) -> bool:
-    """True for the unsalted ``sha256:`` scheme that only migrated v1 keys use."""
-    return isinstance(stored, str) and stored.startswith(f"{LEGACY_SCHEME}:")
+def is_unsalted_hash(stored: object) -> bool:
+    """True for the unsalted ``sha256:`` scheme that imported plain keys (`token import`) and migrated v1 keys use."""
+    return isinstance(stored, str) and stored.startswith(f"{UNSALTED_SCHEME}:")

@@ -503,7 +503,8 @@ def test_token_import_through_the_real_cli_keeps_the_old_key_working(
     refused = run_mattstash_cli(
         ["admin", "token", "import", "importer", old_key], admin_server.env(admin_server.admin_token)
     )
-    assert refused.returncode == 2 and old_key not in refused.stdout  # argparse usage error
+    assert refused.returncode == 1 and "rotate it" in refused.stderr
+    assert old_key not in refused.stdout + refused.stderr  # and the key is not echoed back
     assert_unauthorized(cli("get", "app.db-password", token=old_key))  # not known yet
     result = run_mattstash_cli(
         ["admin", "token", "import", "importer", "--description", "old client"],
@@ -528,8 +529,8 @@ def test_token_import_through_the_real_cli_keeps_the_old_key_working(
     # neither the file nor the access log ever held the key
     assert old_key not in admin_server.policy.read_text() and old_key not in admin_server.log.read_text()
     bad = run_mattstash_cli(
-        ["admin", "token", "import", "importer"], admin_server.env(admin_server.admin_token), input="too-short\n"
-    )
+        ["admin", "token", "import", "importer"], admin_server.env(admin_server.admin_token), input="k" * 20 + "\n"
+    )  # long enough for the CLI's own floor (16): the SERVER applies its minimum (32)
     assert bad.returncode == 1 and "shorter than 32" in bad.stderr
 
 

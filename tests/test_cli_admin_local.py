@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from admin_helpers import TOKEN_RE, Runner
+from admin_helpers import TOKEN_RE, Runner, write_policy_with_agent_star
 
 from mattstash.authz import load_policy, verify_token_hash
 from mattstash.cli import exit_codes
@@ -520,7 +520,8 @@ def test_migrate_keys_keeps_the_old_keys_working_as_non_admin_principals(run: Ru
     assert "migrated 2 keys as non-admin human-device principals" in result.err
     # root had the v1 "admin" op, which only allowed reload: it is dropped, and the way back is called out
     assert "root had the v1 'admin' op (reload only); it is migrated as a non-admin human-device" in result.err
-    assert "mattstash admin principal update root --admin" in result.err
+    assert "mattstash admin principal update root --admin" in result.err and "mst_ token" in result.err
+    assert "--kind human-device applies to every key: all 2 migrated principals are human-device" in result.err
     assert "billing had" not in result.err
     # reload now needs an admin; the server polls the vault anyway
     assert "needs a policy admin" in result.err and "every 5 seconds" in result.err
@@ -536,7 +537,10 @@ def test_migrate_keys_defaults_to_agent_and_refuses_a_key_that_needs_star(run: R
     source = _v1(tmp_path)  # root has no prefixes: it would need '*'
     refused = run(*admin(policy, "migrate-keys", "--from", str(source)))
     assert refused.code == 1 and refused.out == "" and not policy.exists()
-    assert "'root' as agent" in refused.err and "--kind human-device" in refused.err and K2 not in refused.err
+    assert "cannot migrate as agent" in refused.err and "1 key without prefixes" in refused.err
+    assert "human-device principals may hold: root." in refused.err and K2 not in refused.err
+    assert "--kind human-device, which makes EVERY migrated key a human-device principal" in refused.err
+    assert "cannot be changed" not in refused.err and "principal update" not in refused.err  # no impossible steps
     narrow = _v1(tmp_path, {"keys": [{"id": "billing", "key": K1, "prefixes": ["inv."]}]})
     assert run(*admin(policy, "migrate-keys", "--from", str(narrow))).code == 0
     assert [(p.kind, p.admin) for p in load_policy(policy).principals] == [("agent", False)]
@@ -545,6 +549,53 @@ def test_migrate_keys_defaults_to_agent_and_refuses_a_key_that_needs_star(run: R
     assert load_policy(other).principals[0].kind == "runner"
     with pytest.raises(SystemExit):
         run(*admin(policy, "migrate-keys", "--from", str(narrow), "--kind", "legacy"))
+
+
+def test_migrate_keys_lists_every_key_that_would_need_star_and_changes_nothing(
+    run: Runner, policy: Path, tmp_path: Path
+):
+    source = _v1(
+        tmp_path,
+        {
+            "keys": [
+                {"id": "alpha", "key": K1},
+                {"id": "scoped", "key": "k3-" + "c" * 40, "prefixes": ["inv."]},
+                {"id": "beta", "key": K2, "prefixes": ["*"]},
+                {"id": "gamma", "key": "k4-" + "d" * 40, "ops": ["read"]},
+            ]
+        },
+    )
+    for kind in ("agent", "runner"):
+        refused = run(*admin(policy, "migrate-keys", "--from", str(source), "--kind", kind))
+        assert refused.code == 1 and not policy.exists(), kind
+        assert f"cannot migrate as {kind}: 3 keys without prefixes" in refused.err
+        assert "may hold: alpha, beta, gamma." in refused.err and "scoped" not in refused.err
+    ok = run(*admin(policy, "migrate-keys", "--from", str(source), "--kind", "human-device"))
+    assert ok.code == 0 and ok.out.split() == ["alpha", "scoped", "beta", "gamma"]
+    assert {p.kind for p in load_policy(policy).principals} == {"human-device"}  # every key, scoped ones too
+    assert "all 4 migrated principals are human-device" in ok.err
+
+
+def test_migrate_keys_as_agent_tells_an_admin_key_to_create_a_human_device_admin_instead(
+    run: Runner, policy: Path, tmp_path: Path
+):
+    source = _v1(tmp_path, {"keys": [{"id": "reloader", "key": K1, "ops": ["read", "admin"], "prefixes": ["inv."]}]})
+    result = run(*admin(policy, "migrate-keys", "--from", str(source)))
+    assert result.code == 0
+    assert "principal add NAME --kind human-device --admin" in result.err
+    assert "agent principals can never be admins" in result.err
+    assert "principal update reloader --admin" not in result.err  # impossible for an agent: not suggested
+    assert "applies to every key" not in result.err
+
+
+def test_migrate_keys_mixed_scoped_and_unscoped_with_the_default_kind_and_with_runner(
+    run: Runner, policy: Path, tmp_path: Path
+):
+    mixed = _v1(tmp_path)  # billing is scoped, root is not
+    for kind_args in ((), ("--kind", "runner")):
+        refused = run(*admin(policy, "migrate-keys", "--from", str(mixed), *kind_args))
+        assert refused.code == 1 and "human-device principals may hold: root." in refused.err
+        assert not policy.exists()  # the scoped key was not migrated either: nothing is half done
 
 
 def test_migrate_keys_min_length_and_errors(run: Runner, policy: Path, tmp_path: Path):
@@ -634,23 +685,32 @@ def test_token_import_on_a_terminal_prompts_without_echo(
     assert any(verify_token_hash(t.hash, OLD_KEY) for t in load_policy(bootstrapped).principal("bot").tokens)  # type: ignore[union-attr]
 
 
-def test_token_import_has_no_key_argument(run: Runner, bootstrapped: Path):
-    with pytest.raises(SystemExit):
-        run(*admin(bootstrapped, "token", "import", "bot", OLD_KEY))
-    with pytest.raises(SystemExit):
-        run(*admin(bootstrapped, "token", "import", "bot", "--key", OLD_KEY))
+def test_token_import_given_the_key_as_an_argument_refuses_without_echoing_it(
+    run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch
+):
+    before = bootstrapped.read_bytes()
+    _stdin(monkeypatch, OLD_KEY + "\n")  # even with a valid key on stdin, nothing is imported
+    result = run(*admin(bootstrapped, "token", "import", "bot", OLD_KEY))
+    assert result.code == 1 and OLD_KEY not in result.out + result.err
+    assert "piped to standard input" in result.err and "rotate it" in result.err
+    assert "unrecognized arguments" not in result.err
+    assert bootstrapped.read_bytes() == before
+    assert "unrecognized arguments" not in run(*admin(bootstrapped, "token", "import", "bot", "a", "b")).err
 
 
 @pytest.mark.parametrize(
     ("stdin", "extra", "message"),
     [
-        ("short-key\n", [], "shorter than 32"),
+        ("k" * 20 + "\n", [], "shorter than 32"),  # local mode applies 32 without --min-length
+        ("short-key\n", [], "shorter than 16"),
         ("", [], "is empty"),
         (" " + OLD_KEY + "\n", [], "control or non-ASCII"),
         ("é" * 40 + "\n", [], "control or non-ASCII"),
         (OLD_KEY + "\n" + OLD_KEY + "\n", [], "exactly one API key"),
         ("k" * 2000, [], "too long to be one API key"),
-        ("mst_abcdefghijkl_" + "A" * 43 + "\n", [], "mst_ token format"),
+        ("mst_abcdefghijkl_" + "A" * 43 + "\n", [], "starts with 'mst_'"),
+        ("mst_short\n", [], "starts with 'mst_'"),  # any key with the prefix, well-formed or not
+        ("mst_" + "z" * 40 + "\n", [], "starts with 'mst_'"),
         ("k" * 20 + "\n", ["--min-length", "21"], "shorter than 21"),
         (OLD_KEY + "\n", ["--min-length", "15"], "cannot be below 16"),
         (OLD_KEY + "\n", ["--expires", "yesterday"], "cannot read 'yesterday'"),
@@ -664,6 +724,25 @@ def test_token_import_refuses_bad_input_before_changing_anything(
     result = run(*admin(bootstrapped, "token", "import", "bot", *extra))
     assert result.code == 1 and result.out == "" and message in result.err
     assert OLD_KEY not in result.err and bootstrapped.read_bytes() == before
+
+
+def test_token_import_onto_an_admin_is_refused_and_so_is_making_an_importer_an_admin(
+    run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _stdin(monkeypatch, OLD_KEY + "\n")
+    refused = run(*admin(bootstrapped, "token", "import", "matt"))
+    assert refused.code == 1 and "admins use issued mst_ tokens only" in refused.err
+    assert OLD_KEY not in refused.err
+    assert run(*admin(bootstrapped, "principal", "add", "laptop", "--kind", "human-device")).code == 0
+    _stdin(monkeypatch, OLD_KEY + "\n")
+    assert run(*admin(bootstrapped, "token", "import", "laptop")).code == 0
+    promoted = run(*admin(bootstrapped, "principal", "update", "laptop", "--admin"))
+    assert promoted.code == 1 and "imported plain key" in promoted.err and "mst_" in promoted.err
+    assert load_policy(bootstrapped).principal("laptop").admin is False  # type: ignore[union-attr]
+    # once the imported key is revoked and a real token issued, the principal can become an admin
+    token_id = load_policy(bootstrapped).principal("laptop").tokens[0].id  # type: ignore[union-attr]
+    assert run(*admin(bootstrapped, "token", "revoke", "laptop", token_id)).code == 0
+    assert run(*admin(bootstrapped, "principal", "update", "laptop", "--admin")).code == 0
 
 
 def test_token_import_min_length_can_be_lowered_to_16(run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch):
@@ -735,3 +814,52 @@ def test_the_expiry_warning_survives_an_unreadable_policy_after_the_command(
         admin_module._LocalBackend, "policy_if_readable", lambda self: (bootstrapped.unlink(), real(self))[1]
     )
     assert run(*admin(bootstrapped, "principal", "list")).code == 0  # the file vanished after the listing: no crash
+
+
+# ---- repairing a policy that breaks the agent/runner '*' rule ---------------
+
+
+def test_a_file_with_an_agent_star_grant_is_refused_with_a_message_that_says_how_to_repair_it(
+    run: Runner, tmp_path: Path
+):
+    policy = Path(write_policy_with_agent_star(tmp_path / "old.json"))
+    for argv in (
+        ("principal", "list"),
+        ("grant", "list"),
+        ("token", "issue", "matt"),
+        ("grant", "add", "bot", "--key", "x"),
+    ):
+        result = run(*admin(policy, *argv))
+        assert result.code == 1 and "g_aaaaaaaa" in result.err and "principal 'bot'" in result.err, argv
+        assert "grant remove g_aaaaaaaa" in result.err and "by hand" in result.err
+
+
+def test_grant_remove_repairs_the_file_and_nothing_else_is_relaxed(run: Runner, tmp_path: Path):
+    policy = Path(write_policy_with_agent_star(tmp_path / "old.json"))
+    assert run(*admin(policy, "grant", "remove", "g_ffffffff")).code == exit_codes.NOT_FOUND  # still just a miss
+    removed = run(*admin(policy, "grant", "remove", "g_aaaaaaaa"))
+    assert removed.code == 0
+    repaired = load_policy(policy)  # strict: the file is valid again
+    assert [g.id for g in repaired.grants] == ["g_bbbbbbbb"]
+    assert run(*admin(policy, "grant", "list")).code == 0
+
+
+def test_principal_remove_repairs_the_file_too(run: Runner, tmp_path: Path):
+    policy = Path(write_policy_with_agent_star(tmp_path / "old.json"))
+    removed = run(*admin(policy, "principal", "remove", "bot", "--yes"))
+    assert removed.code == 0
+    repaired = load_policy(policy)
+    assert [p.name for p in repaired.principals] == ["matt"] and repaired.grants == ()
+
+
+def test_a_repair_does_not_let_a_new_star_grant_for_an_agent_in(run: Runner, tmp_path: Path):
+    policy = Path(write_policy_with_agent_star(tmp_path / "old.json"))
+    assert run(*admin(policy, "grant", "remove", "g_aaaaaaaa")).code == 0
+    refused = run(*admin(policy, "grant", "add", "bot", "--key", "*"))
+    assert refused.code == 1 and "human-device" in refused.err
+    # other problems in the same file are not forgiven by the repair path
+    broken = json.loads(policy.read_text())
+    broken["grants"][0]["actions"] = ["explode"]
+    policy.write_text(json.dumps(broken))
+    still = run(*admin(policy, "grant", "remove", "g_bbbbbbbb"))
+    assert still.code == 1 and "unknown actions" in still.err

@@ -37,8 +37,8 @@ def validate_pattern(p: str) -> None:
 def pattern_matches(pattern: str, name: str) -> bool:
     """Whether a (validated) ``pattern`` covers ``name``.
 
-    It does not validate: the legacy v1 prefixes converted to ``<prefix>*`` may be longer than a user-written
-    pattern may be, and evaluation is on the hot path.
+    It does not validate: a prefix taken from a v1 key policy (``migrate-keys``) and turned into ``<prefix>*`` may be
+    longer than a user-written pattern may be, and evaluation is on the hot path.
     """
     if pattern.endswith("*"):
         return name.startswith(pattern[:-1])

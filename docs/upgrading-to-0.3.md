@@ -29,8 +29,15 @@ What the server needs now:
   (never its value) and points here. They are not ignored, because ignoring `MATTSTASH_API_KEY` would turn a
   deployment that used to be protected into one that rejects every client, or worse, one that you believe is configured.
   An *empty* variable (`MATTSTASH_API_KEY=` from a Compose `${KEY:-}`) counts as not set.
-- `MATTSTASH_MIN_KEY_LENGTH` (default 32, at least 8) now only matters for `token import` through the admin API: it is
-  the shortest existing key the server will import (never below 16).
+- `MATTSTASH_MIN_KEY_LENGTH` (default 32, from 16 to 256) now only matters for `token import` through the admin API: it is
+  the shortest existing key the server will import. A request can ask for a longer minimum, never a shorter one.
+- `MATTSTASH_REQUIRE_SCOPED_KEYS` is "no longer used" and is refused like the other two, because a value there means the
+  deployment was configured for something that no longer exists. If one of these variables is in the environment
+  because it is meant for the `mattstash` CLI client in the same shell, unset it for the server process.
+- If the server refuses a policy file (for example an agent that holds a `*` grant from before that rule), the message
+  names the principal and the grant id. Remove or narrow the grant by editing the file, or run
+  `mattstash admin --policy-file FILE grant remove GRANT_ID` (or `principal remove NAME --yes`): in local mode those two
+  commands still open a file that only breaks that rule.
 
 ## Moving over without downtime
 
@@ -85,9 +92,11 @@ printf '%s' "$BILLING_KEY" | mattstash admin --policy-file policy.json token imp
 ```
 
 It prints the new token's id (note it down: you will revoke it in step 6). The key must be printable ASCII with no
-surrounding whitespace (one trailing newline is fine) and at least 32 characters; `--min-length N` lowers that, down
-to 16. A key already in `mst_` format is refused (issue or rotate those instead), and so is a key that another token
-already holds. The key is stored as an unsalted `sha256:<hex>` hash, which is exactly how the server verified it
+surrounding whitespace (one trailing newline is fine) and at least 32 characters (locally; against a server its
+`MATTSTASH_MIN_KEY_LENGTH`); `--min-length N` lowers the local minimum, down to 16, and can only raise the server's.
+Any key that starts with `mst_` is refused (issue or rotate those instead), so is a key that another token already holds,
+and so is an `admin` principal (admins use issued tokens only). Never give the key as an argument: the command refuses
+without echoing it, and the key must then be rotated, since it was exposed on the command line. The key is stored as an unsalted `sha256:<hex>` hash, which is exactly how the server verified it
 before, and the policy file never contains the key itself.
 
 Importing works through a running 0.3 server as well (`mattstash --server-url ... --api-key-file admin.token admin token
@@ -164,12 +173,14 @@ Each v1 entry becomes a principal named after its `id`, with grants converted fr
 
 - The principals are **never admins**. The v1 `admin` op only allowed reloading the vault; a v2 admin manages the
   whole policy, so the op is not carried over (the command names the keys that had it). Reloading now needs an admin,
-  and the server polls the vault file every 5 seconds anyway, so a manual reload is rarely needed. Promote a
-  principal yourself if you mean to (`principal update NAME --admin`, `human-device` principals only).
+  and the server polls the vault file every 5 seconds anyway, so a manual reload is rarely needed. If someone
+  must manage the policy, create a `human-device` admin (`principal add NAME --kind human-device --admin`, then
+  `token issue`): a migrated key cannot be promoted, because an imported key cannot belong to an admin.
 - `--kind` (default `agent`) sets the kind of all the new principals. A v1 key **without prefixes** can read every
   name, so it would need the `*` grant, which only `human-device` principals may hold: the command fails with a
-  message naming the key and asking you to re-run with `--kind human-device` or to narrow the key (give it prefixes
-  in the file, or migrate it by hand). Nothing is written when it fails.
+  message listing every such key. Narrow them (give them prefixes in the file, or leave them out and create them by
+  hand), or re-run with `--kind human-device`, which makes **every** migrated key a human-device principal (a kind
+  cannot be changed later). Nothing is written when it fails.
 - It refuses a key that is already in the policy, ids that are not valid principal names, and ids that differ only in
   case. It edits a local policy file only (`--policy-file` or `MATTSTASH_POLICY_FILE`), not a server.
 - A **plain list** (one key per line) has no names to migrate. Create the principals yourself (step 2) and import each

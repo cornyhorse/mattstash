@@ -491,6 +491,24 @@ These answer the questions of design section 11, which holds the full text.
     saved. A reload failure after a save keeps the round-1 handling (`409` for access-reducing changes, otherwise `2xx`
     with `warning` and `X-Policy-Active: false`).
 
+**Follow-ups from the review of this round:**
+
+- A written name whose last segment is exactly `versions` is refused (library, CLI, server `POST` answers `400`): the
+  server's `/credentials/{name}/versions` route would read it as the versions of the shorter name. Existing entries stay
+  listable, readable (`/versions/<name>`) and deletable.
+- `token import` refuses every key that starts with `mst_`, refuses `admin` principals, and `set_admin(true)` /
+  `principal update --admin` refuses a principal holding a `sha256:` token (admins use issued tokens only). The server's
+  `MATTSTASH_MIN_KEY_LENGTH` (16-256) is a floor that a request's `min_length` can only raise. A key given as an
+  argument is not echoed; the command says to rotate it.
+- `python -m app` pre-flights the policy and exits with a message, not a traceback. A policy that breaks the agent/runner
+  `*` rule names the principal and grant id; `admin grant remove` and `admin principal remove` in local mode load the
+  file leniently (only that one rule) so it can be repaired with the tools.
+- Access log: `/ready` re-probes a failing file at most every 5 seconds; the write-failed error is rate limited; a failed
+  write closes the file (no line for a request answered `503`); recovery writes one `access-log-gap` event.
+- The test suites scrub every `MATTSTASH_*` / `KDBX_*` variable before `app.config` is imported.
+- The `legacy-` principal-name reservation is gone (dead since the legacy principals were removed); the unsalted
+  scheme is called `UNSALTED_SCHEME` / `is_unsalted_hash` in code (the wire format `sha256:` is unchanged).
+
 **Future work:** tag-based write grants (design 4.3). Anyone who can write an entry can change its tags, so a write grant
 by tag needs a rule for who may change tags first.
 

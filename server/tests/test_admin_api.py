@@ -130,7 +130,6 @@ def test_create_principal(adm, policy_path):
     "body",
     [
         {"name": "HERMES", "kind": "agent"},  # names are unique without regard to case
-        {"name": "legacy-x", "kind": "agent"},  # reserved
         {"name": "bad name", "kind": "agent"},
         {"name": "x", "kind": "robot"},
         {"name": "x", "kind": "legacy"},  # there is no such kind any more
@@ -290,7 +289,9 @@ def test_import_token_refuses_what_it_should_without_echoing_the_key(adm, policy
     refusals = [
         ({"key": "k" * 31}, 400, "shorter than 32"),
         ({"key": " " + IMPORTED}, 400, "control or non-ASCII"),
-        ({"key": issued}, 400, "mst_ token format"),
+        ({"key": issued}, 400, "starts with 'mst_'"),
+        ({"key": "mst_" + "x" * 5}, 400, "starts with 'mst_'"),  # any key with that prefix, well-formed or not
+        ({"key": "mst_not-a-token-but-long-enough-0123456789"}, 400, "starts with 'mst_'"),
         ({"key": IMPORTED, "expires": "soon"}, 400, "cannot read"),
         ({"key": IMPORTED, "min_length": 100}, 400, "shorter than 100"),
     ]
@@ -321,18 +322,49 @@ def test_import_token_refuses_a_key_that_is_already_a_token(adm):
     assert IMPORTED not in duplicate.text
 
 
-def test_import_token_uses_the_servers_minimum_key_length_unless_the_request_lowers_it(
-    make_client, policy_path, policy_tokens
-):
+def test_import_token_uses_the_servers_minimum_key_length_as_a_floor(make_client, policy_path, policy_tokens):
     client = make_client(POLICY_FILE=policy_path, ALLOW_WRITES=True, MIN_KEY_LENGTH=40)
     client.headers.update(bearer(policy_tokens["matt"]))
     url = f"{BASE}/principals/fireflyer/tokens/import"
     assert "shorter than 40" in client.post(url, json={"key": "k" * 39}).json()["detail"]
     assert client.post(url, json={"key": "k" * 40}).status_code == 201
-    assert client.post(url, json={"key": "j" * 20, "min_length": 20}).status_code == 201
+    # the server setting is a floor: a request cannot lower it, only raise it
+    lowered = client.post(url, json={"key": "j" * 20, "min_length": 20})
+    assert lowered.status_code == 400 and "shorter than 40" in lowered.json()["detail"]
+    assert "shorter than 50" in client.post(url, json={"key": "i" * 45, "min_length": 50}).json()["detail"]
+    assert client.post(url, json={"key": "g" * 50, "min_length": 50}).status_code == 201
     low = make_client(POLICY_FILE=policy_path, ALLOW_WRITES=True, MIN_KEY_LENGTH=8)
     low.headers.update(bearer(policy_tokens["matt"]))
     assert "shorter than 16" in low.post(url, json={"key": "h" * 12}).json()["detail"]  # never below 16
+
+
+def test_rotating_an_imported_key_issues_an_mst_token_and_retires_the_old_key(adm, policy_path):
+    imported = adm.post(f"{BASE}/principals/fireflyer/tokens/import", json={"key": IMPORTED})
+    old_id = imported.json()["id"]
+    assert adm.get("/api/v1/credentials/firefly.token", headers=bearer(IMPORTED)).status_code == 200
+    rotated = adm.post(f"{BASE}/principals/fireflyer/tokens/{old_id}/rotate", json={})
+    assert rotated.status_code == 201
+    new = rotated.json()["token"]
+    assert new.startswith("mst_") and rotated.json()["old_token_expires"] is None
+    assert adm.get("/api/v1/credentials/firefly.token", headers=bearer(new)).status_code == 200
+    assert adm.get("/api/v1/credentials/firefly.token", headers=bearer(IMPORTED)).status_code == 401  # revoked
+    tokens = on_disk(policy_path).principal("fireflyer").tokens
+    assert old_id not in [t.id for t in tokens]
+    assert not any(t.hash.startswith("sha256:") for t in tokens) and any(
+        t.hash.startswith("hmac-sha256:") for t in tokens
+    )
+
+
+def test_import_token_is_refused_for_an_admin_and_admin_is_refused_with_an_imported_key(adm, policy_path):
+    refused = adm.post(f"{BASE}/principals/matt/tokens/import", json={"key": IMPORTED})
+    assert refused.status_code == 400 and "admins use issued mst_ tokens only" in refused.json()["detail"]
+    assert IMPORTED not in refused.text
+    assert adm.post(f"{BASE}/principals", json={"name": "laptop", "kind": "human-device"}).status_code == 201
+    assert adm.post(f"{BASE}/principals/laptop/tokens/import", json={"key": IMPORTED}).status_code == 201
+    promoted = adm.patch(f"{BASE}/principals/laptop", json={"admin": True})
+    assert promoted.status_code == 400 and "imported plain key" in promoted.json()["detail"]
+    assert IMPORTED not in promoted.text
+    assert on_disk(policy_path).principal("laptop").admin is False
 
 
 def test_list_tokens(adm, policy_tokens):

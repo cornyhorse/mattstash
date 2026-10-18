@@ -10,7 +10,7 @@ from mattstash.authz import (
     PolicyError,
     generate_token,
     hash_token,
-    is_legacy_hash,
+    is_unsalted_hash,
     parse_token,
     validate_token_hash,
     verify_token_hash,
@@ -89,9 +89,9 @@ def test_lone_surrogates_do_not_raise() -> None:
 def test_legacy_sha256_hash() -> None:
     plaintext = "a-legacy-key-of-sufficient-length-0123"
     stored = "sha256:" + hashlib.sha256(plaintext.encode()).hexdigest()
-    assert is_legacy_hash(stored)
-    assert not is_legacy_hash(hash_token(plaintext))
-    assert not is_legacy_hash(None)
+    assert is_unsalted_hash(stored)
+    assert not is_unsalted_hash(hash_token(plaintext))
+    assert not is_unsalted_hash(None)
     assert verify_token_hash(stored, plaintext)
     assert not verify_token_hash(stored, plaintext + "x")
     validate_token_hash(stored)

@@ -56,7 +56,7 @@ A principal is a named identity that presents tokens.
 ```
 
 - **name**: `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`, unique without regard to case (so the log can't contain two
-  principals that look alike). Names starting `legacy-` are refused (a reservation from the 0.2 legacy principals).
+  principals that look alike).
 - **kind**: `human-device` (a Mac), `agent` (an AI agent or MCP server), `runner` (the Ansible VM, CI). The kind
   limits what a principal may be given (below) and is in every log line.
 - **admin**: may change principals, tokens and grants and read the access log. **Only `human-device`
@@ -330,7 +330,9 @@ outage. Writing to stdout can't fail in a way we can detect, so stdout-only mode
 **Opt-out.** `MATTSTASH_ACCESS_LOG_FAIL_OPEN=true` makes a failed file write an error in the server log and the
 request goes on; the stdout line is still written, marked `error: access-log-write-failed`. Either way `/ready` and
 `/api/ready` answer `503` with a fixed body, and no paths, while the file sink is failing (the last write or open
-failed and none has succeeded since; a cheap periodic writability probe keeps this current).
+failed and none has succeeded since; `/ready` retries the file at most every 5 seconds, so this stays current). After a
+failed write the file is reopened, so it never holds a line for a request answered `503`, and the first line after the
+recovery is an `access-log-gap` event with the number of lines lost.
 
 Reading it: `mattstash admin log [--principal P] [--decision denied] [--since 24h] [--limit N]`, which uses
 `GET /admin/access-log` or, in local mode, the file.
@@ -353,8 +355,9 @@ are:
 
 - **`mattstash admin token import PRINCIPAL`** stores an existing plain key as a token of the principal, so the client
   keeps working untouched. The key is read from **standard input only** (never from an argument), must be printable
-  ASCII and at least 32 characters (`--min-length N`, at least 16), and must not be in `mst_` format (issue or rotate
-  those instead). It is stored as an unsalted `sha256:<hex>` hash with a fresh token id, and a digest that another token
+  ASCII and at least 32 characters (`--min-length N`, at least 16; with a server, its `MATTSTASH_MIN_KEY_LENGTH` is a floor),
+  and must not start with `mst_` at all (issue or rotate those instead). An admin principal refuses an import, and
+  `set_admin(true)` refuses a principal that holds a `sha256:` token (admins use issued tokens only). It is stored as an unsalted `sha256:<hex>` hash with a fresh token id, and a digest that another token
   already holds is refused. The output is the new token id, never the key. Works in local mode and in server mode
   (`POST /api/v1/admin/principals/{name}/tokens/import`, answering `201 {"id", "expires"}`; the key is never logged).
 - **`mattstash admin migrate-keys --from KEYS_JSON [--kind {human-device,agent,runner}]`** converts a v1 JSON key policy

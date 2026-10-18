@@ -18,6 +18,8 @@
 **/.env.*
 server/data
 server/secrets
+server/policy
+server/tokens
 server/k8s
 
 # Not needed in the image

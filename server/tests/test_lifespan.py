@@ -43,6 +43,24 @@ def test_startup_fails_when_the_policy_file_is_missing(configure, tmp_path):
         _start(create_app())
 
 
+def test_startup_with_an_invalid_policy_logs_what_is_wrong_not_environment_variables(configure, tmp_path, caplog):
+    from .conftest import write_policy_with_agent_star
+
+    configure(POLICY_FILE=write_policy_with_agent_star(tmp_path / "old.json"))
+    with caplog.at_level(logging.ERROR, logger="mattstash.api"), pytest.raises(ValueError, match="g_aaaaaaaa"):
+        _start(create_app())
+    assert "principal 'bot'" in caplog.text and "g_aaaaaaaa" in caplog.text and "edit the policy file" in caplog.text
+    assert "check environment variables" not in caplog.text
+
+
+def test_a_setting_problem_that_is_not_a_message_still_says_to_check_the_environment(configure, caplog, monkeypatch):
+    configure()
+    monkeypatch.setattr(Config, "RATE_LIMIT", "not a rate")
+    with caplog.at_level(logging.ERROR, logger="mattstash.api"), pytest.raises(ValueError, match="RATE_LIMIT"):
+        _start(create_app())
+    assert "check environment variables" in caplog.text
+
+
 def _policy_with(tmp_path, *, token=True, disabled=False, expired=False) -> str:
     from datetime import timedelta
 
@@ -96,7 +114,11 @@ def test_startup_refuses_a_removed_setting_and_says_where_to_go(configure, monke
     with pytest.raises(ValueError, match=name) as info:
         _start(create_app())
     message = str(info.value)
-    assert "docs/upgrading-to-0.3.md" in message and "MATTSTASH_POLICY_FILE" in message
+    assert "docs/upgrading-to-0.3.md" in message
+    if name == "MATTSTASH_REQUIRE_SCOPED_KEYS":
+        assert "no longer used" in message
+    else:
+        assert "MATTSTASH_POLICY_FILE" in message and "no longer accepts" in message
     assert "some-value" not in message  # the names only, never a value
 
 
@@ -114,6 +136,37 @@ def test_an_empty_removed_setting_is_not_an_error(configure, monkeypatch):
     for name in REMOVED:
         monkeypatch.setenv(name, "  ")  # an empty compose variable (`KEY=${KEY:-}`) is not a configuration
     _start(create_app())
+
+
+@pytest.mark.parametrize("problem", ["invalid", "missing", "unset", "no-credential"])
+def test_python_dash_m_app_preflights_the_policy_and_exits_with_a_message(configure, tmp_path, monkeypatch, problem):
+    import app.__main__ as entry
+
+    from .conftest import write_policy_with_agent_star
+
+    configure()
+    path = {
+        "invalid": write_policy_with_agent_star(tmp_path / "old.json"),
+        "missing": str(tmp_path / "nope.json"),
+        "unset": None,
+        "no-credential": _policy_with(tmp_path, token=False),
+    }[problem]
+    monkeypatch.setattr(Config, "POLICY_FILE", path)
+    ran = []
+    monkeypatch.setattr(entry.uvicorn, "run", lambda *a, **k: ran.append(1))
+    with pytest.raises(SystemExit) as info:
+        entry.main()
+    message = str(info.value.code)
+    assert message.startswith("mattstash-server: ") and not ran
+    expected = {
+        "invalid": "g_aaaaaaaa",
+        "missing": "Policy file not found",
+        "unset": "MATTSTASH_POLICY_FILE is not set",
+        "no-credential": "no usable credential",
+    }[problem]
+    assert expected in message
+    if problem == "invalid":
+        assert "principal 'bot'" in message and "Traceback" not in message
 
 
 def test_python_dash_m_app_refuses_a_removed_setting_without_a_traceback(monkeypatch, capsys):
@@ -163,6 +216,24 @@ def test_startup_warns_once_per_sha256_token_and_names_it(client, caplog, defaul
     assert len(lines) == 1 and token_id in lines[0] and "principal full" in lines[0]
     assert f"mattstash admin token rotate full {token_id}" in lines[0]
     assert FULL_KEY not in caplog.text
+
+
+def test_startup_does_not_warn_about_an_expired_sha256_token(configure, tmp_path, caplog):
+    from datetime import timedelta
+
+    from mattstash.authz import edit_policy
+    from mattstash.authz.models import utcnow
+
+    path = tmp_path / "mixed.json"
+    with edit_policy(path, now=utcnow() - timedelta(hours=2), create=True) as ed:
+        ed.add_principal("bot", "agent")
+        expired = ed.import_token("bot", "e" * 40, expires=utcnow() - timedelta(hours=1))
+        live = ed.import_token("bot", "l" * 40)
+    configure(POLICY_FILE=str(path))
+    caplog.set_level(logging.WARNING, logger="mattstash.api")
+    _start(create_app())
+    text = "\n".join(r.getMessage() for r in caplog.records if "unsalted 'sha256:'" in r.getMessage())
+    assert live.id in text and expired.id not in text
 
 
 def test_startup_does_not_warn_about_salted_tokens(configure, policy_path, policy_tokens, caplog):

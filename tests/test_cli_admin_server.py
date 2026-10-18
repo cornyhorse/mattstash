@@ -486,7 +486,11 @@ def test_token_import_posts_the_key_in_the_body_only(
     assert result.code == 0 and OLD_KEY not in result.out + result.err
     request = last(server)
     assert (request.method, path_of(request)) == ("POST", "/api/v1/admin/principals/bot/tokens/import")
-    assert json.loads(request.content) == {"key": OLD_KEY, "description": "Mac", "expires": "30d", "min_length": 32}
+    assert json.loads(request.content) == {
+        "key": OLD_KEY,
+        "description": "Mac",
+        "expires": "30d",
+    }  # no min_length unless asked
     assert OLD_KEY not in str(request.url) and OLD_KEY not in str(request.headers)
     token = load_policy(policy).principal("bot").tokens[0]  # type: ignore[union-attr]
     assert result.out.strip() == token.id and verify_token_hash(token.hash, OLD_KEY)
@@ -497,11 +501,45 @@ def test_token_import_checks_the_key_locally_before_sending(
     run: Runner, server: FakeAdminServer, monkeypatch: pytest.MonkeyPatch
 ):
     sent = len(server.requests)
-    for text, message in (("short\n", "shorter than 32"), ("mst_abcdefghijkl_" + "A" * 43, "mst_ token format")):
+    for text, message in (("short\n", "shorter than 16"), ("mst_abcdefghijkl_" + "A" * 43, "starts with 'mst_'")):
         _stdin(monkeypatch, text)
         result = run(*ADMIN_ARGS, "token", "import", "bot")
-        assert result.code == 1 and message in result.err
+        assert result.code == 1 and message in result.err, text
+    _stdin(monkeypatch, "mst_nope")  # any key with the prefix, well-formed or not (and before the length check)
+    assert "starts with 'mst_'" in run(*ADMIN_ARGS, "token", "import", "bot").err
+    _stdin(monkeypatch, "k" * 20 + "\n")
+    assert "cannot be below 16" in run(*ADMIN_ARGS, "token", "import", "bot", "--min-length", "15").err
     assert len(server.requests) == sent
+
+
+def test_token_import_leaves_the_minimum_to_the_server_unless_asked(
+    run: Runner, server: FakeAdminServer, policy: Path, monkeypatch: pytest.MonkeyPatch
+):
+    assert run(*ADMIN_ARGS, "principal", "add", "bot", "--kind", "agent").code == 0
+    server.min_key_length = 40
+    _stdin(monkeypatch, "k" * 36 + "\n")  # fine locally (the CLI has no opinion), refused by the server's floor
+    refused = run(*ADMIN_ARGS, "token", "import", "bot")
+    assert refused.code == 1 and "shorter than 40" in refused.err
+    assert "min_length" not in json.loads(last(server).content)
+    _stdin(monkeypatch, "k" * 36 + "\n")
+    lowered = run(*ADMIN_ARGS, "token", "import", "bot", "--min-length", "20")  # cannot undercut the server
+    assert lowered.code == 1 and json.loads(last(server).content)["min_length"] == 20
+    assert "shorter than 40" in lowered.err
+    _stdin(monkeypatch, "k" * 36 + "\n")
+    assert run(*ADMIN_ARGS, "token", "import", "bot", "--min-length", "36").code == 1  # still below 40
+    server.min_key_length = 32
+    _stdin(monkeypatch, "k" * 36 + "\n")
+    assert run(*ADMIN_ARGS, "token", "import", "bot", "--min-length", "36").code == 0
+    assert load_policy(policy).principal("bot").tokens  # type: ignore[union-attr]
+
+
+def test_token_import_onto_an_admin_is_refused_by_the_server_path_too(
+    run: Runner, server: FakeAdminServer, policy: Path, monkeypatch: pytest.MonkeyPatch
+):
+    assert run(*ADMIN_ARGS, "principal", "add", "laptop", "--kind", "human-device", "--admin").code == 0
+    _stdin(monkeypatch, OLD_KEY + "\n")
+    refused = run(*ADMIN_ARGS, "token", "import", "laptop")
+    assert refused.code == 1 and "admins use issued mst_ tokens only" in refused.err and OLD_KEY not in refused.err
 
 
 def test_token_import_server_errors_do_not_echo_the_key(

@@ -149,6 +149,8 @@ class TestNewSettings:
         "var, value",
         [
             ("MATTSTASH_MIN_KEY_LENGTH", "4"),
+            ("MATTSTASH_MIN_KEY_LENGTH", "15"),
+            ("MATTSTASH_MIN_KEY_LENGTH", "257"),
             ("MATTSTASH_AUTH_FAIL_LIMIT", "0"),
             ("MATTSTASH_AUTH_FAIL_WINDOW_SECONDS", "x"),
             ("MATTSTASH_TRUSTED_PROXY_HOPS", "11"),

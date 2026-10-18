@@ -45,8 +45,10 @@ def uvicorn_run(monkeypatch) -> MagicMock:
 
 
 @pytest.fixture
-def server_settings(monkeypatch):
+def server_settings(monkeypatch, configure):
     """Set the server options ``main()`` reads (``Config`` captures its environment at import time)."""
+
+    configure()  # the entry point pre-flights the policy file, so a usable one must be configured
 
     def _set(**overrides) -> None:
         settings = {"HOST": "0.0.0.0", "PORT": 8000, "LOG_LEVEL": "info", "TLS_CERT_FILE": None, "TLS_KEY_FILE": None}

@@ -6,14 +6,22 @@ authorization, throttling, locking and error mapping are exercised end to end.
 """
 
 import json
+import os
 import tempfile
 from collections.abc import Callable, Generator
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
-import pytest
-from fastapi.testclient import TestClient
-from mattstash import MattStash
+# ``app.config.Config`` reads the environment when ``app.config`` is first imported (class attributes), so every
+# configuration variable must be gone BEFORE any test module imports ``app``: a developer's exported
+# MATTSTASH_ALLOW_SLASH_NAMES, MATTSTASH_ACCESS_LOG_FAIL_OPEN or MATTSTASH_API_KEY would otherwise change results.
+# (This runs when pytest loads this conftest, which precedes the collection of every test module.)
+for _name in [name for name in os.environ if name.startswith(("MATTSTASH_", "KDBX_"))]:
+    os.environ.pop(_name, None)
+
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from mattstash import MattStash  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -213,6 +221,49 @@ def key_policy_file(tmp_path) -> Path:
     return path
 
 
+def import_plain_key(editor, name: str, key: str, **kwargs):
+    """``editor.import_token`` for a principal that is ALSO an admin. The editor refuses that combination (admins use
+    issued tokens only), but a hand-edited policy file can hold it and the server must keep working with one, so
+    the fixtures build it by flipping the flag around the import."""
+    from dataclasses import replace
+
+    principal = editor.policy.principal(name)
+    if principal is None or not principal.admin:
+        return editor.import_token(name, key, **kwargs)
+    editor._update(principal, replace(principal, admin=False))
+    try:
+        return editor.import_token(name, key, **kwargs)
+    finally:
+        editor._update(editor.policy.principal(name), replace(editor.policy.principal(name), admin=True))
+
+
+def write_policy_with_agent_star(path) -> str:
+    """A policy file as a 0.2-era one could hold it: agent ``bot`` with a ``*`` grant (``g_aaaaaaaa``), which the
+    strict rules now refuse. Written by hand (``dump_policy``), since the editor would refuse to build it. Returns
+    the path; the admin ``matt`` has a token, so the file is otherwise usable."""
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from mattstash.authz import Grant, Policy, Principal, Token, dump_policy, generate_token, hash_token
+
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    token_id, plaintext = generate_token()
+    policy = Policy(
+        principals=(
+            Principal(
+                "matt", "human-device", admin=True, created=when, tokens=(Token(token_id, hash_token(plaintext), when),)
+            ),
+            Principal("bot", "agent", created=when),
+        ),
+        grants=(
+            Grant("g_aaaaaaaa", "bot", "*", None, frozenset({"list", "read"}), created=when),
+            Grant("g_bbbbbbbb", "bot", "app.*", None, frozenset({"list", "read"}), created=when),
+        ),
+    )
+    Path(path).write_text(dump_policy(policy))
+    return str(path)
+
+
 def write_default_policy(path: Path) -> str:
     """The policy the ``client`` fixtures run on: principal ``full`` (human-device admin, ``*`` on every action) whose
     token is ``FULL_KEY``, imported as a plain key (the ``sha256:`` scheme), so ``auth()`` works as it always did."""
@@ -221,7 +272,7 @@ def write_default_policy(path: Path) -> str:
     with edit_policy(path, create=True) as ed:
         ed.add_principal("full", "human-device", "default test principal", admin=True)
         ed.add_grant("full", key="*", actions=["list", "read", "write", "delete"])
-        ed.import_token("full", FULL_KEY)
+        import_plain_key(ed, "full", FULL_KEY)
     return str(path)
 
 
@@ -351,6 +402,31 @@ def data(seed):
     stash.put("demoted", password="v1-tagged", tags=["shared"])
     stash.put("demoted", password="v2-untagged", tags=["other"])
     return stash
+
+
+class Clock:
+    """The access log's monotonic clock, set by the test."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    from app import accesslog
+
+    fake = Clock()
+    monkeypatch.setattr(accesslog, "_now", lambda: fake.now)
+    return fake
+
+
+@pytest.fixture
+def log_path(tmp_path) -> str:
+    """Where tests that use an access-log file put it."""
+    return str(tmp_path / "access.jsonl")
 
 
 def auth(key: str = FULL_KEY) -> dict[str, str]:

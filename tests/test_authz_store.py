@@ -1,6 +1,7 @@
 """The policy file: strict parsing, round trips, atomic saves, locked editing and lockout protection."""
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -223,9 +224,15 @@ def test_offset_datetimes_are_accepted_and_normalised() -> None:
     assert parse_policy(text_of(document)).principals[0].created == NOW
 
 
-@pytest.mark.parametrize(
-    "name", ["", "-a", ".a", "_a", "a b", "a/b", "a" * 65, "café", "a\n", "legacy-1", "LEGACY-env"]
-)
+def test_a_name_starting_with_legacy_is_an_ordinary_name(policy_path: Path) -> None:
+    bootstrap(policy_path)
+    with edit_policy(policy_path, now=NOW) as editor:
+        editor.add_principal("legacy-x", "agent")
+        editor.add_principal("LEGACY-env", "agent")
+    assert load_policy(policy_path).principal("legacy-x") is not None
+
+
+@pytest.mark.parametrize("name", ["", "-a", ".a", "_a", "a b", "a/b", "a" * 65, "café", "a\n"])
 def test_bad_principal_names(name: str) -> None:
     document = good_document()
     document["principals"][1]["name"] = name
@@ -562,7 +569,6 @@ def test_editor_errors(policy_path: Path) -> None:
         for call in (
             lambda: editor.add_principal("matt-mac", "agent"),
             lambda: editor.add_principal("MATT-MAC", "agent"),
-            lambda: editor.add_principal("legacy-x", "agent"),
             lambda: editor.add_principal("bad name", "agent"),
             lambda: editor.add_principal("x", "robot"),
             lambda: editor.add_principal("x", "agent", admin=True),
@@ -844,7 +850,6 @@ OLD_KEY = "old-client-key-" + "x" * 30
 
 
 def test_import_token_stores_the_digest_under_a_fresh_id_and_the_key_still_matches(policy_path: Path) -> None:
-    import hashlib
 
     bootstrap(policy_path)
     with edit_policy(policy_path, now=NOW) as editor:
@@ -860,6 +865,8 @@ def test_import_token_stores_the_digest_under_a_fresh_id_and_the_key_still_match
 
 def test_import_token_refuses_bad_keys_without_repeating_them(policy_path: Path) -> None:
     bootstrap(policy_path)
+    with edit_policy(policy_path, now=NOW) as editor:
+        editor.add_principal("bot", "agent")
     before = policy_path.read_bytes()
     _, issued = generate_token()
     cases = [
@@ -868,11 +875,13 @@ def test_import_token_refuses_bad_keys_without_repeating_them(policy_path: Path)
         (OLD_KEY + "\n", "control or non-ASCII"),
         (" " + OLD_KEY, "control or non-ASCII"),
         (OLD_KEY.replace("x", "é"), "control or non-ASCII"),
-        (issued, "mst_ token format"),
+        (issued, "starts with 'mst_'"),
+        ("mst_x", "starts with 'mst_'"),  # not a well-formed token, still refused (and before the length check)
+        ("mst_" + "y" * 40, "starts with 'mst_'"),
     ]
     for key, message in cases:
         with pytest.raises(PolicyError, match=message) as info, edit_policy(policy_path, now=NOW) as editor:
-            editor.import_token("matt-mac", key)
+            editor.import_token("bot", key)
         assert key == "" or key not in str(info.value)
     with pytest.raises(PolicyError, match="no such principal"), edit_policy(policy_path, now=NOW) as editor:
         editor.import_token("ghost", OLD_KEY)
@@ -881,14 +890,56 @@ def test_import_token_refuses_bad_keys_without_repeating_them(policy_path: Path)
 
 def test_import_token_min_length_can_be_lowered_but_never_below_16(policy_path: Path) -> None:
     bootstrap(policy_path)
+    with edit_policy(policy_path, now=NOW) as editor:
+        editor.add_principal("bot", "agent")
     sixteen = "k" * 16
     with edit_policy(policy_path, now=NOW) as editor:
-        editor.import_token("matt-mac", sixteen, min_length=16)
+        editor.import_token("bot", sixteen, min_length=16)
         for floor in (15, 8, 0):
             with pytest.raises(PolicyError, match="cannot be below 16"):
-                editor.import_token("matt-mac", "k" * 20, min_length=floor)
+                editor.import_token("bot", "k" * 20, min_length=floor)
         with pytest.raises(PolicyError, match="shorter than 17"):
-            editor.import_token("matt-mac", "j" * 16, min_length=17)
+            editor.import_token("bot", "j" * 16, min_length=17)
+
+
+def test_import_token_refuses_an_admin_and_set_admin_refuses_a_principal_with_an_imported_key(
+    policy_path: Path,
+) -> None:
+    bootstrap(policy_path)
+    before = policy_path.read_bytes()
+    with pytest.raises(PolicyError, match="admins use issued mst_ tokens only") as info:
+        with edit_policy(policy_path, now=NOW) as editor:
+            editor.import_token("matt-mac", OLD_KEY)
+    assert OLD_KEY not in str(info.value) and policy_path.read_bytes() == before
+    with edit_policy(policy_path, now=NOW) as editor:
+        editor.add_principal("laptop", "human-device")
+        token = editor.import_token("laptop", OLD_KEY)
+    with pytest.raises(PolicyError, match="imported plain key"), edit_policy(policy_path, now=NOW) as editor:
+        editor.set_admin("laptop", True)
+    with edit_policy(
+        policy_path, now=NOW
+    ) as editor:  # an EXPIRED or unrelated token changes nothing: revoke, then issue
+        editor.revoke_token("laptop", token.id)
+        editor.issue_token("laptop")
+        editor.set_admin("laptop", True)
+        editor.set_admin("laptop", False)  # dropping the flag is always fine
+    assert load_policy(policy_path).principal("laptop").admin is False  # type: ignore[union-attr]
+
+
+def test_rotating_an_imported_key_replaces_the_sha256_token_with_a_salted_one(policy_path: Path) -> None:
+    bootstrap(policy_path)
+    with edit_policy(policy_path, now=NOW) as editor:
+        editor.add_principal("bot", "agent")
+        imported = editor.import_token("bot", OLD_KEY)
+    with edit_policy(policy_path, now=NOW) as editor:
+        new, plaintext = editor.rotate_token("bot", imported.id)
+    tokens = load_policy(policy_path).principal("bot").tokens  # type: ignore[union-attr]
+    assert [t.id for t in tokens] == [new.id] and plaintext.startswith("mst_")
+    assert tokens[0].hash.startswith("hmac-sha256:") and verify_token_hash(tokens[0].hash, plaintext)
+    assert (
+        OLD_KEY not in policy_path.read_text()
+        and hashlib.sha256(OLD_KEY.encode()).hexdigest() not in policy_path.read_text()
+    )
 
 
 def test_import_token_refuses_a_duplicate_key_and_a_past_expiry(policy_path: Path) -> None:

@@ -21,6 +21,33 @@ class Result(NamedTuple):
     err: str
 
 
+def write_policy_with_agent_star(path) -> str:
+    """A policy file as a 0.2-era one could hold it: agent ``bot`` with a ``*`` grant (``g_aaaaaaaa``), which the
+    strict rules now refuse. Written by hand (``dump_policy``), since the editor would refuse to build it. Returns
+    the path; the admin ``matt`` has a token, so the file is otherwise usable."""
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from mattstash.authz import Grant, Policy, Principal, Token, dump_policy, generate_token, hash_token
+
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    token_id, plaintext = generate_token()
+    policy = Policy(
+        principals=(
+            Principal(
+                "matt", "human-device", admin=True, created=when, tokens=(Token(token_id, hash_token(plaintext), when),)
+            ),
+            Principal("bot", "agent", created=when),
+        ),
+        grants=(
+            Grant("g_aaaaaaaa", "bot", "*", None, frozenset({"list", "read"}), created=when),
+            Grant("g_bbbbbbbb", "bot", "app.*", None, frozenset({"list", "read"}), created=when),
+        ),
+    )
+    Path(path).write_text(dump_policy(policy))
+    return str(path)
+
+
 class Runner:
     """Runs ``main(argv)`` and returns the exit code with stdout and everything written to stderr or the log."""
 
@@ -45,6 +72,7 @@ class FakeAdminServer:
 
     def __init__(self, policy_file: Path, api_key: str, *, log_file: Optional[Path] = None) -> None:
         self.api_key = api_key
+        self.min_key_length = 32  # the fake server's MATTSTASH_MIN_KEY_LENGTH: a floor, as on the real one
         save_policy(policy_file, empty_policy())
         self.policy_file = policy_file
         self.log_file = log_file
@@ -133,7 +161,11 @@ class FakeAdminServer:
                 return 201, issued
             case ("POST", ["principals", name, "tokens", "import"]):
                 imported = b.token_import(
-                    name, body["key"], body.get("expires"), body.get("description", ""), body.get("min_length", 32)
+                    name,
+                    body["key"],
+                    body.get("expires"),
+                    body.get("description", ""),
+                    max(16, self.min_key_length, body.get("min_length") or 0),
                 )
                 return 201, imported
             case ("DELETE", ["principals", name, "tokens", token_id]):

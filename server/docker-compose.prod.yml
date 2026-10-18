@@ -5,8 +5,8 @@
 #   docker compose -f docker-compose.prod.yml -f docker-compose.writable.yml up -d
 #
 # Compared with docker-compose.yml this file
-#   - hands the master password and API keys over as Compose `secrets:` (mounted under
-#     /run/secrets, never in the environment or in `docker inspect`),
+#   - hands the master password over as a Compose `secret` (mounted under /run/secrets, never in the
+#     environment or in `docker inspect`); the policy file with the token hashes is a read-only directory mount,
 #   - publishes NO port and keeps the API on an internal-only network,
 #   - applies resource limits, a read-only root filesystem, dropped capabilities and log rotation.
 #
@@ -35,8 +35,8 @@
 # `image: ghcr.io/cornyhorse/mattstash:vX.Y.Z` - pin a version tag (or a @sha256 digest), never
 # `:latest`.
 #
-# Secrets: create the two files with restricted permissions, keep them out of version control, and
-# make them readable by the container user (${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}; file
+# Secrets: create the master password file (and the policy and token directories) with restricted permissions,
+# keep them out of version control, and make them readable by the container user (${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}; file
 # secrets are bind mounts, so host permissions apply):
 #   mkdir -p secrets policy tokens
 #   (umask 077; openssl rand -base64 32 > secrets/kdbx_password.txt)

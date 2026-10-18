@@ -39,13 +39,13 @@ from .models import (
     utcnow,
 )
 from .patterns import validate_pattern, validate_tag
-from .tokens import generate_token, hash_token, is_valid_token_id, parse_token, validate_token_hash
+from .tokens import PREFIX as TOKEN_PREFIX
+from .tokens import generate_token, hash_token, is_unsalted_hash, is_valid_token_id, validate_token_hash
 
 PathLike = Union[str, "os.PathLike[str]"]
 
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", re.ASCII)
 _GRANT_ID_RE = re.compile(r"g_[0-9a-f]{8}", re.ASCII)
-RESERVED_PREFIX = "legacy-"
 MAX_DESCRIPTION_LENGTH = 500
 #: The key length ``import_token`` asks for by default (the server's default ``MATTSTASH_MIN_KEY_LENGTH``) and the
 #: shortest it ever accepts, whatever is asked for.
@@ -70,10 +70,6 @@ def validate_name(name: object) -> None:
     """Raise :class:`PolicyError` unless ``name`` is a legal principal name."""
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         raise PolicyError("principal name must match [A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
-    if name.casefold().startswith(RESERVED_PREFIX):
-        raise PolicyError(
-            f"principal name {name!r} is reserved: names starting with '{RESERVED_PREFIX}' cannot be used"
-        )
 
 
 def _check_description(text: object, where: str) -> None:
@@ -132,7 +128,7 @@ def _validate_principal(
         _validate_token(token, principal.name, seen_token_ids, seen_hashes)
 
 
-def _validate_grant(grant: Grant, kinds: Mapping[str, str], seen_ids: set[str]) -> None:
+def _validate_grant(grant: Grant, kinds: Mapping[str, str], seen_ids: set[str], lenient: bool = False) -> None:
     if not isinstance(grant.id, str) or not _GRANT_ID_RE.fullmatch(grant.id):
         raise PolicyError("grant id must be 'g_' followed by 8 lowercase hex digits")
     if grant.id in seen_ids:
@@ -145,10 +141,12 @@ def _validate_grant(grant: Grant, kinds: Mapping[str, str], seen_ids: set[str]) 
         raise PolicyError(f"{where}: provide exactly one of 'key' and 'tag'")
     if grant.key is not None:
         validate_pattern(grant.key)
-        if grant.key == "*" and kinds[grant.principal] != "human-device":
+        if grant.key == "*" and kinds[grant.principal] != "human-device" and not lenient:
             raise PolicyError(
-                f"{where}: the '*' grant (every secret) is only for human-device principals, not "
-                f"{kinds[grant.principal]}s; use a narrower pattern such as 'service.*'"
+                f"{where} of principal {grant.principal!r}: the '*' grant (every secret) is only for human-device "
+                f"principals, not {kinds[grant.principal]}s. Remove or narrow it (a pattern such as 'service.*'): "
+                f"edit the policy file by hand, or in local mode run `mattstash admin grant remove {grant.id}` "
+                f"(or `admin principal remove {grant.principal}`), which can still open a file in this state"
             )
     if grant.tag is not None:
         validate_tag(grant.tag)
@@ -166,8 +164,12 @@ def _validate_grant(grant: Grant, kinds: Mapping[str, str], seen_ids: set[str]) 
     _check_description(grant.description, where)
 
 
-def validate_policy(policy: Policy) -> None:
-    """Raise :class:`PolicyError` unless the whole document is consistent."""
+def validate_policy(policy: Policy, *, lenient: bool = False) -> None:
+    """Raise :class:`PolicyError` unless the whole document is consistent.
+
+    ``lenient`` skips exactly one rule, that a ``*`` grant belongs to human-device principals only, so that a file
+    written before that rule existed can still be opened to remove the offending grant. Nothing else is relaxed.
+    """
     if policy.version != POLICY_VERSION:
         raise PolicyError(f"unsupported policy version {policy.version!r}; this build reads version {POLICY_VERSION}")
     if type(policy.revision) is not int or not 0 <= policy.revision <= MAX_REVISION:
@@ -180,7 +182,7 @@ def validate_policy(policy: Policy) -> None:
     kinds = {principal.name: principal.kind for principal in policy.principals}
     grant_ids: set[str] = set()
     for grant in policy.grants:
-        _validate_grant(grant, kinds, grant_ids)
+        _validate_grant(grant, kinds, grant_ids, lenient)
 
 
 # ---------------------------------------------------------------------------
@@ -298,8 +300,10 @@ def _parse_grant(raw: Any, index: int) -> Grant:
     )
 
 
-def parse_policy(text: str) -> Policy:
-    """Parse and fully validate a policy document. Raises :class:`PolicyError`; messages never include hashes."""
+def parse_policy(text: str, *, lenient: bool = False) -> Policy:
+    """Parse and fully validate a policy document. Raises :class:`PolicyError`; messages never include hashes.
+
+    ``lenient``: see :func:`validate_policy`."""
     try:
         document = json.loads(text, object_pairs_hook=_no_duplicate_keys)
     except json.JSONDecodeError as exc:
@@ -324,7 +328,7 @@ def parse_policy(text: str) -> Policy:
         principals=tuple(_parse_principal(p, i) for i, p in enumerate(_array(data["principals"], "principals"), 1)),
         grants=tuple(_parse_grant(g, i) for i, g in enumerate(_array(data["grants"], "grants"), 1)),
     )
-    validate_policy(policy)
+    validate_policy(policy, lenient=lenient)
     return policy
 
 
@@ -387,13 +391,15 @@ def dump_policy(policy: Policy) -> str:
 # ---------------------------------------------------------------------------
 
 
-def load_policy(path: PathLike) -> Policy:
-    """Read and parse the policy file. ``FileNotFoundError`` if missing; a BOM written by an editor is tolerated."""
+def load_policy(path: PathLike, *, lenient: bool = False) -> Policy:
+    """Read and parse the policy file. ``FileNotFoundError`` if missing; a BOM written by an editor is tolerated.
+
+    ``lenient=True`` is for repairing a file the strict rules refuse (:func:`validate_policy`); servers never use it."""
     try:
         text = Path(path).read_text(encoding="utf-8-sig")
     except UnicodeDecodeError:
         raise PolicyError("policy file is not valid UTF-8") from None
-    return parse_policy(text)
+    return parse_policy(text, lenient=lenient)
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -526,8 +532,9 @@ def check_lockout_change(before: Policy, after: Policy, now: datetime) -> None:
 class PolicyEditor:
     """Mutations of one policy document, validated after every step. Obtain one from :func:`edit_policy`."""
 
-    def __init__(self, policy: Policy, now: datetime) -> None:
+    def __init__(self, policy: Policy, now: datetime, lenient: bool = False) -> None:
         self._policy = policy
+        self._lenient = lenient
         self.now = now.replace(microsecond=0)
 
     @property
@@ -537,7 +544,7 @@ class PolicyEditor:
     # -- helpers ----------------------------------------------------------
 
     def _set(self, policy: Policy) -> None:
-        validate_policy(policy)
+        validate_policy(policy, lenient=self._lenient)
         self._policy = policy
 
     def _principal(self, name: str) -> Principal:
@@ -600,6 +607,11 @@ class PolicyEditor:
 
     def set_admin(self, name: str, admin: bool) -> None:
         principal = self._principal(name)
+        if admin and any(is_unsalted_hash(t.hash) for t in principal.tokens):
+            raise PolicyError(
+                f"principal {name!r} holds an imported plain key (a sha256: token): admins use issued mst_ tokens "
+                "only. Issue an mst_ token, revoke the imported one, then make the principal an admin"
+            )
         self._update(principal, replace(principal, admin=admin))
 
     def set_description(self, name: str, text: str) -> None:
@@ -629,22 +641,28 @@ class PolicyEditor:
 
         The key keeps working unchanged: only its unsalted ``sha256:<hex>`` digest is stored, under a fresh token id.
         It must be printable ASCII without surrounding whitespace (what a client can send as ``X-API-Key``), at least
-        ``min_length`` characters (at least :data:`MIN_IMPORT_KEY_LENGTH_FLOOR`, whatever is asked for) and not in
-        ``mst_`` format (those are issued or rotated, not imported). A key that another token already holds is
-        refused. No error message contains the key.
+        ``min_length`` characters (at least :data:`MIN_IMPORT_KEY_LENGTH_FLOOR`, whatever is asked for) and must not
+        start with ``mst_`` at all (that prefix belongs to issued tokens). Admin principals refuse an import, and so
+        does a key that another token already holds. No error message contains the key.
         """
         if min_length < MIN_IMPORT_KEY_LENGTH_FLOOR:
             raise PolicyError(f"the minimum key length cannot be below {MIN_IMPORT_KEY_LENGTH_FLOOR}")
         owner = self._principal(principal)
+        if owner.admin:
+            raise PolicyError(
+                f"principal {principal!r} is an admin: admins use issued mst_ tokens only (`token issue`), "
+                "never an imported plain key"
+            )
         problem = api_key_problem(key)
         if problem is not None:
             raise PolicyError(problem)
+        if key.startswith(TOKEN_PREFIX):
+            raise PolicyError(
+                f"this key starts with '{TOKEN_PREFIX}', the prefix of issued tokens: issue or rotate a token "
+                "instead of importing it"
+            )
         if len(key) < min_length:
             raise PolicyError(f"the key is shorter than {min_length} characters")
-        if parse_token(key) is not None:
-            raise PolicyError(
-                "this key is already in mst_ token format; issue or rotate a token instead of importing it"
-            )
         self._check_future(expires)
         stored = f"sha256:{hashlib.sha256(key.encode('ascii')).hexdigest()}"
         if any(_hash_identity(t.hash) == _hash_identity(stored) for p in self._policy.principals for t in p.tokens):
@@ -737,6 +755,7 @@ def edit_policy(
     *,
     now: Optional[datetime] = None,
     create: bool = False,
+    lenient: bool = False,
 ) -> Iterator[PolicyEditor]:
     """Edit the policy file under an exclusive lock: re-read from disk, yield an editor, validate and save.
 
@@ -750,6 +769,8 @@ def edit_policy(
     issue its token, as separate edits; neither is refused, though the first leaves no usable admin yet.
 
     ``create=True`` starts from an empty policy when the file does not exist; otherwise ``FileNotFoundError``.
+    ``lenient=True`` opens (and saves) a file that only breaks the rule that ``*`` is for human-device principals, so
+    the offending grant or principal can be removed; see :func:`validate_policy`.
     """
     target = Path(path)
     moment = utcnow() if now is None else now
@@ -758,16 +779,16 @@ def edit_policy(
     target = Path(os.path.realpath(target))  # the file is replaced at its real path, so the lock lives there too
     with FileLock(str(target.with_name(target.name + ".lock")), reference=str(target)):
         try:
-            before = load_policy(target)
+            before = load_policy(target, lenient=lenient)
         except FileNotFoundError:
             if not create:
                 raise
             before = empty_policy()
-        editor = PolicyEditor(before, moment)
+        editor = PolicyEditor(before, moment, lenient)
         yield editor
         after = replace(editor.policy, revision=before.revision + 1)
         text = dump_policy(after)
-        parse_policy(text)
+        parse_policy(text, lenient=lenient)
         check_lockout_change(before, after, moment)
         _write_atomic(target, text)
 

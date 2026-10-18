@@ -166,7 +166,15 @@ else
     fi
     echo "Liveness:   curl http://127.0.0.1:8000/health"
     echo "Readiness:  curl http://127.0.0.1:8000/ready"
-    echo "Try it:     curl -H \"X-API-Key: \$(cat tokens/admin.token)\" http://127.0.0.1:8000/api/v1/admin/principals"
+    # Not `-H "X-API-Key: $(cat ...)"`: that would put the token in curl's argument list, which every local user can
+    # read with `ps`. A header file (mode 0600, written with the shell builtin printf) keeps it out of argv.
+    if [ -s tokens/admin.token ]; then
+        (umask 077; printf 'X-API-Key: %s\n' "$(cat tokens/admin.token)" >tokens/admin.header)
+        echo "Try it:     curl -H @tokens/admin.header http://127.0.0.1:8000/api/v1/admin/principals"
+        echo "            (tokens/admin.header holds the token for curl -H @file; delete it when you are done.)"
+    else
+        echo "Try it:     mattstash --server-url http://127.0.0.1:8000 --api-key-file <token file> admin principal list"
+    fi
     echo "            (the admin token manages principals and grants; it reads no secret. Issue a token per client.)"
     echo "API docs (unless disabled with MATTSTASH_DISABLE_DOCS): http://127.0.0.1:8000/api/v1/docs"
 fi

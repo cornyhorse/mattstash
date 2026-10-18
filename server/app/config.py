@@ -58,17 +58,19 @@ class Config:
 
     # API Security
     # Shortest key `token import` accepts through the admin API (never below 16).
-    MIN_KEY_LENGTH: int = _get_int_env("MATTSTASH_MIN_KEY_LENGTH", 32, minimum=8, maximum=256)
+    MIN_KEY_LENGTH: int = _get_int_env("MATTSTASH_MIN_KEY_LENGTH", 32, minimum=16, maximum=256)
     # Principals, tokens and grants (docs/design/principals-and-grants.md). REQUIRED: the server does not start
     # without it (MATTSTASH_API_KEY, MATTSTASH_API_KEYS_FILE and MATTSTASH_REQUIRE_SCOPED_KEYS were removed in 0.3).
     POLICY_FILE: Optional[str] = (os.getenv("MATTSTASH_POLICY_FILE") or "").strip() or None
 
     # Names containing "/" (cloud/hetzner/s3-key): refused by default. The same variable enables them in the library and
-    # CLI. When on, the server addresses them with path-style routes (docs/server-api: slash names).
+    # CLI. When on, the server addresses them with path-style routes (server/docs/configuration.md, "Names with a
+    # slash").
     ALLOW_SLASH_NAMES: bool = _get_bool_env("MATTSTASH_ALLOW_SLASH_NAMES")
 
     # Structured access log: always on stdout (logger ``mattstash.access``); also this file when set. A request whose
-    # line cannot be written to the file is refused (fail closed), so put it on a volume that has room.
+    # line cannot be written to the file is refused (fail closed) unless MATTSTASH_ACCESS_LOG_FAIL_OPEN is set, so put
+    # it on a volume that has room. Either way /ready answers 503 while the file cannot be written.
     ACCESS_LOG_FILE: Optional[str] = (os.getenv("MATTSTASH_ACCESS_LOG_FILE") or "").strip() or None
     # Opt-out of fail-closed: a failed file write is logged as an error and the request proceeds (/ready says 503).
     ACCESS_LOG_FAIL_OPEN: bool = _get_bool_env("MATTSTASH_ACCESS_LOG_FAIL_OPEN")

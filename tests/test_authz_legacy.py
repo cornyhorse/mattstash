@@ -153,9 +153,12 @@ def test_migrate_converts_keys_into_non_admin_principals_and_grants() -> None:
 @pytest.mark.parametrize("kind", ["agent", "runner"])
 def test_migrate_refuses_a_key_without_prefixes_unless_the_kind_is_human_device(kind: str) -> None:
     text = json.dumps({"keys": [{"id": "narrow", "key": K1, "prefixes": ["a."]}, {"id": "wide", "key": K2}]})
-    with pytest.raises(PolicyError, match=rf"'wide' as {kind}.*every secret.*--kind human-device.*narrow") as info:
+    with pytest.raises(
+        PolicyError,
+        match=rf"as {kind}: 1 key without prefixes.*every secret.*may hold: wide\..*--kind human-device.*EVERY",
+    ) as info:
         migrate_v1(text, Policy(), MIN, NOW, kind)
-    assert K2 not in str(info.value)
+    assert K2 not in str(info.value) and "narrow" not in str(info.value).split("may hold:")[1].split(".")[0]
     narrow_only = json.dumps({"keys": [{"id": "narrow", "key": K1, "prefixes": ["a."]}]})
     assert [p.kind for p in migrate_v1(narrow_only, Policy(), MIN, NOW, kind).principals] == [kind]
     admin_only = json.dumps({"keys": [{"id": "ops", "key": K3, "ops": ["admin"]}]})  # no grants, so no '*' needed
@@ -178,7 +181,7 @@ def test_migrate_name_clashes_and_bad_names() -> None:
     into = Policy(principals=(Principal("Billing", "agent"),))
     with pytest.raises(PolicyError, match="already exists"):
         migrate_v1(v1_text(), into, MIN, NOW)
-    for key_id in ["-lead", "_x", "legacy-1"]:
+    for key_id in ["-lead", "_x"]:
         text = json.dumps({"keys": [{"id": key_id, "key": K1}]})
         with pytest.raises(PolicyError):
             migrate_v1(text, Policy(), MIN, NOW)

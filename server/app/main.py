@@ -68,11 +68,20 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting %s", config.API_TITLE)
 
-    # Validate configuration (do not log paths, keys or raw errors)
+    # Validate configuration (log only messages written to be shown: no keys, no hashes)
+    reported = False
     try:
-        check_removed_settings()  # the removed key settings are an error, never silently ignored
-        config.get_kdbx_password()
-        state = get_auth_state(force=True)
+        try:
+            check_removed_settings()  # the removed key settings are an error, never silently ignored
+            config.get_kdbx_password()
+            state = get_auth_state(force=True)
+        except (ValueError, FileNotFoundError) as exc:
+            # Settings and policy problems carry messages written to be shown (a policy problem names the principal
+            # and grant id, never a hash or a key); "check environment variables" would send the operator to the
+            # wrong place. The password-file errors name the variable or the file the operator configured.
+            reported = True
+            logger.error("Configuration validation failed: %s", exc)
+            raise
         config.validate_tls()
         try:
             parse_many(config.RATE_LIMIT)
@@ -81,7 +90,8 @@ async def lifespan(app: FastAPI):
         accesslog.open_file_sink()  # a path that cannot be written stops the server now, not on the first request
         logger.info("Configuration validated successfully (%d credential(s))", state.credential_count)
     except Exception:
-        logger.error("Configuration validation failed - check environment variables")
+        if not reported:
+            logger.error("Configuration validation failed - check environment variables")
         raise
 
     try:

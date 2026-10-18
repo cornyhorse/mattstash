@@ -31,7 +31,7 @@ volume holding the `.kdbx`. The server's 0.2 key settings were removed in 0.3 (s
 | `MATTSTASH_ALLOW_SLASH_NAMES` | `false` | `true`: names may contain `/` (`cloud/hetzner/s3-key`) and are addressed by path (see [Names with a slash](#names-with-a-slash)). Off: a `/` in a name is a `404`, as before. Set the same variable on clients that write such names. |
 | `MATTSTASH_ACCESS_LOG_MAX_BYTES` | `10485760` | Rotate the access log file at this size (10 MiB; 1 KiB-1 GiB). |
 | `MATTSTASH_ACCESS_LOG_BACKUPS` | `10` | Rotated access log files to keep (1-100). |
-| `MATTSTASH_MIN_KEY_LENGTH` | `32` | Shortest existing key that `token import` accepts through the admin API (8-256; the import itself never goes below 16). |
+| `MATTSTASH_MIN_KEY_LENGTH` | `32` | Shortest existing key that `token import` accepts through the admin API (16-256). A request's own `min_length` can only raise it. |
 | `MATTSTASH_ALLOW_WRITES` | `false` | Enable `POST`/`DELETE`. Otherwise they return `405`. |
 | `MATTSTASH_RATE_LIMIT` | `100/minute` | Per-client, **per-route** limit for read endpoints (writes: 30/min, admin: 10/min). |
 | `MATTSTASH_MAX_CONCURRENT_WRITES` | `8` | Writes allowed in flight at once (1-32); more get `503` + `Retry-After: 1` immediately. |
@@ -133,7 +133,11 @@ Off by default: a name containing `/` is a `404` on every route and is not liste
   path as the name. A literal `/` and `%2F` route the same way.
 - `GET /api/v1/versions/{name:path}` lists versions. `GET /api/v1/credentials/{name}/versions` keeps working for names
   without `/`; for a name with `/` it is ambiguous (`/credentials/a/versions` is the versions of `a`, never of `a/versions`),
-  so use `/versions/a/versions`. The CLI does this for any name that contains `/`.
+  so use `/versions/a/versions`. The CLI does this for any name that contains `/`. To keep that ambiguity out of new
+  data, a name whose LAST segment is exactly `versions` (case-sensitive) cannot be written (`POST` answers `400`; the
+  library and CLI refuse it too). An entry that already has such a name stays listable, deletable, and its versions
+  stay readable through `/versions/<name>` (`GET /credentials/<name>` cannot address it: that URL means the versions of
+  the shorter name).
 - A name must not start or end with `/`, contain `//` or have a `.` or `..` segment (`400 Invalid credential name`).
   Other characters are as before (`A-Za-z0-9_.-`).
 - Grants, list and search treat the name as a plain string: `cloud/*` matches `cloud/x` and not `cloud` or `cloudx/y`. A
@@ -183,7 +187,7 @@ each policy load (`admin_expiry_warning`). The lockout rule itself looks one hou
 reload fails (because of a race or an I/O error, since the change was checked before it was saved) the change is already
 in the policy file but the previous policy is still in force. Changes that take access away (revoking a token, disabling or removing a principal, `admin:
 false`, removing a grant) then answer `409 {"detail": "Saved to the policy file but NOT active: the server could not
-reload its key sources (see the server log). The previous policy is still in force."}`, so nobody believes a token is
+load the saved policy (see the server log). The previous policy is still in force."}`, so nobody believes a token is
 revoked while it still works; fix the source and call `POST /admin/invalidate-api-key-cache`. Other
 changes (adding a principal or grant, issuing or rotating a token, enabling, a description) answer normally, with a `"warning"` of
 the same text in the body and the header `X-Policy-Active: false`; an issued or rotated token is still in the response (a rotation is not refused, because its new token is shown only
@@ -299,7 +303,12 @@ When the line is written:
   no paths or secrets), the stdout line is still emitted with `"error":"access-log-write-failed"` and the request
   proceeds, so a full disk no longer stops the service but its audit trail has a gap in the file. In **both** modes
   `/ready` and `/api/ready` answer `503 {"detail": "Not ready"}` from the first failed write until a write succeeds
-  (while it is failing, each probe retries the file with a small `access-log-probe` line), so monitoring sees it.
+  (while it is failing, `/ready` retries the file with a small `access-log-probe` line at most every 5 seconds and answers from
+  the cached state in between), so monitoring sees it. The `Access log write failed` error is logged for the first failure
+  and then at most once a minute, with a count. After a failed write the file is closed and opened again (nothing half
+  written is kept, so the file never gains a line for a request that was answered `503`); when writes work again, one
+  `{"ts":...,"event":"access-log-gap","lost":N}` line says how many request lines the file missed. `mattstash admin log`
+  labels those event lines (`(log event)`).
 - Each request produces exactly one line.
 
 Never logged: tokens or API keys, secret values, usernames, URLs, notes, descriptions or any other free text. Request bodies are not logged

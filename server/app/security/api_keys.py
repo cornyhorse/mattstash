@@ -32,7 +32,7 @@ from mattstash.authz import (
     Principal,
     Token,
     admin_expiry_warning,
-    is_legacy_hash,
+    is_unsalted_hash,
     load_policy,
     parse_token,
     verify_token_hash,
@@ -111,12 +111,25 @@ def _signature(path: Optional[str]) -> Optional[Signature]:
 def check_removed_settings() -> None:
     """Refuse to start while a removed setting is present (the names only; a value is never read into a message)."""
     found = config.removed_settings_in_use()
-    if found:
-        raise ValueError(
-            f"{', '.join(found)} {'is' if len(found) == 1 else 'are'} set, but the server no longer accepts API keys "
+    if not found:
+        return
+    keys = [name for name in found if name != "MATTSTASH_REQUIRE_SCOPED_KEYS"]
+    parts = []
+    if keys:
+        parts.append(
+            f"{', '.join(keys)} {'is' if len(keys) == 1 else 'are'} set, but the server no longer accepts API keys "
             "from the environment or a keys file (removed in 0.3). Put the keys in a policy file and set "
             f"MATTSTASH_POLICY_FILE instead; {UPGRADE_DOC} shows how to move over without downtime."
         )
+    if len(keys) != len(found):
+        parts.append(
+            "MATTSTASH_REQUIRE_SCOPED_KEYS is set but is no longer used (every credential is scoped by grants "
+            f"now); unset it ({UPGRADE_DOC})."
+        )
+    parts.append(
+        "If this variable is meant for the mattstash CLI client in this shell, unset it for the server process."
+    )
+    raise ValueError(" ".join(parts))
 
 
 def _usable(principal: Principal, token: Token, now: datetime) -> bool:
@@ -137,7 +150,7 @@ def build_auth_state(file_policy: Policy, signature: Optional[Signature]) -> Aut
     for principal in file_policy.principals:
         for token in principal.tokens:
             usable = usable or _usable(principal, token, now)
-            if is_legacy_hash(token.hash):
+            if is_unsalted_hash(token.hash):
                 digests.append(_Digest(bytes.fromhex(token.hash.split(":", 1)[1]), principal, token))
             else:
                 tokens[token.id] = (principal, token)
@@ -178,8 +191,12 @@ def warn_expiring_admins(state: AuthState, *, always: bool = False) -> None:
 
 
 def warn_sha256_tokens(state: AuthState) -> None:
-    """One warning per token that uses the unsalted scheme: name the token so it can be rotated."""
+    """One warning per token that uses the unsalted scheme: name the token so it can be rotated. An expired token
+    is skipped: it no longer authenticates, so there is nothing to rotate."""
+    now = utcnow()
     for entry in state.digests:
+        if entry.token.is_expired(now):
+            continue
         logger.warning(
             "Token %s of principal %s uses the unsalted 'sha256:' scheme (an imported or migrated key). "
             "Rotate it to an mst_ token: mattstash admin token rotate %s %s",

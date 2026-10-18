@@ -56,7 +56,7 @@ _READ_LIMIT = "60/minute"
 _WRITE_LIMIT = "30/minute"
 _READ_ONLY = "Policy file is read-only; edit it and POST /admin/invalidate-api-key-cache"
 _NOT_ACTIVE = (
-    "Saved to the policy file but NOT active: the server could not reload its key sources (see the server log). "
+    "Saved to the policy file but NOT active: the server could not load the saved policy (see the server log). "
     "The previous policy is still in force."
 )
 
@@ -97,10 +97,10 @@ def force_reload(request: Request) -> dict[str, str]:
 )
 @limiter.limit("10/minute")
 def invalidate_keys(request: Request) -> dict[str, str | int]:
-    """Re-read the API keys and the policy file now and make the result the active policy.
+    """Re-read the policy file now and make the result the active policy.
 
-    Answers ``409`` if the sources cannot be loaded (bad edit, unreadable file): the PREVIOUS keys are then
-    still active, so a key you meant to revoke may still work. Treat anything but 200 as "not revoked yet".
+    Answers ``409`` if the file cannot be loaded (bad edit, unreadable file): the PREVIOUS policy is then still
+    active, so a token you meant to revoke may still work. Treat anything but 200 as "not revoked yet".
     """
     try:
         state = reload_key_policy_now()
@@ -405,7 +405,8 @@ def import_token(request: Request, name: str, body: ImportTokenRequest) -> JSONR
     The key is in the request body and nowhere else: it is not echoed, not logged (the access line holds the route
     and the principal, never the body) and not part of any error text.
     """
-    minimum = max(config.MIN_KEY_LENGTH, MIN_IMPORT_KEY_LENGTH_FLOOR) if body.min_length is None else body.min_length
+    # The server setting is a floor: a request can ask for a longer minimum, never a shorter one.
+    minimum = max(MIN_IMPORT_KEY_LENGTH_FLOOR, config.MIN_KEY_LENGTH, body.min_length or 0)
     with _editing(request) as editor:
         principal = _file_principal(editor, name)
         expires = _expiry(body.expires, editor.now)

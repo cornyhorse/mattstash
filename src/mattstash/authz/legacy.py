@@ -181,6 +181,7 @@ def migrate_v1(text: str, into: Policy, min_length: int, now: datetime, kind: st
             "`mattstash admin token import`"
         )
     entries = _parse_v1_json(_strip_comments(text), min_length)
+    needs_star: list[str] = []
     taken = {p.name.casefold() for p in into.principals}
     used_token_ids = {t.id for p in into.principals for t in p.tokens}
     used_grant_ids = {g.id for g in into.grants}
@@ -194,11 +195,7 @@ def migrate_v1(text: str, into: Policy, min_length: int, now: datetime, kind: st
         taken.add(entry.key_id.casefold())
         entry_grants = _entry_grants(entry)
         if kind != "human-device" and any(pattern == "*" for pattern, _ in entry_grants):
-            raise PolicyError(
-                f"cannot migrate key {entry.key_id!r} as {kind}: it has no prefixes, so it can read every secret, "
-                "and the '*' grant is only for human-device principals. Re-run with --kind human-device, or "
-                "narrow the key's prefixes first"
-            )
+            needs_star.append(entry.key_id)
         stored = f"sha256:{entry.digest.hex()}"
         if stored in existing:
             raise PolicyError(f"cannot migrate key {entry.key_id!r}: The same API key is configured more than once")
@@ -219,6 +216,14 @@ def migrate_v1(text: str, into: Policy, min_length: int, now: datetime, kind: st
             grants.append(
                 Grant(grant_id, entry.key_id, pattern, None, actions, None, "migrated from a v1 key policy", now)
             )
+    if needs_star:  # every offender is listed (and nothing is migrated), after the name checks above
+        raise PolicyError(
+            f"cannot migrate as {kind}: {len(needs_star)} key{'' if len(needs_star) == 1 else 's'} without "
+            f"prefixes can read every secret and would need the '*' grant, which only human-device principals "
+            f"may hold: {', '.join(needs_star)}. Either narrow those keys' prefixes in the source file (or "
+            "leave them out of it) and run again, or run with --kind human-device, which makes EVERY migrated "
+            "key a human-device principal"
+        )
     migrated = replace(into, principals=tuple(principals), grants=tuple(grants))
     validate_policy(migrated)
     return migrated

@@ -19,7 +19,7 @@ from .conftest import DB_PASSWORD, FULL_KEY, auth
 
 BASE = "/api/v1/admin"
 NOT_ACTIVE = (
-    "Saved to the policy file but NOT active: the server could not reload its key sources (see the server log). "
+    "Saved to the policy file but NOT active: the server could not load the saved policy (see the server log). "
     "The previous policy is still in force."
 )
 UNAVAILABLE = {"detail": "Service temporarily unavailable"}

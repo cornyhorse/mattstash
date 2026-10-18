@@ -85,7 +85,10 @@ class ImportTokenRequest(_AdminRequest):
     )
     description: str = Field("", max_length=500)
     min_length: int | None = Field(
-        None, ge=16, le=256, description="Shortest key to accept (default: the server's MATTSTASH_MIN_KEY_LENGTH)"
+        None,
+        ge=16,
+        le=256,
+        description="Shortest key to accept; the server's MATTSTASH_MIN_KEY_LENGTH (at least 16) is a floor",
     )
 
 

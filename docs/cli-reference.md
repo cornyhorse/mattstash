@@ -216,9 +216,10 @@ carries on with an empty value that merely looks like success. Works in local an
 
 Creates a new version of the credential. Use `.` as the separator (`myapp.db-password`). A title containing `/` is
 refused unless `MATTSTASH_ALLOW_SLASH_NAMES=true` is set (then `cloud/hetzner/s3-key` works; it must not start or end with
-`/`, contain `//` or have a `.`/`..` segment). Reading, listing, versioning and deleting existing entries whose titles
+`/`, contain `//` or have a `.`/`..` segment, and its last segment must not be exactly `versions`, which is the server's
+versions route). Reading, listing, versioning and deleting existing entries whose titles
 contain `/` always works locally. In server mode the server must also run with `MATTSTASH_ALLOW_SLASH_NAMES=true`
-(otherwise it answers 404); the CLI then asks for `versions` of such a name through `GET /api/v1/versions/<name>`. Two modes:
+(otherwise it answers 404, and the CLI says so when it refuses the name); the CLI then asks for `versions` of such a name through `GET /api/v1/versions/<name>`. Two modes:
 
 #### Simple secret mode (credstash-like)
 ```bash
@@ -652,7 +653,7 @@ subcommand.
 | `--decision` | `log`: `allowed` or `denied`. |
 | `--json` | Print JSON. For `log`, one JSON record per line. |
 | `--expires WHEN` (with `token import`) | As for `token issue`. |
-| `--min-length N` | `token import`, `migrate-keys`: shortest existing key to accept. Default 32; never below 16. |
+| `--min-length N` | `token import`, `migrate-keys`: shortest existing key to accept, never below 16. Default for `migrate-keys`: 32. For `token import` the default is 32 locally and the server's own minimum with `--server-url` (the option can only raise it). |
 | `--from KEYS_JSON` | `migrate-keys`: the v1 JSON key policy to convert. |
 
 **Output.** `token issue` and `token rotate` print only the token on stdout, once, and nothing else on stdout. The token
@@ -673,9 +674,13 @@ The server also refuses (`409`, nothing saved) any change that would leave a pol
 
 **Importing an existing key.** `token import` stores a key a client already has (for example an old `MATTSTASH_API_KEY`)
 as a token of the principal, so the client keeps working. The key is read from **standard input only**, never from an
-argument: pipe it, or type it at the prompt without echo. It must be printable ASCII with at least 32 characters (`--min-length`
-lowers that, to 16 at least), and a key in `mst_` format is refused (issue or rotate those instead). It is stored as an
-unsalted `sha256:<hex>` hash and a key that another token already holds is refused. The server does the same through
+argument: pipe it, or type it at the prompt without echo. A key typed as an argument is not echoed back: the command
+refuses with a fixed message and tells you to rotate that key, because it is already in your shell history and the process
+list. The key must be printable ASCII with at least 32 characters (`--min-length N` changes that, never below 16; without
+it local mode uses 32 and server mode uses the server's `MATTSTASH_MIN_KEY_LENGTH`, which `--min-length` can only raise),
+and any key that starts with `mst_` is refused (issue or rotate those instead). An `admin` principal refuses an import
+(admins use issued `mst_` tokens only), and `principal update --admin` refuses a principal that holds an imported key.
+It is stored as an unsalted `sha256:<hex>` hash and a key that another token already holds is refused. The server does the same through
 `POST /api/v1/admin/principals/{name}/tokens/import`. Then rotate the client to an `mst_` token and revoke the imported one
 (see [upgrading to 0.3](upgrading-to-0.3.md#moving-over-without-downtime)).
 

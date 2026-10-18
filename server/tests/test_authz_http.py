@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import ADMIN_KEY, APP_KEY, FULL_KEY, READ_KEY, WRITE_KEY, auth
+from .conftest import ADMIN_KEY, APP_KEY, FULL_KEY, READ_KEY, WRITE_KEY, auth, import_plain_key
 
 
 def bearer(token: str) -> dict[str, str]:
@@ -541,7 +541,7 @@ def test_key_rotation_without_restart(make_client, default_policy, seed):
     assert client.get("/api/v1/credentials", headers=new).status_code == 401
 
     with edit_policy(default_policy) as ed:  # add a key, keep the old one while clients migrate
-        ed.import_token("full", "n" * 40)
+        import_plain_key(ed, "full", "n" * 40)
     client.post("/api/v1/admin/invalidate-api-key-cache", headers=old)
     assert client.get("/api/v1/credentials", headers=new).status_code == 200
 
@@ -615,7 +615,7 @@ def test_an_imported_key_of_an_admin_keeps_every_admin_endpoint(make_client, pol
     from mattstash.authz import edit_policy
 
     with edit_policy(policy_path) as ed:
-        ed.import_token("matt", "p" * 40)
+        import_plain_key(ed, "matt", "p" * 40)
     client = make_client(POLICY_FILE=policy_path)
     key = "p" * 40
     assert client.get("/api/v1/admin/principals", headers=auth(key)).status_code == 200

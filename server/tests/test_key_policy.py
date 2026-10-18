@@ -22,7 +22,7 @@ from app.security.api_keys import (
     verify_api_key,
 )
 
-from .conftest import ADMIN_KEY, APP_KEY, FULL_KEY, READ_KEY
+from .conftest import ADMIN_KEY, APP_KEY, FULL_KEY, READ_KEY, import_plain_key
 
 STRONG = "s" * 40
 
@@ -106,6 +106,9 @@ def test_removed_settings_are_refused_by_name_and_never_by_value(monkeypatch, en
         check_removed_settings()
     message = str(info.value)
     assert names[0] in message and " is set" in message and "docs/upgrading-to-0.3.md" in message
+    assert "meant for the mattstash CLI client in this shell, unset it for the server process" in message
+    assert ("no longer used" in message) == (names == ["MATTSTASH_REQUIRE_SCOPED_KEYS"])
+    assert ("no longer accepts API keys" in message) == (names != ["MATTSTASH_REQUIRE_SCOPED_KEYS"])
     assert not any(value in message for value in env.values())
     assert Config.removed_settings_in_use() == names
 
@@ -190,7 +193,7 @@ def test_an_imported_key_authenticates_as_its_principal_with_its_token_id(monkey
 def test_an_imported_key_respects_expiry_disabled_and_revocation(monkeypatch, default_policy):
     monkeypatch.setattr(Config, "POLICY_FILE", default_policy)
     with edit_policy(default_policy) as ed:
-        ed.import_token("full", STRONG, expires=utcnow() + timedelta(seconds=1))
+        import_plain_key(ed, "full", STRONG, expires=utcnow() + timedelta(seconds=1))
     assert authenticate(STRONG).reason == "ok"
     monkeypatch.setattr(api_keys, "utcnow", lambda: utcnow() + timedelta(seconds=5))
     result = authenticate(STRONG)
@@ -302,7 +305,7 @@ def test_every_unsalted_digest_is_compared_without_an_early_exit(monkeypatch, de
     """The match is found by comparing against ALL ``sha256:`` tokens (no branch on which one matched)."""
     with edit_policy(default_policy) as ed:
         for n in range(3):
-            ed.import_token("full", f"extra-key-{n}-" + "e" * 30)
+            import_plain_key(ed, "full", f"extra-key-{n}-" + "e" * 30)
     monkeypatch.setattr(Config, "POLICY_FILE", default_policy)
     compared = []
     real = api_keys.hmac.compare_digest
