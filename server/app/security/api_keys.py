@@ -45,7 +45,6 @@ from mattstash.authz import (
     parse_token,
     verify_token_hash,
 )
-from mattstash.authz.legacy import VALID_OPS  # noqa: F401  (used by app.keytool)
 from mattstash.authz.models import utcnow
 
 from ..config import config
@@ -78,6 +77,7 @@ class AuthState:
     digests: tuple[_Digest, ...]  # legacy keys and sha256: file tokens
     legacy_sources: tuple[str, ...]
     legacy_admin: bool  # a legacy key can administer, so the last file admin may be removed
+    unscoped: frozenset[str]  # names of the legacy keys that always had full access (env key, plain-list keys)
     sha256_tokens: int  # file tokens that use the deprecated unsalted scheme
     file_signature: Optional[Signature]
 
@@ -94,6 +94,7 @@ class AuthResult:
     token_id: Optional[str]
     reason: str
     policy: Optional[Policy] = None
+    unscoped: bool = False  # a legacy key with full access (not a v1 scoped key); False for every token
 
 
 _state: Optional[AuthState] = None
@@ -126,6 +127,7 @@ def load_auth_state() -> AuthState:
     legacy_grants = []
     sources: list[str] = []
     unscoped = False
+    unscoped_names: set[str] = set()
 
     if config.API_KEY:
         key, grants = legacy_from_env_key(config.API_KEY, config.MIN_KEY_LENGTH)
@@ -133,6 +135,7 @@ def load_auth_state() -> AuthState:
         legacy_grants.extend(grants)
         sources.append("MATTSTASH_API_KEY")
         unscoped = True
+        unscoped_names.add(key.principal.name)
 
     if config.API_KEYS_FILE:
         path = Path(config.API_KEYS_FILE)
@@ -144,6 +147,8 @@ def load_auth_state() -> AuthState:
         legacy_grants.extend(grants_from_file)
         sources.append("MATTSTASH_API_KEYS_FILE")
         unscoped = unscoped or has_unscoped
+        if has_unscoped:  # a plain list: every key in it is full-access (a v1 JSON policy has none)
+            unscoped_names.update(k.principal.name for k in keys)
 
     # Grants are found by principal name, so ANY clash (case-insensitive) between sources would let one principal
     # inherit another's access, e.g. a scoped v1 key with id "legacy-env" taking the env key's "*" grant.
@@ -190,6 +195,7 @@ def load_auth_state() -> AuthState:
         digests=tuple(digests),
         legacy_sources=tuple(sources),
         legacy_admin=any(can_admin(key.principal) for key in legacy_keys),
+        unscoped=frozenset(unscoped_names),
         sha256_tokens=len(sha256_digests),
         file_signature=signature,
     )
@@ -288,7 +294,7 @@ def authenticate(api_key: Optional[str]) -> AuthResult:
     if match is None:
         return AuthResult(None, token_id, "unknown-token" if parsed else "bad-token")
     if match.token is None:  # a legacy key: no id, no expiry, never disabled
-        return AuthResult(match.principal, None, "ok", state.policy)
+        return AuthResult(match.principal, None, "ok", state.policy, match.principal.name in state.unscoped)
     return _check_token(state, match.principal, match.token)
 
 

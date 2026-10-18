@@ -12,7 +12,7 @@ import json
 import secrets
 import sys
 
-from .security.api_keys import VALID_OPS
+from mattstash.authz.legacy import VALID_OPS
 
 
 def build_entry(key_id: str, key: str, ops: list[str], prefixes: list[str]) -> dict[str, object]:

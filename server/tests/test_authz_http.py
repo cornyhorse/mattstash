@@ -5,6 +5,7 @@ kind of legacy key (env key, plain keys file, v1 JSON policy).
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -545,3 +546,60 @@ def test_migrated_policy_serves_the_old_plain_keys_over_http(make_client, tmp_pa
     assert client.post("/api/v1/admin/reload", headers=auth(ADMIN_KEY)).status_code == 200
     assert client.get("/api/v1/credentials", headers=auth("n" * 40)).status_code == 401
     assert json.loads(client.get("/api/v1/admin/principals", headers=auth(ADMIN_KEY)).text)["principals"]
+
+
+# ---------------------------------------------------------------------------
+# v1 `ops: ["admin"]` stays what it was: reload and invalidate only
+# ---------------------------------------------------------------------------
+
+_MUTATING_AND_READING = [
+    ("GET", "/principals", None),
+    ("POST", "/principals", {"name": "intruder", "kind": "agent"}),
+    ("GET", "/principals/reader", None),
+    ("PATCH", "/principals/matt", {"disabled": True}),
+    ("DELETE", "/principals/hermes", None),
+    ("GET", "/principals/hermes/tokens", None),
+    ("POST", "/principals/hermes/tokens", {}),
+    ("GET", "/grants", None),
+    ("POST", "/grants", {"principal": "hermes", "key": "*", "actions": ["list", "read", "write", "delete"]}),
+    ("DELETE", "/grants/g_00000000", None),
+    ("POST", "/check", {"principal": "hermes", "action": "read", "name": "x"}),
+    ("GET", "/access-log", None),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _MUTATING_AND_READING)
+def test_a_v1_admin_only_key_cannot_use_the_new_admin_endpoints(
+    make_client, key_policy_file, policy_path, policy_tokens, tmp_path, method, path, body
+):
+    log = tmp_path / "access.jsonl"
+    client = make_client(
+        API_KEY=None,
+        API_KEYS_FILE=str(key_policy_file),
+        POLICY_FILE=policy_path,
+        ACCESS_LOG_FILE=str(log),
+        ALLOW_WRITES=True,
+    )
+    before = Path(policy_path).read_text()
+    for key in (ADMIN_KEY, READ_KEY, WRITE_KEY, APP_KEY):
+        response = client.request(method, "/api/v1/admin" + path, json=body, headers=auth(key))
+        assert response.status_code == 403 and response.json() == {"detail": "Insufficient permissions"}, key
+    assert Path(policy_path).read_text() == before
+    # what v1 admin meant still works
+    assert client.post("/api/v1/admin/reload", headers=auth(ADMIN_KEY)).status_code == 200
+    assert client.post("/api/v1/admin/invalidate-api-key-cache", headers=auth(ADMIN_KEY)).status_code == 200
+    # ... and the file's own admin is unaffected
+    assert client.get("/api/v1/admin/principals", headers=bearer(policy_tokens["matt"])).status_code == 200
+    denied = [json.loads(line) for line in log.read_text().splitlines()]
+    assert {r["reason"] for r in denied if r["principal"] == "ops" and r["decision"] == "denied"} == {"legacy-scoped"}
+
+
+def test_full_access_legacy_keys_keep_every_admin_endpoint(make_client, policy_path, policy_tokens, tmp_path):
+    plain = tmp_path / "plain.txt"
+    plain.write_text("p" * 40 + "\n")
+    for kwargs, key in (({"API_KEY": FULL_KEY}, FULL_KEY), ({"API_KEY": None, "API_KEYS_FILE": str(plain)}, "p" * 40)):
+        client = make_client(POLICY_FILE=policy_path, **kwargs)
+        assert client.get("/api/v1/admin/principals", headers=auth(key)).status_code == 200
+        assert client.get("/api/v1/admin/grants", headers=auth(key)).status_code == 200
+        check = {"principal": "hermes", "action": "read", "name": "firefly.x"}
+        assert client.post("/api/v1/admin/check", json=check, headers=auth(key)).json()["allowed"] is True

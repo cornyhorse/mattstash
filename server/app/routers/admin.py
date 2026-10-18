@@ -62,7 +62,7 @@ _READ_ONLY = "Policy file is read-only; edit it and POST /admin/invalidate-api-k
 # ---------------------------------------------------------------------------
 
 
-@router.post("/admin/reload", dependencies=[Depends(require_admin("admin.reload"))])
+@router.post("/admin/reload", dependencies=[Depends(require_admin("admin.reload", scoped_legacy_ok=True))])
 @limiter.limit("10/minute")
 def force_reload(request: Request) -> dict[str, str]:
     """
@@ -87,7 +87,10 @@ def force_reload(request: Request) -> dict[str, str]:
     )
 
 
-@router.post("/admin/invalidate-api-key-cache", dependencies=[Depends(require_admin("admin.invalidate-api-key-cache"))])
+@router.post(
+    "/admin/invalidate-api-key-cache",
+    dependencies=[Depends(require_admin("admin.invalidate-api-key-cache", scoped_legacy_ok=True))],
+)
 @limiter.limit("10/minute")
 def invalidate_keys(request: Request) -> dict[str, str | int]:
     """Re-read the API keys and the policy file now and make the result the active policy.
