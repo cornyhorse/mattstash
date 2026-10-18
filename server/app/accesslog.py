@@ -1,7 +1,17 @@
 """The structured access log (docs/design/principals-and-grants.md section 6).
 
-One JSON line per request, written by the security middleware at ``http.response.start`` from what the route recorded
-in ``scope["state"]["access"]`` (see :func:`note`). Sinks:
+One JSON line per request, built from what the route recorded in ``scope["state"]["access"]`` (see :func:`note`).
+When it is written depends on the request:
+
+* a state-changing request (POST/PATCH/PUT/DELETE) that reaches an authorization decision gets its line AT THE
+  DECISION, from the route's dependency (:func:`commit`), before any effect. If the line cannot be written the
+  request is answered 503 and the handler never runs, so nothing changed and no token was minted. Such a line has no
+  ``status``: it is written before the outcome is known;
+* every other request (reads, and anything rejected before a decision) is written by the security middleware at
+  ``http.response.start``, with the ``status`` being sent, i.e. before any byte of the response goes out. A read
+  whose line cannot be written is not sent either.
+
+Either way a request produces exactly one line (:func:`write_line` marks it written). Sinks:
 
 * the ``mattstash.access`` logger, which :func:`app.logging_setup.configure_logging` points at stdout, always;
 * when ``MATTSTASH_ACCESS_LOG_FILE`` is set, a rotating file (mode 0600) that fails CLOSED: if a line cannot be
@@ -19,9 +29,10 @@ from collections.abc import Mapping, MutableMapping
 from logging.handlers import RotatingFileHandler
 from typing import Any, Optional
 
-from fastapi import Request
-from mattstash.authz import format_record
+from fastapi import HTTPException, Request, status
+from mattstash.authz import format_record, now_iso
 
+from .client_ip import client_ip
 from .config import config
 
 ACCESS_LOGGER = "mattstash.access"
@@ -29,7 +40,25 @@ access_logger = logging.getLogger(ACCESS_LOGGER)
 logger = logging.getLogger("mattstash.api")
 
 #: Fields a route may add to its request's line. The middleware owns the rest (ts, principal, kind, token, ...).
-_ROUTE_FIELDS = frozenset({"action", "route", "key", "tag", "decision", "reason", "grant", "count"})
+_ROUTE_FIELDS = frozenset(
+    {
+        "action",
+        "route",
+        "key",
+        "tag",
+        "decision",
+        "reason",
+        "grant",
+        "count",
+        "target_token",  # admin: the id (never the secret) of the token being revoked or rotated
+        "grant_key",  # admin: the pattern / tag / actions of a grant being added (not secret)
+        "grant_tag",
+        "actions",
+        "reveal",  # a secret value was returned (show_password, unmasked db-url)
+        "version",  # a specific version was requested
+    }
+)
+STATE_CHANGING = frozenset({"POST", "PATCH", "PUT", "DELETE"})
 
 
 def access_state(scope: MutableMapping[str, Any]) -> dict[str, Any]:
@@ -109,3 +138,38 @@ def emit(fields: Mapping[str, object]) -> None:
 def emit_failed(fields: Mapping[str, object]) -> None:
     """Stdout only: the file refused the line, so the request was answered 503 instead of what the route decided."""
     access_logger.info(format_record({**fields, "status": 503, "error": "access-log-write-failed"}))
+
+
+def write_line(scope: MutableMapping[str, Any], code: Optional[int] = None, error: Optional[str] = None) -> bool:
+    """Write this request's one line (``code`` and ``error`` become ``status`` and ``error`` when given).
+
+    False if the file sink refused it; the line then goes to stdout alone, marked ``status: 503``. The request counts
+    as written either way, so nothing writes a second line for it.
+    """
+    scope.setdefault("state", {})["access_written"] = True
+    fields: dict[str, object] = {"ts": now_iso(), **access_state(scope), "client": client_ip(scope)}
+    if code is not None:
+        fields["status"] = code
+    if error is not None:
+        fields["error"] = error
+    try:
+        emit(fields)
+    except Exception as exc:
+        logger.error("Access log write failed: %s", type(exc).__name__)
+        emit_failed(fields)
+        return False
+    return True
+
+
+def is_written(scope: MutableMapping[str, Any]) -> bool:
+    return bool(scope.get("state", {}).get("access_written"))
+
+
+def commit(request: Request) -> None:
+    """Fail closed at the authorization decision of a state-changing request: write its line now, before any effect.
+
+    A no-op for other methods (their line is written with the response status by the middleware). Raises 503 if the
+    line cannot be written, which stops the request before its handler changes anything.
+    """
+    if request.method in STATE_CHANGING and not is_written(request.scope) and not write_line(request.scope):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service temporarily unavailable")

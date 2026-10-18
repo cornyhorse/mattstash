@@ -4,7 +4,7 @@ access log), end to end: principals, tokens used for data calls, grants, ``check
 keys, and what a non-admin or list-only caller sees.
 
 The server follows the admin API contract (docs/design/principals-and-grants.md, section 8); a test marked
-``xfail(strict=True)`` documents a deviation of the server from it.
+``xfail(strict=True)`` would document a deviation of the server from it (there are none at the moment).
 """
 
 import json
@@ -533,11 +533,6 @@ def test_admin_endpoints_require_authentication(admin_server: AdminServer) -> No
     assert wrong.status_code == 401
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="server deviation: POST .../rotate accepts an absolute date as `grace` (the contract and the CLI allow "
-    "only relative durations 30m/24h/7d/2w); a future date is taken as a grace of years instead of a 400",
-)
 def test_server_rejects_an_absolute_grace(admin_server: AdminServer) -> None:
     request(admin_server, "POST", "principals", json={"name": "grace-wire", "kind": "agent"})
     token = request(admin_server, "POST", "principals/grace-wire/tokens", json={}).json()

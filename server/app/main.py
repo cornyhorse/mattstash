@@ -83,51 +83,54 @@ async def lifespan(app: FastAPI):
         logger.error("Configuration validation failed - check environment variables")
         raise
 
-    for source in state.legacy_sources:
-        logger.warning(
-            "Deprecated: legacy API key(s) from %s are configured. They keep working (responses carry "
-            "'Deprecation: true'), but move to principals and tokens: docs/design/principals-and-grants.md, "
-            "`mattstash admin migrate-keys`",
-            source,
-        )
-    if state.sha256_tokens:
-        logger.warning(
-            "Deprecated: %d token(s) in the policy file use the unsalted 'sha256:' hash (migrated v1 keys); "
-            "re-issue them with `mattstash admin token rotate` to get salted tokens",
-            state.sha256_tokens,
-        )
-    _check_sidecar()
-
-    # Open the database now so a wrong password / missing file fails the deployment visibly,
-    # instead of surfacing as errors on the first request.
     try:
-        await asyncio.to_thread(initialize_mattstash)
-    except Exception as exc:
-        logger.error("Cannot open the database: %s - %s", type(exc).__name__, exc)
-        raise
+        for source in state.legacy_sources:
+            logger.warning(
+                "Deprecated: legacy API key(s) from %s are configured. They keep working (responses carry "
+                "'Deprecation: true'), but move to principals and tokens: docs/design/principals-and-grants.md, "
+                "`mattstash admin migrate-keys`",
+                source,
+            )
+        if state.sha256_tokens:
+            logger.warning(
+                "Deprecated: %d token(s) in the policy file use the unsalted 'sha256:' hash (migrated v1 keys); "
+                "re-issue them with `mattstash admin token rotate` to get salted tokens",
+                state.sha256_tokens,
+            )
+        _check_sidecar()
 
-    if config.ALLOW_WRITES:
-        logger.warning(
-            "Writes are ENABLED. Run a single replica; the data directory must be writable (a lock file is created)."
-        )
-        if not os.access(os.path.dirname(config.DB_PATH) or ".", os.W_OK):
-            logger.warning("MATTSTASH_ALLOW_WRITES is set but the data directory is not writable")
-    else:
-        logger.info("Read-only mode (set MATTSTASH_ALLOW_WRITES=true to enable writes)")
+        # Open the database now so a wrong password / missing file fails the deployment visibly,
+        # instead of surfacing as errors on the first request.
+        try:
+            await asyncio.to_thread(initialize_mattstash)
+        except Exception as exc:
+            logger.error("Cannot open the database: %s - %s", type(exc).__name__, exc)
+            raise
 
-    # Start background poller for external DB modifications
-    poller_task = asyncio.create_task(_poll_database_changes())
+        if config.ALLOW_WRITES:
+            logger.warning(
+                "Writes are ENABLED. Run a single replica; "
+                "the data directory must be writable (a lock file is created)."
+            )
+            if not os.access(os.path.dirname(config.DB_PATH) or ".", os.W_OK):
+                logger.warning("MATTSTASH_ALLOW_WRITES is set but the data directory is not writable")
+        else:
+            logger.info("Read-only mode (set MATTSTASH_ALLOW_WRITES=true to enable writes)")
 
-    yield
+        # Start background poller for external DB modifications
+        poller_task = asyncio.create_task(_poll_database_changes())
 
-    # Shutdown
-    accesslog.close_file_sink()
-    poller_task.cancel()
-    try:
-        await poller_task
-    except asyncio.CancelledError:
-        pass
-    logger.info("Shutting down MattStash API")
+        yield
+
+        poller_task.cancel()
+        try:
+            await poller_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Shutting down MattStash API")
+    finally:
+        # Also when startup failed after the log file was opened (wrong database password, refused sidecar).
+        accesslog.close_file_sink()
 
 
 async def _validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:

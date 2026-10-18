@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from mattstash.authz import load_policy
-from mattstash.utils.exceptions import DatabaseLockError
+from mattstash.utils.exceptions import DatabaseLockError, DatabaseLockTimeoutError
 
 from app.security import api_keys
 
@@ -546,8 +546,14 @@ def test_lock_failures(adm, monkeypatch):
     response = adm.post(f"{BASE}/principals", json={"name": "fresh", "kind": "agent"})
     assert response.status_code == 409 and response.json() == READ_ONLY
 
+    def wording_is_not_the_signal(*args, **kwargs):  # the TYPE says "timeout", never the message
+        raise DatabaseLockError("Timed out after 30s: but this is a plain lock error")
+
+    monkeypatch.setattr(admin_module, "edit_policy", wording_is_not_the_signal)
+    assert adm.post(f"{BASE}/principals", json={"name": "fresh", "kind": "agent"}).status_code == 409
+
     def busy(*args, **kwargs):
-        raise DatabaseLockError("Timed out after 30s waiting for another MattStash process to release /x.lock")
+        raise DatabaseLockTimeoutError("Timed out after 30s waiting for another MattStash process to release /x.lock")
 
     monkeypatch.setattr(admin_module, "edit_policy", busy)
     response = adm.post(f"{BASE}/principals", json={"name": "fresh", "kind": "agent"})

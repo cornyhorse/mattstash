@@ -24,13 +24,14 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from mattstash.authz import (
     DUMMY_HASH,
+    LEGACY_KIND,
     LegacyKey,
     Policy,
     PolicyError,
@@ -113,6 +114,32 @@ def _signature(path: Optional[str]) -> Optional[Signature]:
     return info.st_mtime_ns, info.st_size, info.st_ino
 
 
+def check_name_clashes(file_names: Iterable[str], legacy_names: Iterable[str]) -> None:
+    """Refuse a principal name used twice across the key sources (case-insensitively).
+
+    Grants are found by principal name, so ANY clash would let one principal inherit another's access, e.g. a scoped
+    v1 key with id "legacy-env" taking the env key's "*" grant.
+    """
+    seen: set[str] = set()
+    for name in (*file_names, *legacy_names):
+        folded = name.casefold()
+        if folded in seen:
+            raise PolicyError(f"the principal name {name!r} is used more than once across the key sources")
+        seen.add(folded)
+
+
+def check_edit(policy: Policy, state: AuthState) -> None:
+    """Refuse an edited policy file that :func:`load_auth_state` would refuse once merged with the legacy keys now
+    configured, so an admin edit can never produce a file the server cannot load.
+
+    The loader's other checks cannot be tripped by an edit: it needs at least one credential, and the lockout rule
+    already keeps an admin token in the file unless a legacy admin key exists; duplicate keys involve only the
+    unsalted ``sha256:`` tokens, which an edit never creates.
+    """
+    legacy = [p.name for p in state.policy.principals if p.kind == LEGACY_KIND]
+    check_name_clashes([p.name for p in policy.principals], legacy)
+
+
 def load_auth_state() -> AuthState:
     """Build the state from the configured sources. Raises ValueError/FileNotFoundError if unusable."""
     file_policy = Policy()
@@ -150,14 +177,7 @@ def load_auth_state() -> AuthState:
         if has_unscoped:  # a plain list: every key in it is full-access (a v1 JSON policy has none)
             unscoped_names.update(k.principal.name for k in keys)
 
-    # Grants are found by principal name, so ANY clash (case-insensitive) between sources would let one principal
-    # inherit another's access, e.g. a scoped v1 key with id "legacy-env" taking the env key's "*" grant.
-    seen: set[str] = set()
-    for principal in (*file_policy.principals, *(key.principal for key in legacy_keys)):
-        folded = principal.name.casefold()
-        if folded in seen:
-            raise PolicyError(f"the principal name {principal.name!r} is used more than once across the key sources")
-        seen.add(folded)
+    check_name_clashes([p.name for p in file_policy.principals], [key.principal.name for key in legacy_keys])
 
     tokens: dict[str, tuple[Principal, Token]] = {}
     sha256_digests: list[_Digest] = []

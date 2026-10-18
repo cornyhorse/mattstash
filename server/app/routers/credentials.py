@@ -109,12 +109,15 @@ def get_credential(
     """
     require_valid_name(name)
     authorize_name(request, caller, "read", "get", name, mattstash=mattstash)
+    note(request, version=version)
     with translate_errors("get"):
         credential = mattstash.get(name, show_password=True, version=version)
 
     if credential is None:
         raise _not_found(name)
 
+    if show_password:
+        note(request, reveal=True)  # the value is in the response (a miss above reveals nothing)
     response_data = _normalize_credential(name, credential, show_password)
     return Response(
         content=response_data.model_dump_json(),
@@ -167,7 +170,15 @@ def list_credentials(
         else CredentialResponse(name=c.credential_name, password=_MASK, version=c.version)
         for c in shown
     ]
-    note(request, action="list", route="list", key=prefix or None, decision="allowed", count=len(credentials))
+    note(
+        request,
+        action="list",
+        route="list",
+        key=prefix or None,
+        decision="allowed",
+        count=len(credentials),
+        reveal=True if show_password else None,
+    )
     return CredentialListResponse(credentials=credentials, count=len(credentials))
 
 
@@ -200,7 +211,9 @@ def search_credentials(
         and (wanted is None or wanted in c.credential_name.casefold())
         and (tag is None or tag in c.tags)
     ]
-    allowed = set(visible(caller.policy, caller.principal, "list", [(c.credential_name, c.tags) for c in matches]))
+    allowed = set(
+        visible(caller.policy, caller.principal, "list", [(c.credential_name, c.tags) for c in matches], utcnow())
+    )
     results = [SearchResult(name=c.credential_name, tags=list(c.tags)) for c in matches if c.credential_name in allowed]
     note(request, action="list", route="search", key=q, tag=tag, decision="allowed", count=len(results))
     return SearchResponse(results=results, count=len(results))

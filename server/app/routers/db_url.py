@@ -5,6 +5,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from mattstash.builders.db_url import AUTO_DRIVER, DIALECT_DRIVERS, DbUrlError, build_db_url, normalize_dialect
 
+from ..accesslog import note
 from ..dependencies import MattStashDep, ReadAccess, authorize_name
 from ..errors import translate_errors
 from ..models.responses import DatabaseUrlResponse
@@ -114,4 +115,6 @@ def get_database_url(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid credential for database URL construction",
             ) from None
+    if not mask_password:
+        note(request, reveal=True)  # the unmasked password is in the URL
     return DatabaseUrlResponse(url=url)

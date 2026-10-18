@@ -55,8 +55,10 @@ def test_an_allowed_read_is_one_line_with_every_field(lc, log_path, policy_token
     lc.get("/api/v1/credentials/firefly.token?show_password=true", headers=bearer(policy_tokens["hermes"]))
     (record,) = file_records(log_path)
     assert set(record) == {
-        "ts", "principal", "kind", "token", "action", "route", "key", "decision", "grant", "client", "status"
+        "ts", "principal", "kind", "token", "action", "route", "key", "decision", "grant", "client", "status",
+        "reveal",
     }  # fmt: skip
+    assert record["reveal"] is True  # show_password=true: a secret value was returned
     assert record["principal"] == "hermes" and record["kind"] == "agent"
     assert record["token"] == policy_tokens["hermes"].split("_")[1]
     assert (record["action"], record["route"], record["key"]) == ("read", "get", "firefly.token")
@@ -75,14 +77,15 @@ def test_denied_reads_and_writes_carry_a_reason_and_the_real_status(lc, log_path
     lc.post("/api/v1/credentials/app-y", json={"value": "x"}, headers=hermes)  # holds no write grant at all
     lc.delete("/api/v1/credentials/app-y", headers=hermes)
     records = file_records(log_path)
-    assert [(r["action"], r["route"], r["status"]) for r in records] == [
+    # reads carry the status being sent; writes are logged at the decision, before the outcome exists: no status
+    assert [(r["action"], r["route"], r.get("status")) for r in records] == [
         ("read", "get", 404),
         ("read", "versions", 404),
         ("read", "db-url", 404),
-        ("write", "put", 403),
-        ("delete", "delete", 403),
-        ("write", "put", 403),
-        ("delete", "delete", 403),
+        ("write", "put", None),
+        ("delete", "delete", None),
+        ("write", "put", None),
+        ("delete", "delete", None),
     ]
     assert all(r["decision"] == "denied" and r["reason"] == "no-grant" and "grant" not in r for r in records)
     assert [r["key"] for r in records] == ["other"] * 5 + ["app-y"] * 2
@@ -93,13 +96,9 @@ def test_writes_and_deletes_are_logged_with_their_grant(lc, log_path, policy_tok
     lc.post("/api/v1/credentials/app-new", json={"value": "write-secret-xyz"}, headers=scribe)
     lc.delete("/api/v1/credentials/app-new", headers=scribe)
     put, delete = file_records(log_path)
-    assert (put["action"], put["route"], put["decision"], put["status"]) == ("write", "put", "allowed", 201)
-    assert (delete["action"], delete["route"], delete["decision"], delete["status"]) == (
-        "delete",
-        "delete",
-        "allowed",
-        200,
-    )
+    assert (put["action"], put["route"], put["decision"]) == ("write", "put", "allowed")
+    assert (delete["action"], delete["route"], delete["decision"]) == ("delete", "delete", "allowed")
+    assert "status" not in put and "status" not in delete  # written at the decision, before the effect
     assert put["grant"] == delete["grant"] and put["grant"].startswith("g_")
 
 
@@ -207,7 +206,9 @@ def test_admin_requests_are_logged_with_the_thing_they_change(lc, log_path, poli
         ("admin", "admin.reload", None),
     ]
     assert all(r["principal"] == "matt" and r["kind"] == "human-device" and r["decision"] == "allowed" for r in records)
-    assert [r["status"] for r in records] == [201, 201, 200, 200, 200, 201, 200, 200]
+    # state-changing requests are logged at the decision (no status); the read and the check-by-POST... only GETs
+    # (and the other routes below) carry one
+    assert [r.get("status") for r in records] == [None, None, None, 200, None, None, None, None]
 
 
 def test_a_non_admin_calling_admin_is_logged_as_not_admin(lc, log_path, policy_tokens):
@@ -215,8 +216,8 @@ def test_a_non_admin_calling_admin_is_logged_as_not_admin(lc, log_path, policy_t
     lc.delete(f"{BASE}/grants/g_00000000", headers=bearer(policy_tokens["runner"]))
     first, second = file_records(log_path)
     assert (first["principal"], first["action"], first["route"]) == ("hermes", "admin", "admin.principal.add")
-    assert (first["decision"], first["reason"], first["status"]) == ("denied", "not-admin", 403)
-    assert (second["key"], second["status"]) == ("g_00000000", 403)
+    assert (first["decision"], first["reason"]) == ("denied", "not-admin")
+    assert second["key"] == "g_00000000" and "status" not in first and "status" not in second
 
 
 def test_probes_and_docs_are_not_logged(lc, log_path):

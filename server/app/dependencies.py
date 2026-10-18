@@ -1,18 +1,19 @@
 """Dependency injection for FastAPI endpoints."""
 
+import json
 import logging
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from mattstash import MattStash
 from mattstash.authz import LEGACY_KIND, Decision, Policy, Principal, admin_decision, evaluate
 from mattstash.authz.models import utcnow
 
-from .accesslog import note
+from .accesslog import STATE_CHANGING, commit, note
 from .config import config
 from .errors import translate_errors
 from .security.api_keys import AuthResult, authenticate
@@ -130,6 +131,8 @@ def require_grant_for(action: str, route: str) -> Callable[..., Caller]:
     """
 
     async def dependency(request: Request, caller: Annotated[Caller, Depends(authenticate_request)]) -> Caller:
+        # Defence in depth: authentication refuses a disabled principal, so this cannot be reached through the
+        # normal flow; it keeps a future path that builds a Caller another way from allowing a disabled one.
         if caller.principal.disabled or not _holds(caller, action):
             note(
                 request,
@@ -139,10 +142,40 @@ def require_grant_for(action: str, route: str) -> Callable[..., Caller]:
                 decision="denied",
                 reason="disabled" if caller.principal.disabled else "no-grant",
             )
+            commit(request)  # a decision: the line is written now, not after the response
             raise _forbidden()
         return caller
 
     return dependency
+
+
+def _json_object(raw: bytes) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _text(value: object) -> Optional[str]:
+    return value if isinstance(value, str) else None
+
+
+def body_fields(route: str, body: dict[str, Any]) -> dict[str, Any]:
+    """What the access line records about a request body: names, patterns and actions only (never a value)."""
+    if route == "admin.principal.add":
+        return {"key": _text(body.get("name"))}
+    if route == "admin.grant.add":
+        actions = body.get("actions")
+        return {
+            "key": _text(body.get("principal")),
+            "grant_key": _text(body.get("key")),
+            "grant_tag": _text(body.get("tag")),
+            "actions": ",".join(a for a in actions if isinstance(a, str)) if isinstance(actions, list) else None,
+        }
+    if route == "admin.check":
+        return {"key": _text(body.get("principal"))}
+    return {}
 
 
 def require_admin(route: str, *, scoped_legacy_ok: bool = False) -> Callable[..., Caller]:
@@ -157,15 +190,23 @@ def require_admin(route: str, *, scoped_legacy_ok: bool = False) -> Callable[...
         decision = admin_decision(caller.principal)
         if decision.allowed and caller.principal.kind == LEGACY_KIND and not caller.unscoped and not scoped_legacy_ok:
             decision = Decision(False, "legacy-scoped")
-        key = request.path_params.get("name") or request.path_params.get("grant_id")
+        fields: dict[str, Any] = {
+            "key": request.path_params.get("name") or request.path_params.get("grant_id"),
+            "target_token": request.path_params.get("token_id"),  # revoke / rotate: the OLD token
+        }
+        if decision.allowed and request.method in STATE_CHANGING:
+            # The body is only looked at after the decision, and only to name the target in the line (it is already
+            # read and cached by the framework by now; an invalid one yields nothing and fails validation later).
+            fields.update(body_fields(route, _json_object(await request.body())))
         note(
             request,
             action="admin",
             route=route,
-            key=key,
             decision="allowed" if decision.allowed else "denied",
             reason=None if decision.allowed else decision.reason,
+            **fields,
         )
+        commit(request)  # state-changing: the line is written now, before the handler changes anything
         if not decision.allowed:
             raise _forbidden()
         return caller
@@ -184,15 +225,12 @@ def require_writes_enabled() -> None:
 
 
 def _latest_tags(mattstash: MattStash, name: str) -> list[str]:
-    """The tags of the latest version of ``name``.
+    """The tags of the latest version of ``name`` (none if there is no such entry).
 
     ``get()`` cannot be used: it returns a bare dict, without tags, for a password-only entry. Tags decide access to
     EVERY version, so re-tagging an old version never opens it up.
     """
-    for credential in mattstash.list(show_password=False, latest_only=True):
-        if credential.credential_name == name:
-            return list(credential.tags)
-    return []
+    return mattstash.tags_of(name) or []
 
 
 def authorize_name(
@@ -227,6 +265,7 @@ def authorize_name(
         reason=None if decision.allowed else decision.reason,
         grant=decision.grant_id,
     )
+    commit(request)  # write/delete: the line is written now, before the handler acts (503 and no effect if it fails)
     if decision.allowed:
         return
     if action == "read":
