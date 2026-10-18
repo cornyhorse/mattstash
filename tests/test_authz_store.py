@@ -944,7 +944,7 @@ def test_an_expired_admin_token_is_ignored_and_only_expired_tokens_get_their_own
     assert admin_expiry_warning(Policy(principals=(_admin(expired, _token(None, "b")),)), NOW) is None
     text = admin_expiry_warning(Policy(principals=(_admin(expired),)), NOW)
     assert text is not None and "no admin has a valid token" in text and "--policy-file" in text
-    assert admin_expiry_warning(Policy(principals=(_admin(),)), NOW) is not None  # an admin without any token
+    assert admin_expiry_warning(Policy(principals=(_admin(),)), NOW) is None  # an admin never given a token: bootstrap
 
 
 def test_no_warning_without_a_usable_admin_or_for_admins_that_cannot_administer() -> None:

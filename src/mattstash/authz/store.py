@@ -466,14 +466,17 @@ def admin_expiry_warning(policy: Policy, now: datetime, horizon: timedelta = tim
     The lockout rule (:func:`check_lockout_change`) only looks one hour ahead, which is too late to be pleasant. This
     looks ``horizon`` ahead: it returns a message when the policy has an admin (an enabled ``human-device`` principal
     with the admin flag) and every admin token that is valid now expires within ``horizon``, or when no admin token is
-    valid at all any more. No admin at all is not a warning (nothing is about to run out), and one token that never
-    expires or outlasts the horizon is enough to stay quiet. The text names no token and no secret.
+    valid at all any more. No admin at all, or admins that have not been given a token yet (the bootstrap), is not a
+    warning (nothing has run out), and one token that never expires or outlasts the horizon is enough to stay quiet.
+    The text names no token and no secret.
     """
     admins = [p for p in policy.principals if can_admin(p)]
     if not admins:
         return None
     valid = [t for p in admins for t in p.tokens if not t.is_expired(now)]
     if not valid:
+        if not any(p.tokens for p in admins):
+            return None  # admins that have never been given a token: the bootstrap, nothing has run out
         return (
             "no admin has a valid token any more, so nobody can manage the policy through the server; "
             "issue one locally: mattstash admin --policy-file <policy file> token issue <admin>"
