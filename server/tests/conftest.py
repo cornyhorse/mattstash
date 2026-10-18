@@ -310,8 +310,10 @@ def policy_tokens(tmp_path) -> dict[str, str]:
         ed.add_grant("off", key="*", actions=["list", "read"])
         for name in ("matt", "hermes", "lister", "fireflyer", "scribe", "runner", "off"):
             tokens[name] = ed.issue_token(name)[1]
-        tokens["expired"] = ed.issue_token("expired", utcnow() - timedelta(hours=1))[1]
         ed.set_disabled("off", True)
+    # The library refuses an already-expired NEW token, so issue it as of two hours ago, expiring an hour ago.
+    with edit_policy(tmp_path / "policy.json", now=utcnow() - timedelta(hours=2)) as ed:
+        tokens["expired"] = ed.issue_token("expired", utcnow() - timedelta(hours=1))[1]
     return tokens
 
 

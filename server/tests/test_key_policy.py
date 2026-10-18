@@ -362,7 +362,7 @@ def test_migrated_tokens_respect_expiry_and_disabled(monkeypatch, migrated):
     with edit_policy(migrated) as ed:
         ed.set_disabled("app", False)
         ed.revoke_token("app", token_id)
-        ed.issue_token("app", utcnow() - timedelta(hours=1))
+        ed.issue_token("app")
     invalidate_api_key_cache()
     assert authenticate(APP_KEY).reason == "bad-token"  # revoked: the old key no longer matches anything
 
