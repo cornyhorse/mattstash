@@ -23,10 +23,9 @@ from starlette.responses import Response
 from uvicorn.importer import import_from_string
 
 from app.config import Config
-from app.dependencies import authenticate_request
+from app.dependencies import Caller, authenticate_request
 from app.main import create_app
 from app.rate_limit import rate_limit_exceeded_handler
-from app.security.api_keys import Principal
 
 from .conftest import FULL_KEY, auth
 
@@ -205,10 +204,8 @@ def bare_client(configure) -> TestClient:
     bare = FastAPI()
 
     @bare.get("/whoami")
-    async def whoami(
-        request: Request, principal: Annotated[Principal, Depends(authenticate_request)]
-    ) -> dict[str, str]:
-        return {"id": principal.id, "on_request_state": request.state.principal.id}
+    async def whoami(request: Request, caller: Annotated[Caller, Depends(authenticate_request)]) -> dict[str, str]:
+        return {"id": caller.principal.name, "on_request_state": request.state.auth.principal.name}
 
     return TestClient(bare)
 
@@ -231,7 +228,7 @@ def test_missing_empty_or_wrong_key_is_401_without_the_middleware(bare_client, h
 def test_unusable_key_store_is_503_not_401_without_the_middleware(bare_client, monkeypatch, caplog):
     import app.dependencies as dependencies
 
-    def broken_store(key: str):
+    def broken_store(key):
         raise OSError("/etc/secret-keys.json: disk error")
 
     monkeypatch.setattr(dependencies, "authenticate", broken_store)

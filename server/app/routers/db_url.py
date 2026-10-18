@@ -5,8 +5,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from mattstash.builders.db_url import AUTO_DRIVER, DIALECT_DRIVERS, DbUrlError, build_db_url, normalize_dialect
 
-from ..audit import audit
-from ..dependencies import MattStashDep, ReadAccess, ensure_name_in_scope
+from ..dependencies import MattStashDep, ReadAccess, authorize_name
 from ..errors import translate_errors
 from ..models.responses import DatabaseUrlResponse
 from ..rate_limit import limiter, read_limit
@@ -39,7 +38,7 @@ def get_database_url(
     response: Response,
     name: str,
     mattstash: MattStashDep,
-    principal: ReadAccess,
+    caller: ReadAccess,
     driver: str | None = Query(
         None,
         description="Driver suffix. Default: psycopg for PostgreSQL, none for MySQL/MariaDB. "
@@ -63,13 +62,14 @@ def get_database_url(
     - **mask_password**: Whether to mask the password in the URL (default: true)
     """
     require_valid_name(name)
-    ensure_name_in_scope(
-        principal,
+    authorize_name(
+        request,
+        caller,
+        "read",
+        "db-url",
         name,
-        hide=True,
-        request=request,
-        op="read",
-        not_found_detail=f"Credential not found or unsuitable: {name}",  # same text as an in-scope miss
+        mattstash=mattstash,
+        not_found_detail=f"Credential not found or unsuitable: {name}",  # same text as an allowed miss
     )
     response.headers["Cache-Control"] = "no-store"
     try:
@@ -82,7 +82,6 @@ def get_database_url(
         allowed = DIALECT_DRIVERS[chosen_dialect] if chosen_dialect else _ALL_DRIVERS
         if driver not in allowed:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid driver name")
-    audit(request, "db-url", name, reveal=not mask_password)
 
     with translate_errors("db-url"):
         try:

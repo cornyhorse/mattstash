@@ -1,293 +1,297 @@
-"""API key management: scoped key policy, hashed storage, constant-time verification.
+"""Authentication: who is calling, from a token or a legacy key.
 
-Key sources
------------
-* ``MATTSTASH_API_KEY`` -- a single *legacy* key (full access).
-* ``MATTSTASH_API_KEYS_FILE`` -- either
-    - a plain list, one key per line (``#`` comments allowed): *legacy* keys with full access, or
-    - a JSON policy document with scoped keys::
+Credential sources (any combination)
+------------------------------------
+* ``MATTSTASH_POLICY_FILE`` -- principals with ``mst_<id>_<secret>`` tokens and grants (the normal way; see
+  ``docs/design/principals-and-grants.md``). Only salted hashes are stored.
+* ``MATTSTASH_API_KEY`` -- one *legacy* key: principal ``legacy-env``, admin, grant ``*`` on every action.
+* ``MATTSTASH_API_KEYS_FILE`` -- legacy keys: a plain list (full access) or a v1 JSON policy (``ops``/``prefixes``,
+  converted to principals and synthetic grants by the library).
 
-        {"keys": [
-          {"id": "billing", "key_sha256": "<hex sha256 of the key>", "ops": ["read"], "prefixes": ["billing-"]},
-          {"id": "deploy",  "key": "<plaintext key>",                "ops": ["read", "write"]}
-        ]}
+Everything is merged into one immutable :class:`AuthState`, which is swapped atomically when the sources are reloaded,
+so a request always sees one consistent policy. A name clash between any two sources is a load error: grants are
+looked up by principal name, so a clash would let one principal inherit another's access.
 
-  ``ops`` is any of ``read``, ``write``, ``delete``, ``admin`` (default ``["read"]``); ``prefixes`` limits the
-  credential names a key may touch (omit or ``["*"]`` for all names). Generate keys with ``python -m app.keytool``.
-
-Keys are only ever held in memory as SHA-256 digests and compared in constant time over *all* records
-(no early exit), so neither timing nor non-ASCII header values leak or break anything.
+Verification of a presented key never branches on secret material. A key in ``mst_`` format is looked up by its public
+id (an unknown id is verified against a dummy hash so it costs the same) and checked with a constant-time HMAC
+compare. Anything else is compared by SHA-256 digest against *all* legacy digests, with no early exit: the env/keys-file
+keys and any file token stored with the unsalted ``sha256:`` scheme (what ``admin migrate-keys`` writes).
 """
 
 import hashlib
 import hmac
-import json
 import logging
-import re
+import os
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
+
+from mattstash.authz import (
+    DUMMY_HASH,
+    LegacyKey,
+    Policy,
+    PolicyError,
+    Principal,
+    Token,
+    can_admin,
+    check_duplicate_keys,
+    is_legacy_hash,
+    legacy_from_env_key,
+    legacy_from_keys_file_text,
+    load_policy,
+    parse_token,
+    verify_token_hash,
+)
+from mattstash.authz.legacy import VALID_OPS  # noqa: F401  (used by app.keytool)
+from mattstash.authz.models import utcnow
 
 from ..config import config
 
 logger = logging.getLogger("mattstash.api")
 
-VALID_OPS = frozenset({"read", "write", "delete", "admin"})
-_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}", re.ASCII)
-_PREFIX_RE = re.compile(r"[A-Za-z0-9_.-]{1,255}", re.ASCII)
-_SHA256_HEX_RE = re.compile(r"[0-9a-fA-F]{64}", re.ASCII)
-
-# Cache the policy with a TTL so rotated keys are picked up without restart
+# Cache the state with a TTL so rotated keys are picked up without restart
 _CACHE_TTL_SECONDS: float = 300.0
 _RETRY_SECONDS: float = 5.0  # after a failed reload, try again after this long (not on every request)
 _NEVER = float("-inf")  # time.monotonic() counts from boot, so 0.0 would look "recently loaded" on a young host
-_policy: "Optional[KeyPolicy]" = None
-_policy_loaded_at: float = _NEVER
+
+Signature = tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class _Digest:
+    """A SHA-256 digest that identifies a key, its principal and (for a migrated file token) the token."""
+
+    digest: bytes
+    principal: Principal
+    token: Optional[Token] = None
+
+
+@dataclass(frozen=True)
+class AuthState:
+    """Everything needed to authenticate and authorise, built once per (re)load and never mutated."""
+
+    policy: Policy  # file principals + legacy principals, file grants + synthetic legacy grants
+    tokens: Mapping[str, tuple[Principal, Token]]  # token id -> owner, for salted (mst_) file tokens
+    digests: tuple[_Digest, ...]  # legacy keys and sha256: file tokens
+    legacy_sources: tuple[str, ...]
+    legacy_admin: bool  # a legacy key can administer, so the last file admin may be removed
+    sha256_tokens: int  # file tokens that use the deprecated unsalted scheme
+    file_signature: Optional[Signature]
+
+    @property
+    def credential_count(self) -> int:
+        return len(self.tokens) + len(self.digests)
+
+
+@dataclass(frozen=True)
+class AuthResult:
+    """Outcome of :func:`authenticate`. ``reason`` is ``ok`` or one of the access-log denial reasons."""
+
+    principal: Optional[Principal]
+    token_id: Optional[str]
+    reason: str
+    policy: Optional[Policy] = None
+
+
+_state: Optional[AuthState] = None
+_state_loaded_at: float = _NEVER
+_failed_signature: Optional[Signature] = None  # a file version that failed to load; not retried until it changes
 _cache_lock = threading.Lock()
 
 
-@dataclass(frozen=True)
-class Principal:
-    """An authenticated API client."""
-
-    id: str
-    ops: frozenset[str]
-    prefixes: Optional[tuple[str, ...]] = None  # None => any credential name
-    legacy: bool = False
-
-    def can(self, op: str) -> bool:
-        return op in self.ops
-
-    def allows_name(self, name: str) -> bool:
-        return self.prefixes is None or any(name.startswith(p) for p in self.prefixes)
-
-
-@dataclass(frozen=True)
-class _KeyRecord:
-    digest: bytes
-    principal: Principal
-
-
-class KeyPolicy:
-    """The set of valid keys and what each may do."""
-
-    def __init__(self, records: list[_KeyRecord]) -> None:
-        self._records = list(records)
-
-    @property
-    def legacy_count(self) -> int:
-        return sum(1 for r in self._records if r.principal.legacy)
-
-    def __len__(self) -> int:
-        return len(self._records)
-
-    def authenticate(self, api_key: str) -> Optional[Principal]:
-        """Return the principal for ``api_key`` or None. Never raises on odd input."""
-        presented = hashlib.sha256(api_key.encode("utf-8", "surrogatepass")).digest()
-        match: Optional[Principal] = None
-        for record in self._records:  # deliberately no early exit
-            if hmac.compare_digest(presented, record.digest):
-                match = record.principal
-        return match
-
-
-def _digest(key: str) -> bytes:
-    return hashlib.sha256(key.encode("utf-8")).digest()
-
-
-def _legacy_record(key: str, key_id: str) -> _KeyRecord:
-    """A legacy full-access key. The id is positional (``legacy-env``, ``legacy-1``...), never derived from the key."""
-    return _KeyRecord(_digest(key), Principal(id=key_id, ops=VALID_OPS, prefixes=None, legacy=True))
-
-
-def _check_length(key: str, where: str) -> None:
-    if len(key) < config.MIN_KEY_LENGTH:
-        raise ValueError(
-            f"API key {where} is shorter than {config.MIN_KEY_LENGTH} characters; "
-            "generate one with `python -m app.keytool` or `openssl rand -base64 32`"
-        )
-
-
-def _parse_policy_entry(entry: Any, index: int) -> _KeyRecord:
-    if not isinstance(entry, dict):
-        raise ValueError(f"API key policy entry #{index} must be an object")
-    key_id = entry.get("id")
-    if not isinstance(key_id, str) or not _ID_RE.fullmatch(key_id):
-        raise ValueError(f"API key policy entry #{index}: 'id' must match [A-Za-z0-9_.-]{{1,64}}")
-    where = f"'{key_id}'"
-
-    plaintext, hashed = entry.get("key"), entry.get("key_sha256")
-    if (plaintext is None) == (hashed is None):
-        raise ValueError(f"API key {where}: provide exactly one of 'key' or 'key_sha256'")
-    if plaintext is not None:
-        if not isinstance(plaintext, str):
-            raise ValueError(f"API key {where}: 'key' must be a string")
-        _check_length(plaintext, where)
-        digest = _digest(plaintext)
-    else:
-        if not isinstance(hashed, str) or not _SHA256_HEX_RE.fullmatch(hashed):
-            raise ValueError(f"API key {where}: 'key_sha256' must be 64 hex characters")
-        digest = bytes.fromhex(hashed)
-
-    ops = entry.get("ops", ["read"])
-    if not isinstance(ops, list) or not ops or not all(isinstance(o, str) for o in ops):
-        raise ValueError(f"API key {where}: 'ops' must be a non-empty list of strings")
-    unknown = sorted(set(ops) - VALID_OPS)
-    if unknown:
-        raise ValueError(f"API key {where}: unknown ops {unknown}; valid: {sorted(VALID_OPS)}")
-
-    prefixes = entry.get("prefixes")
-    scoped: Optional[tuple[str, ...]]
-    if prefixes is None or prefixes == ["*"]:
-        scoped = None
-    else:
-        if not isinstance(prefixes, list) or not prefixes:
-            raise ValueError(f"API key {where}: 'prefixes' must be a non-empty list (or omit it / use [\"*\"])")
-        for prefix in prefixes:
-            if not isinstance(prefix, str) or not _PREFIX_RE.fullmatch(prefix):
-                raise ValueError(f"API key {where}: invalid prefix; allowed characters are [A-Za-z0-9_.-]")
-        scoped = tuple(prefixes)
-
-    return _KeyRecord(digest, Principal(id=key_id, ops=frozenset(ops), prefixes=scoped, legacy=False))
-
-
-def _reject_duplicate_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    seen: dict[str, Any] = {}
-    for field, value in pairs:
-        if field in seen:
-            raise ValueError(f"API key policy contains the duplicate field '{field}'")
-        seen[field] = value
-    return seen
-
-
-def _parse_policy_json(text: str) -> list[_KeyRecord]:
+def _signature(path: Optional[str]) -> Optional[Signature]:
+    if not path:
+        return None
     try:
-        document = json.loads(text, object_pairs_hook=_reject_duplicate_fields)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"API keys file is not valid JSON (line {exc.lineno}, column {exc.colno})") from None
-    entries = document.get("keys") if isinstance(document, dict) else document
-    if not isinstance(entries, list) or not entries:
-        raise ValueError("API key policy must contain a non-empty 'keys' list")
-    records = [_parse_policy_entry(entry, i) for i, entry in enumerate(entries, start=1)]
-    ids = [r.principal.id for r in records]
-    if len(set(ids)) != len(ids):
-        raise ValueError("API key policy contains duplicate ids")
-    return records
+        info = os.stat(path)
+    except OSError:
+        return None
+    return info.st_mtime_ns, info.st_size, info.st_ino
 
 
-def _first_content_character(text: str) -> str:
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            return stripped[0]
-    return ""
+def load_auth_state() -> AuthState:
+    """Build the state from the configured sources. Raises ValueError/FileNotFoundError if unusable."""
+    file_policy = Policy()
+    signature = _signature(config.POLICY_FILE)  # taken before reading: a change while loading is seen next time
+    if config.POLICY_FILE:
+        try:
+            file_policy = load_policy(config.POLICY_FILE)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Policy file not found: {config.POLICY_FILE}") from None
 
-
-def _parse_legacy_lines(text: str, source: str) -> list[_KeyRecord]:
-    records = []
-    for number, raw in enumerate(text.splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if re.search(r"\s", line):
-            raise ValueError(f"API key on line {number} of {source} contains whitespace; one key per line")
-        _check_length(line, f"on line {number} of {source}")
-        records.append(_legacy_record(line, f"legacy-{len(records) + 1}"))
-    return records
-
-
-def load_key_policy() -> KeyPolicy:
-    """Build the key policy from the configured sources. Raises ValueError/FileNotFoundError if unusable."""
-    records: list[_KeyRecord] = []
+    legacy_keys: list[LegacyKey] = []
+    legacy_grants = []
+    sources: list[str] = []
+    unscoped = False
 
     if config.API_KEY:
-        _check_length(config.API_KEY, "from MATTSTASH_API_KEY")
-        records.append(_legacy_record(config.API_KEY, "legacy-env"))
+        key, grants = legacy_from_env_key(config.API_KEY, config.MIN_KEY_LENGTH)
+        legacy_keys.append(key)
+        legacy_grants.extend(grants)
+        sources.append("MATTSTASH_API_KEY")
+        unscoped = True
 
     if config.API_KEYS_FILE:
         path = Path(config.API_KEYS_FILE)
         if not path.is_file():
             raise FileNotFoundError(f"API keys file not found: {config.API_KEYS_FILE}")
         text = path.read_text(encoding="utf-8-sig")  # tolerate a BOM written by some editors
-        if _first_content_character(text) in ("{", "["):
-            # '#' comment lines are allowed in a policy file too (they are not JSON, so strip them first)
-            uncommented = "\n".join(line for line in text.splitlines() if not line.strip().startswith("#"))
-            records.extend(_parse_policy_json(uncommented))
-        else:
-            records.extend(_parse_legacy_lines(text, "the API keys file"))
+        keys, grants_from_file, has_unscoped = legacy_from_keys_file_text(text, config.MIN_KEY_LENGTH)
+        legacy_keys.extend(keys)
+        legacy_grants.extend(grants_from_file)
+        sources.append("MATTSTASH_API_KEYS_FILE")
+        unscoped = unscoped or has_unscoped
 
-    if not records:
-        raise ValueError("At least one API key must be provided via MATTSTASH_API_KEY or MATTSTASH_API_KEYS_FILE")
+    # Grants are found by principal name, so ANY clash (case-insensitive) between sources would let one principal
+    # inherit another's access, e.g. a scoped v1 key with id "legacy-env" taking the env key's "*" grant.
+    seen: set[str] = set()
+    for principal in (*file_policy.principals, *(key.principal for key in legacy_keys)):
+        folded = principal.name.casefold()
+        if folded in seen:
+            raise PolicyError(f"the principal name {principal.name!r} is used more than once across the key sources")
+        seen.add(folded)
 
-    digests = [r.digest for r in records]
-    if len(set(digests)) != len(digests):
-        raise ValueError("The same API key is configured more than once")
+    tokens: dict[str, tuple[Principal, Token]] = {}
+    sha256_digests: list[_Digest] = []
+    for principal in file_policy.principals:
+        for token in principal.tokens:
+            if is_legacy_hash(token.hash):
+                sha256_digests.append(_Digest(bytes.fromhex(token.hash.split(":", 1)[1]), principal, token))
+            else:
+                tokens[token.id] = (principal, token)
+    digests = [_Digest(key.digest, key.principal) for key in legacy_keys] + sha256_digests
 
-    policy = KeyPolicy(records)
-    if config.REQUIRE_SCOPED_KEYS and policy.legacy_count:
+    # the same key in two places (env key and a migrated token, say) is ambiguous
+    check_duplicate_keys([LegacyKey(entry.digest, entry.principal) for entry in digests])
+
+    if not tokens and not digests:
+        raise ValueError(
+            "At least one API key must be provided via MATTSTASH_POLICY_FILE (a token), MATTSTASH_API_KEY "
+            "or MATTSTASH_API_KEYS_FILE"
+        )
+    if config.REQUIRE_SCOPED_KEYS and unscoped:
         raise ValueError(
             "Legacy (unscoped, full-access) API keys are configured but MATTSTASH_REQUIRE_SCOPED_KEYS is set; "
-            "use a JSON key policy file"
+            "use a policy file (MATTSTASH_POLICY_FILE) or a JSON key policy"
         )
-    return policy
+
+    merged = Policy(
+        version=file_policy.version,
+        revision=file_policy.revision,
+        principals=(*file_policy.principals, *(key.principal for key in legacy_keys)),
+        grants=(*file_policy.grants, *legacy_grants),
+    )
+    return AuthState(
+        policy=merged,
+        tokens=tokens,
+        digests=tuple(digests),
+        legacy_sources=tuple(sources),
+        legacy_admin=any(can_admin(key.principal) for key in legacy_keys),
+        sha256_tokens=len(sha256_digests),
+        file_signature=signature,
+    )
 
 
-def get_key_policy(*, force: bool = False) -> KeyPolicy:
-    """Return the cached policy, reloading after the TTL.
+def get_auth_state(*, force: bool = False) -> AuthState:
+    """Return the cached state, reloading after the TTL or when the policy file changed on disk.
 
-    If a *reload* fails (file briefly unreadable, bad edit) the previous policy keeps serving and the
-    reload is retried on the next request; the failure is logged. The first load must succeed.
+    The file is ``stat``-ed on every call (mtime, size and inode), so an edit by the CLI or an admin request on another
+    replica takes effect at once. If a *reload* fails (file briefly unreadable, bad edit) the previous state keeps
+    serving and the failure is logged; the broken file version is not retried until it changes again (or the short
+    backoff has passed). The first load must succeed.
     """
-    global _policy, _policy_loaded_at
+    global _state, _state_loaded_at, _failed_signature
 
     with _cache_lock:
         now = time.monotonic()
-        stale = _policy is None or force or (now - _policy_loaded_at) >= _CACHE_TTL_SECONDS
+        current = _signature(config.POLICY_FILE)
+        changed = _state is not None and current != _state.file_signature and current != _failed_signature
+        stale = _state is None or force or changed or (now - _state_loaded_at) >= _CACHE_TTL_SECONDS
         if stale:
             try:
-                _policy = load_key_policy()
-                _policy_loaded_at = now
+                _state = load_auth_state()
+                _state_loaded_at = now
+                _failed_signature = None
             except Exception as exc:
-                if _policy is None:
+                if _state is None:
                     raise
                 logger.error("API key policy reload failed (%s); keeping the previous policy", type(exc).__name__)
-                _policy_loaded_at = now - _CACHE_TTL_SECONDS + _RETRY_SECONDS  # retry soon, not on every request
-        assert _policy is not None
-        return _policy
+                _state_loaded_at = now - _CACHE_TTL_SECONDS + _RETRY_SECONDS  # retry soon, not on every request
+                _failed_signature = current
+        assert _state is not None
+        return _state
 
 
 def invalidate_api_key_cache() -> None:
-    """Mark the cached policy stale so it is re-read on the next request.
+    """Mark the cached state stale so it is re-read on the next request.
 
-    The previous policy is kept as a fallback: if the new file is broken the old keys keep working (and the
+    The previous state is kept as a fallback: if the new sources are broken the old keys keep working (and the
     error is logged) instead of every request failing. Use :func:`reload_key_policy_now` when the caller needs to
     *know* whether the new policy took effect (for example when revoking a key).
     """
-    global _policy_loaded_at
+    global _state_loaded_at
     with _cache_lock:
-        _policy_loaded_at = _NEVER
+        _state_loaded_at = _NEVER
 
 
-def reload_key_policy_now() -> KeyPolicy:
-    """Re-read the key sources immediately and make the result the active policy.
+def reload_key_policy_now() -> AuthState:
+    """Re-read the sources immediately and make the result the active state.
 
-    Raises (and leaves the previous policy untouched) if the sources cannot be loaded, so the caller can report
+    Raises (and leaves the previous state untouched) if the sources cannot be loaded, so the caller can report
     that a revocation did NOT take effect.
     """
-    global _policy, _policy_loaded_at
+    global _state, _state_loaded_at, _failed_signature
     with _cache_lock:
-        policy = load_key_policy()
-        _policy, _policy_loaded_at = policy, time.monotonic()
-        return policy
+        state = load_auth_state()
+        _state, _state_loaded_at, _failed_signature = state, time.monotonic(), None
+        return state
 
 
-def authenticate(api_key: str) -> Optional[Principal]:
-    """Return the principal owning ``api_key`` (or None)."""
-    return get_key_policy().authenticate(api_key)
+def _match_digest(state: AuthState, api_key: str) -> Optional[_Digest]:
+    presented = hashlib.sha256(api_key.encode("utf-8", "surrogatepass")).digest()
+    match: Optional[_Digest] = None
+    for entry in state.digests:  # deliberately no early exit
+        if hmac.compare_digest(presented, entry.digest):
+            match = entry
+    return match
+
+
+def _check_token(state: AuthState, principal: Principal, token: Token) -> AuthResult:
+    if token.is_expired(utcnow()):
+        return AuthResult(None, token.id, "expired-token")
+    if principal.disabled:
+        return AuthResult(None, token.id, "disabled")
+    return AuthResult(principal, token.id, "ok", state.policy)
+
+
+def authenticate(api_key: Optional[str]) -> AuthResult:
+    """Identify the caller from the ``X-API-Key`` value (raises only if the key store itself is unusable)."""
+    if not api_key:
+        return AuthResult(None, None, "no-token")
+    state = get_auth_state()
+    parsed = parse_token(api_key)  # the id is logged only when the token parsed
+    token_id = parsed[0] if parsed else None
+
+    if parsed is not None and parsed[0] in state.tokens:
+        principal, token = state.tokens[parsed[0]]
+        if not verify_token_hash(token.hash, api_key):
+            return AuthResult(None, token_id, "bad-token")
+        return _check_token(state, principal, token)
+
+    if parsed is not None:
+        verify_token_hash(DUMMY_HASH, api_key)  # an unknown id costs the same HMAC as a wrong secret
+
+    match = _match_digest(state, api_key)
+    if match is None:
+        return AuthResult(None, token_id, "unknown-token" if parsed else "bad-token")
+    if match.token is None:  # a legacy key: no id, no expiry, never disabled
+        return AuthResult(match.principal, None, "ok", state.policy)
+    return _check_token(state, match.principal, match.token)
 
 
 def verify_api_key(api_key: str) -> bool:
     """Return True if ``api_key`` is valid (constant-time; safe for any input)."""
-    return authenticate(api_key) is not None
+    return authenticate(api_key).principal is not None

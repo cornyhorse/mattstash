@@ -54,6 +54,7 @@ READ_KEY = "read-only-scoped-key--" + "b" * 20
 APP_KEY = "app-prefix-scoped-key--" + "c" * 20
 WRITE_KEY = "writer-scoped-key------" + "d" * 20
 ADMIN_KEY = "admin-scoped-key-------" + "e" * 20
+DB = {"username": "dbuser", "password": "db-secret", "url": "db.internal:5432"}
 
 
 def fresh_config_module():
@@ -95,6 +96,10 @@ CONFIG_ENV_VARS = [
     "MATTSTASH_MAX_REQUEST_BODY_BYTES",
     "MATTSTASH_MAX_CONCURRENT_WRITES",
     "MATTSTASH_DB_POLL_INTERVAL",
+    "MATTSTASH_POLICY_FILE",
+    "MATTSTASH_ACCESS_LOG_FILE",
+    "MATTSTASH_ACCESS_LOG_MAX_BYTES",
+    "MATTSTASH_ACCESS_LOG_BACKUPS",
 ]
 
 
@@ -139,8 +144,9 @@ def reset_state(clean_env):
 
     def reset() -> None:
         deps._mattstash_instance = None
-        api_keys_module._policy = None
-        api_keys_module._policy_loaded_at = 0.0
+        api_keys_module._state = None
+        api_keys_module._state_loaded_at = 0.0
+        api_keys_module._failed_signature = None
         auth_failures.reset()
         limiter.reset()
 
@@ -268,6 +274,74 @@ def client(make_client) -> TestClient:
 def rw_client(make_client) -> TestClient:
     """Default key, writes enabled."""
     return make_client(ALLOW_WRITES=True)
+
+
+@pytest.fixture
+def policy_tokens(tmp_path) -> dict[str, str]:
+    """A v2 policy file (``tmp_path/policy.json``) exercising every role; returns each principal's plaintext token.
+
+    matt: admin human-device without any data grant. hermes: ``firefly.*`` list+read, exact ``firefly-mcp`` read,
+    tag ``shared`` list+read. lister: ``firefly.*`` list only. fireflyer: ``firefly.*`` list+read.
+    scribe: ``app-*`` all four. runner: ``*`` list+read.
+    expired / off: valid tokens that must not work (past expiry, disabled principal).
+    """
+    from datetime import timedelta
+
+    from mattstash.authz import edit_policy
+    from mattstash.authz.models import utcnow
+
+    tokens: dict[str, str] = {}
+    with edit_policy(tmp_path / "policy.json", create=True) as ed:
+        ed.add_principal("matt", "human-device", "laptop", admin=True)
+        ed.add_principal("hermes", "agent")
+        ed.add_principal("lister", "agent")
+        ed.add_principal("fireflyer", "agent")
+        ed.add_principal("scribe", "agent")
+        ed.add_principal("runner", "runner")
+        ed.add_principal("expired", "agent")
+        ed.add_principal("off", "agent")
+        ed.add_grant("hermes", key="firefly.*", actions=["list", "read"])
+        ed.add_grant("hermes", key="firefly-mcp", actions=["read"])
+        ed.add_grant("hermes", tag="shared", actions=["list", "read"])
+        ed.add_grant("lister", key="firefly.*", actions=["list"])
+        ed.add_grant("fireflyer", key="firefly.*", actions=["list", "read"])
+        ed.add_grant("scribe", key="app-*", actions=["list", "read", "write", "delete"])
+        ed.add_grant("runner", key="*", actions=["list", "read"])
+        ed.add_grant("off", key="*", actions=["list", "read"])
+        for name in ("matt", "hermes", "lister", "fireflyer", "scribe", "runner", "off"):
+            tokens[name] = ed.issue_token(name)[1]
+        tokens["expired"] = ed.issue_token("expired", utcnow() - timedelta(hours=1))[1]
+        ed.set_disabled("off", True)
+    return tokens
+
+
+@pytest.fixture
+def policy_path(tmp_path, policy_tokens) -> str:
+    return str(tmp_path / "policy.json")
+
+
+@pytest.fixture
+def data(seed):
+    """Entries on both sides of every grant boundary. ``shared-note`` is a password-only entry that is TAGGED: the
+    library reads it back as a bare dict without tags, which the server must not mistake for 'no tags'."""
+    stash = seed(
+        **{
+            "firefly.token": {"value": "ff-secret"},
+            "firefly.db": DB,
+            "firefly-mcp": {"value": "mcp-secret"},
+            "firefly": {"value": "bare-secret"},
+            "app-db": DB,
+            "app-token": {"value": "tok"},
+            "other": {"value": "private"},
+            "shared-note": {"password": "tagged-secret", "tags": ["shared"]},
+            "shared-db": {**DB, "tags": ["shared"]},
+        }
+    )
+    stash.put("retag", value="v1-untagged")  # latest version carries the tag: it decides for every version
+    stash.put("retag", password="v2-tagged", tags=["shared"])
+    stash.put("demoted", password="v1-tagged", tags=["shared"])
+    stash.put("demoted", password="v2-untagged", tags=["other"])
+    return stash
 
 
 def auth(key: str = FULL_KEY) -> dict[str, str]:

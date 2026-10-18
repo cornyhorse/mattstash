@@ -59,6 +59,17 @@ class Config:
     API_KEYS_FILE: Optional[str] = os.getenv("MATTSTASH_API_KEYS_FILE")
     MIN_KEY_LENGTH: int = _get_int_env("MATTSTASH_MIN_KEY_LENGTH", 32, minimum=8, maximum=256)
     REQUIRE_SCOPED_KEYS: bool = _get_bool_env("MATTSTASH_REQUIRE_SCOPED_KEYS")
+    # Principals, tokens and grants (docs/design/principals-and-grants.md). Unset: only the legacy key sources work
+    # and the policy-changing admin endpoints answer 503.
+    POLICY_FILE: Optional[str] = (os.getenv("MATTSTASH_POLICY_FILE") or "").strip() or None
+
+    # Structured access log: always on stdout (logger ``mattstash.access``); also this file when set. A request whose
+    # line cannot be written to the file is refused (fail closed), so put it on a volume that has room.
+    ACCESS_LOG_FILE: Optional[str] = (os.getenv("MATTSTASH_ACCESS_LOG_FILE") or "").strip() or None
+    ACCESS_LOG_MAX_BYTES: int = _get_int_env(
+        "MATTSTASH_ACCESS_LOG_MAX_BYTES", 10 * 1024 * 1024, minimum=1024, maximum=1024 * 1024 * 1024
+    )
+    ACCESS_LOG_BACKUPS: int = _get_int_env("MATTSTASH_ACCESS_LOG_BACKUPS", 10, minimum=1, maximum=100)
 
     # Throttling of FAILED authentication attempts, per client IP (applied before auth runs)
     AUTH_FAIL_LIMIT: int = _get_int_env("MATTSTASH_AUTH_FAIL_LIMIT", 10, minimum=1, maximum=10_000)

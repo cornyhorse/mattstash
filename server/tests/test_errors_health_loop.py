@@ -154,8 +154,9 @@ async def test_slow_writes_do_not_block_health_probes(configure, monkeypatch):
 
 
 def test_keytool_generates_a_strong_key_and_hashed_entry(capsys):
+    from mattstash.authz import legacy_from_keys_file_text
+
     from app.keytool import main
-    from app.security.api_keys import _parse_policy_entry
 
     assert main(["--id", "billing", "--ops", "read,write", "--prefix", "billing-", "--prefix", "shared-"]) == 0
     captured = capsys.readouterr()
@@ -166,8 +167,9 @@ def test_keytool_generates_a_strong_key_and_hashed_entry(capsys):
     assert (
         entry["id"] == "billing" and entry["ops"] == ["read", "write"] and entry["prefixes"] == ["billing-", "shared-"]
     )
-    record = _parse_policy_entry(entry, 1)  # the generated entry is valid policy
-    assert record.principal.allows_name("billing-db") and not record.principal.allows_name("other")
+    # the generated entry is valid policy: the library turns it into a principal with prefix grants
+    keys, grants, _ = legacy_from_keys_file_text(json.dumps({"keys": [entry]}), 32)
+    assert [g.key for g in grants] == ["billing-*", "shared-*"] and keys[0].principal.name == "billing"
 
 
 def test_keytool_hashes_an_existing_key_from_stdin(monkeypatch, capsys):
