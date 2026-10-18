@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from mattstash.authz import load_policy
+from mattstash.authz import generate_token, load_policy
 from mattstash.utils.exceptions import DatabaseLockError, DatabaseLockTimeoutError
 
 from app.security import api_keys
@@ -61,6 +61,7 @@ ENDPOINTS = [
     ("DELETE", "/principals/hermes", None),
     ("GET", "/principals/hermes/tokens", None),
     ("POST", "/principals/hermes/tokens", {}),
+    ("POST", "/principals/hermes/tokens/import", {"key": "k" * 40}),
     ("DELETE", "/principals/hermes/tokens/abcdefghijkl", None),
     ("POST", "/principals/hermes/tokens/abcdefghijkl/rotate", {}),
     ("GET", "/grants", None),
@@ -266,6 +267,86 @@ def test_issue_token_validation(adm):
     assert parse_time(absolute.json()["expires"]).year == 2099
     no_expiry = adm.post(f"{BASE}/principals/lister/tokens", json={})
     assert no_expiry.json()["expires"] is None
+
+
+IMPORTED = "imported-client-key-" + "m" * 30
+
+
+def test_import_token_keeps_an_existing_key_working_and_never_shows_it_again(adm, policy_path, log_path, caplog):
+    caplog.set_level(logging.DEBUG)
+    response = adm.post(
+        f"{BASE}/principals/fireflyer/tokens/import",
+        json={"key": IMPORTED, "description": "old Mac key", "expires": "30d"},
+    )
+    assert response.status_code == 201 and response.headers.get("x-policy-active") is None
+    body = response.json()
+    assert set(body) == {"id", "expires"} and re.fullmatch(r"[a-z2-7]{12}", body["id"])
+    assert timedelta(days=29) < parse_time(body["expires"]) - datetime.now(UTC) < timedelta(days=31)
+    # the old key authenticates at once, as that principal, with that principal's grants
+    ok = adm.get("/api/v1/credentials/firefly.token", headers=bearer(IMPORTED))
+    assert ok.status_code == 200
+    assert adm.get("/api/v1/credentials/other", headers=bearer(IMPORTED)).status_code == 404
+    stored = next(t for t in on_disk(policy_path).principal("fireflyer").tokens if t.id == body["id"])
+    assert stored.hash.startswith("sha256:") and stored.description == "old Mac key"
+    listing = adm.get(f"{BASE}/principals/fireflyer/tokens")
+    assert body["id"] in [t["id"] for t in listing.json()["tokens"]]
+    # the key is nowhere: not in a response, the file, the access log or the server log
+    for text in (response.text, listing.text, Path(policy_path).read_text(), Path(log_path).read_text(), caplog.text):
+        assert IMPORTED not in text
+    records = [json.loads(line) for line in Path(log_path).read_text().splitlines()]
+    assert any(r.get("route") == "admin.token.import" and r["decision"] == "allowed" for r in records)
+
+
+def test_import_token_refuses_what_it_should_without_echoing_the_key(adm, policy_path, log_path, caplog):
+    caplog.set_level(logging.DEBUG)
+    url = f"{BASE}/principals/fireflyer/tokens/import"
+    _, issued = generate_token()
+    refusals = [
+        ({"key": "k" * 31}, 400, "shorter than 32"),
+        ({"key": " " + IMPORTED}, 400, "control or non-ASCII"),
+        ({"key": issued}, 400, "mst_ token format"),
+        ({"key": IMPORTED, "expires": "soon"}, 400, "cannot read"),
+        ({"key": IMPORTED, "min_length": 100}, 400, "shorter than 100"),
+    ]
+    before = Path(policy_path).read_bytes()
+    for body, code, message in refusals:
+        response = adm.post(url, json=body)
+        assert response.status_code == code and message in response.json()["detail"], body
+        assert body["key"].strip() not in response.text
+    for body, loc in (
+        ({"key": "k" * 300}, ["body", "key"]),  # too long
+        ({"key": IMPORTED, "min_length": 15}, ["body", "min_length"]),  # below the floor
+        ({"key": IMPORTED, "extra": 1}, ["body", "extra"]),
+        ({}, ["body", "key"]),
+    ):
+        response = adm.post(url, json=body)
+        assert response.status_code == 422 and response.json()["detail"][0]["loc"] == loc
+        assert IMPORTED not in response.text and "k" * 300 not in response.text
+    assert Path(policy_path).read_bytes() == before
+    assert adm.post(f"{BASE}/principals/nobody/tokens/import", json={"key": IMPORTED}).status_code == 404
+    assert IMPORTED not in caplog.text and IMPORTED not in Path(log_path).read_text()
+
+
+def test_import_token_refuses_a_key_that_is_already_a_token(adm):
+    url = f"{BASE}/principals/fireflyer/tokens/import"
+    assert adm.post(url, json={"key": IMPORTED}).status_code == 201
+    duplicate = adm.post(f"{BASE}/principals/hermes/tokens/import", json={"key": IMPORTED})
+    assert duplicate.status_code == 400 and "already held by a token" in duplicate.json()["detail"]
+    assert IMPORTED not in duplicate.text
+
+
+def test_import_token_uses_the_servers_minimum_key_length_unless_the_request_lowers_it(
+    make_client, policy_path, policy_tokens
+):
+    client = make_client(API_KEY=None, POLICY_FILE=policy_path, ALLOW_WRITES=True, MIN_KEY_LENGTH=40)
+    client.headers.update(bearer(policy_tokens["matt"]))
+    url = f"{BASE}/principals/fireflyer/tokens/import"
+    assert "shorter than 40" in client.post(url, json={"key": "k" * 39}).json()["detail"]
+    assert client.post(url, json={"key": "k" * 40}).status_code == 201
+    assert client.post(url, json={"key": "j" * 20, "min_length": 20}).status_code == 201
+    low = make_client(API_KEY=None, POLICY_FILE=policy_path, ALLOW_WRITES=True, MIN_KEY_LENGTH=8)
+    low.headers.update(bearer(policy_tokens["matt"]))
+    assert "shorter than 16" in low.post(url, json={"key": "h" * 12}).json()["detail"]  # never below 16
 
 
 def test_list_tokens(adm, policy_tokens):

@@ -131,6 +131,11 @@ class FakeAdminServer:
             case ("POST", ["principals", name, "tokens"]):
                 issued = b.token_issue(name, body.get("expires"), body.get("description", ""))
                 return 201, issued
+            case ("POST", ["principals", name, "tokens", "import"]):
+                imported = b.token_import(
+                    name, body["key"], body.get("expires"), body.get("description", ""), body.get("min_length", 32)
+                )
+                return 201, imported
             case ("DELETE", ["principals", name, "tokens", token_id]):
                 return 200, b.token_revoke(name, token_id)
             case ("POST", ["principals", name, "tokens", token_id, "rotate"]):

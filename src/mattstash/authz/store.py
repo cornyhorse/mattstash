@@ -9,6 +9,7 @@ JSON keys are an error too, because "last one wins" would let a stray line overr
 """
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from typing import Any, Optional, Union
 
 from ..utils.filelock import FileLock
 from ..utils.fileops import match_owner
+from ..utils.validation import api_key_problem
 from .errors import PolicyError
 from .evaluate import can_admin
 from .models import (
@@ -37,7 +39,7 @@ from .models import (
     utcnow,
 )
 from .patterns import validate_pattern, validate_tag
-from .tokens import generate_token, hash_token, is_valid_token_id, validate_token_hash
+from .tokens import generate_token, hash_token, is_valid_token_id, parse_token, validate_token_hash
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -45,6 +47,10 @@ _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", re.ASCII)
 _GRANT_ID_RE = re.compile(r"g_[0-9a-f]{8}", re.ASCII)
 RESERVED_PREFIX = "legacy-"
 MAX_DESCRIPTION_LENGTH = 500
+#: The key length ``import_token`` asks for by default (the server's default ``MATTSTASH_MIN_KEY_LENGTH``) and the
+#: shortest it ever accepts, whatever is asked for.
+MIN_IMPORT_KEY_LENGTH = 32
+MIN_IMPORT_KEY_LENGTH_FLOOR = 16
 #: Largest revision accepted: keeps ``revision + 1`` and its JSON text far from any integer-size limit.
 MAX_REVISION = 2**63 - 1
 #: A change is refused when it leaves every admin token expiring within this long, having had one that outlasts it.
@@ -454,6 +460,35 @@ def _outlasts(policy: Policy, now: datetime, horizon: datetime) -> bool:
     )
 
 
+def admin_expiry_warning(policy: Policy, now: datetime, horizon: timedelta = timedelta(days=14)) -> Optional[str]:
+    """An early warning for the day the last admin token expires, or ``None`` if there is nothing to warn about.
+
+    The lockout rule (:func:`check_lockout_change`) only looks one hour ahead, which is too late to be pleasant. This
+    looks ``horizon`` ahead: it returns a message when the policy has an admin (an enabled ``human-device`` principal
+    with the admin flag) and every admin token that is valid now expires within ``horizon``, or when no admin token is
+    valid at all any more. No admin at all is not a warning (nothing is about to run out), and one token that never
+    expires or outlasts the horizon is enough to stay quiet. The text names no token and no secret.
+    """
+    admins = [p for p in policy.principals if can_admin(p)]
+    if not admins:
+        return None
+    valid = [t for p in admins for t in p.tokens if not t.is_expired(now)]
+    if not valid:
+        return (
+            "no admin has a valid token any more, so nobody can manage the policy through the server; "
+            "issue one locally: mattstash admin --policy-file <policy file> token issue <admin>"
+        )
+    expiries = [t.expires for t in valid if t.expires is not None]
+    if len(expiries) < len(valid) or max(expiries) > now + horizon:  # a token that never expires, or one that lasts
+        return None
+    last = max(expiries)
+    days = f"{horizon.total_seconds() / 86400:g}"
+    return (
+        f"every admin token expires within {days} days (the last one at {_format_datetime(last)}); issue a new "
+        "admin token before then (mattstash admin token issue <admin>) or nobody will be able to manage the policy"
+    )
+
+
 def check_lockout(policy: Policy, now: datetime, legacy_admin_available: bool) -> None:
     """Refuse a policy that nobody could administer, unless a legacy admin key (outside the file) still can."""
     if legacy_admin_available or has_usable_admin(policy, now):
@@ -515,11 +550,21 @@ class PolicyEditor:
             replace(self._policy, principals=principals, grants=self._policy.grants if grants is None else grants)
         )
 
-    def _new_token(self, expires: Optional[datetime], description: str) -> tuple[Token, str]:
+    def _new_token_id(self) -> str:
+        used = {token.id for principal in self._policy.principals for token in principal.tokens}
+        while True:
+            token_id, _ = generate_token()
+            if token_id not in used:
+                return token_id
+
+    def _check_future(self, expires: Optional[datetime]) -> None:
         if expires is not None:
             _check_aware(expires, "token expiry")
             if expires <= self.now:
                 raise PolicyError("a new token's expiry must be in the future")
+
+    def _new_token(self, expires: Optional[datetime], description: str) -> tuple[Token, str]:
+        self._check_future(expires)
         used = {token.id for principal in self._policy.principals for token in principal.tokens}
         while True:
             token_id, plaintext = generate_token()
@@ -569,6 +614,42 @@ class PolicyEditor:
         token, plaintext = self._new_token(expires, description)
         self._update(owner, replace(owner, tokens=(*owner.tokens, token)))
         return token, plaintext
+
+    def import_token(
+        self,
+        principal: str,
+        key: str,
+        min_length: int = MIN_IMPORT_KEY_LENGTH,
+        expires: Optional[datetime] = None,
+        description: str = "",
+    ) -> Token:
+        """Store an EXISTING plain key as a token of ``principal`` (the zero-downtime way off the v1 key sources).
+
+        The key keeps working unchanged: only its unsalted ``sha256:<hex>`` digest is stored, under a fresh token id.
+        It must be printable ASCII without surrounding whitespace (what a client can send as ``X-API-Key``), at least
+        ``min_length`` characters (at least :data:`MIN_IMPORT_KEY_LENGTH_FLOOR`, whatever is asked for) and not in
+        ``mst_`` format (those are issued or rotated, not imported). A key that another token already holds is
+        refused. No error message contains the key.
+        """
+        if min_length < MIN_IMPORT_KEY_LENGTH_FLOOR:
+            raise PolicyError(f"the minimum key length cannot be below {MIN_IMPORT_KEY_LENGTH_FLOOR}")
+        owner = self._principal(principal)
+        problem = api_key_problem(key)
+        if problem is not None:
+            raise PolicyError(problem)
+        if len(key) < min_length:
+            raise PolicyError(f"the key is shorter than {min_length} characters")
+        if parse_token(key) is not None:
+            raise PolicyError(
+                "this key is already in mst_ token format; issue or rotate a token instead of importing it"
+            )
+        self._check_future(expires)
+        stored = f"sha256:{hashlib.sha256(key.encode('ascii')).hexdigest()}"
+        if any(_hash_identity(t.hash) == _hash_identity(stored) for p in self._policy.principals for t in p.tokens):
+            raise PolicyError("this key is already held by a token in the policy")
+        token = Token(self._new_token_id(), stored, self.now, expires, description)
+        self._update(owner, replace(owner, tokens=(*owner.tokens, token)))
+        return token
 
     def _token(self, owner: Principal, token_id: str) -> Token:
         for token in owner.tokens:

@@ -33,6 +33,7 @@ from mattstash.authz import (
 )
 from mattstash.authz.accesslog import printable
 from mattstash.authz.models import utcnow
+from mattstash.authz.store import MIN_IMPORT_KEY_LENGTH_FLOOR
 from mattstash.utils.exceptions import DatabaseLockError, DatabaseLockTimeoutError
 
 from ..config import config
@@ -41,6 +42,7 @@ from ..models.requests import (
     CheckRequest,
     CreateGrantRequest,
     CreatePrincipalRequest,
+    ImportTokenRequest,
     IssueTokenRequest,
     RotateTokenRequest,
     UpdatePrincipalRequest,
@@ -399,6 +401,22 @@ def issue_token(
         status.HTTP_201_CREATED,
         secret=True,
     )
+
+
+@router.post("/admin/principals/{name}/tokens/import", dependencies=[Depends(require_admin("admin.token.import"))])
+@limiter.limit(_WRITE_LIMIT)
+def import_token(request: Request, name: str, body: ImportTokenRequest) -> JSONResponse:
+    """Store an existing plain key as a token (zero-downtime migration off the removed v1 key sources).
+
+    The key is in the request body and nowhere else: it is not echoed, not logged (the access line holds the route
+    and the principal, never the body) and not part of any error text.
+    """
+    minimum = max(config.MIN_KEY_LENGTH, MIN_IMPORT_KEY_LENGTH_FLOOR) if body.min_length is None else body.min_length
+    with _editing(request) as editor:
+        principal = _file_principal(editor, name)
+        expires = _expiry(body.expires, editor.now)
+        token = editor.import_token(principal.name, body.key, minimum, expires, body.description)
+    return _reply(request, {"id": token.id, "expires": _time(token.expires)}, status.HTTP_201_CREATED)
 
 
 @router.delete(

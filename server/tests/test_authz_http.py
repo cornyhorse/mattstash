@@ -193,6 +193,26 @@ def test_list_only_entries_have_null_fields_and_a_masked_password_even_with_show
     assert "db-secret" not in response.text and "ff-secret" not in response.text and "dbuser" not in response.text
 
 
+def test_a_simple_secrets_value_is_its_password_field_and_is_masked_unless_the_principal_has_read(pc, policy_tokens):
+    """Decision 6: ``firefly.token`` is a simple key:value secret ({"value": ...}); the list shows its value in the
+    ``password`` field, so list-only principals see the mask in every combination, readers only with show_password."""
+
+    def entry(who: str, show: str) -> dict:
+        response = pc.get(
+            f"/api/v1/credentials?prefix=firefly.token&show_password={show}", headers=bearer(policy_tokens[who])
+        )
+        assert response.status_code == 200 and response.json()["count"] == 1
+        return response.json()["credentials"][0]
+
+    for show in ("true", "false"):
+        listed_only = entry("lister", show)  # list, no read
+        assert listed_only["password"] == "*****" and listed_only["version"]
+        assert [listed_only[f] for f in ("username", "url", "notes")] == [None, None, None]
+        assert "ff-secret" not in str(listed_only)
+    assert entry("fireflyer", "true")["password"] == "ff-secret"  # list + read, asked to show it
+    assert entry("fireflyer", "false")["password"] == "*****"  # list + read, not asked
+
+
 def test_read_without_list_does_not_enumerate(pc, policy_tokens, data):
     # hermes may READ firefly-mcp but must not see it listed
     assert "firefly-mcp" not in names(pc.get("/api/v1/credentials", headers=bearer(policy_tokens["hermes"])))

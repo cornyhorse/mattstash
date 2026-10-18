@@ -647,6 +647,24 @@ class MattStashServerClient:
         self._require(result, "id", str)
         return result
 
+    def admin_token_import(
+        self,
+        principal: str,
+        key: str,
+        expires: Optional[str] = None,
+        description: str = "",
+        min_length: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """``POST /admin/principals/{name}/tokens/import``; the answer holds the token id, never the key."""
+        body: Dict[str, Any] = {"key": key, "description": description}
+        if expires is not None:
+            body["expires"] = expires
+        if min_length is not None:
+            body["min_length"] = min_length
+        result = self._admin("POST", f"principals/{segment(principal)}/tokens/import", body=body)
+        self._require(result, "id", str)
+        return result
+
     def admin_token_revoke(self, principal: str, token_id: str) -> Dict[str, Any]:
         """``DELETE /admin/principals/{name}/tokens/{token_id}``."""
         result = self._admin("DELETE", f"principals/{segment(principal)}/tokens/{segment(token_id)}")

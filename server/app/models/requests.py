@@ -76,6 +76,19 @@ class IssueTokenRequest(_AdminRequest):
     description: str = Field("", max_length=500)
 
 
+class ImportTokenRequest(_AdminRequest):
+    """An existing plain key to store as a token (``docs/upgrading-to-0.3.md``). The key is never echoed or logged."""
+
+    key: str = Field(..., min_length=1, max_length=256, repr=False, description="The existing key (never returned)")
+    expires: str | None = Field(
+        None, min_length=1, max_length=64, description="Duration (90d, 24h) or date (2027-01-01)"
+    )
+    description: str = Field("", max_length=500)
+    min_length: int | None = Field(
+        None, ge=16, le=256, description="Shortest key to accept (default: the server's MATTSTASH_MIN_KEY_LENGTH)"
+    )
+
+
 class RotateTokenRequest(_AdminRequest):
     grace: str | None = Field(
         None, min_length=1, max_length=64, description="How long the old token keeps working (24h)"

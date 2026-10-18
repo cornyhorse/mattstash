@@ -17,6 +17,7 @@ command fails and names the token id so the token can be revoked.
 
 import argparse
 import contextlib
+import getpass
 import json
 import os
 import sys
@@ -33,6 +34,7 @@ from ...authz import (
     PolicyError,
     Principal,
     Token,
+    admin_expiry_warning,
     edit_policy,
     evaluate,
     is_valid_token_id,
@@ -46,7 +48,9 @@ from ...authz import (
 )
 from ...authz.legacy import v1_admin_ids
 from ...authz.models import utcnow
+from ...authz.store import MIN_IMPORT_KEY_LENGTH_FLOOR
 from ...utils.exceptions import ServerError
+from ...utils.validation import api_key_problem
 from .. import exit_codes
 from ..inputs import InputError
 from .base import BaseHandler
@@ -59,6 +63,7 @@ ACCESS_LOG_FILE_ENV = "MATTSTASH_ACCESS_LOG_FILE"
 DEFAULT_MIN_KEY_LENGTH = 32
 MAX_LOG_LIMIT = 1000
 _MAX_MIGRATION_FILE = 4 * 1024 * 1024
+_MAX_IMPORT_INPUT = 1024
 
 Data = Dict[str, Any]
 
@@ -118,6 +123,34 @@ def _grant_out(grant: Grant, now: datetime) -> Data:
     }
 
 
+def _parse_ts(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+
+
+def _policy_from_listing(items: List[Data]) -> Optional[Policy]:
+    """A :class:`Policy` with just what ``admin_expiry_warning`` reads, rebuilt from a server's principal listing
+    (which has no hashes). ``None`` if the listing is not in the expected shape: the warning is best effort."""
+    try:
+        principals = tuple(
+            Principal(
+                name=str(p["name"]),
+                kind=str(p["kind"]),
+                admin=bool(p["admin"]),
+                disabled=bool(p["disabled"]),
+                tokens=tuple(
+                    Token(str(t["id"]), "", _parse_ts(t["created"]) or utcnow(), _parse_ts(t["expires"]))
+                    for t in p["tokens"]
+                ),
+            )
+            for p in items
+        )
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    return Policy(principals=principals)
+
+
 def _now() -> datetime:
     return utcnow().replace(microsecond=0)
 
@@ -172,6 +205,9 @@ class _Backend(_LogReader, Protocol):
 
     def token_issue(self, principal: str, expires: Optional[str], description: str) -> Data:
         """Issue a token; the result holds the plaintext."""
+
+    def token_import(self, principal: str, key: str, expires: Optional[str], description: str, min_length: int) -> Data:
+        """Store an existing plain key as a token; the result holds the id, never the key."""
 
     def token_revoke(self, principal: str, token_id: str) -> Data:
         """Revoke a token."""
@@ -250,6 +286,13 @@ class _LocalBackend:
         if all(token.id != token_id for token in cls._find(policy, principal).tokens):
             raise AdminError(f"Token not found: {token_id}", exit_codes.NOT_FOUND)
 
+    def policy_if_readable(self) -> Optional[Policy]:
+        """The policy as it is now, or ``None`` if it cannot be read (the notices that use it are best effort)."""
+        try:
+            return load_policy(self.policy_file)
+        except (OSError, PolicyError):
+            return None
+
     def principals(self) -> List[Data]:
         now = _now()
         return [_principal_out(p, now) for p in self._load().principals]
@@ -301,6 +344,14 @@ class _LocalBackend:
             self._find(editor.policy, principal)
             token, plaintext = editor.issue_token(principal, when, description)
         return {"token": plaintext, "id": token.id, "expires": _ts(token.expires)}
+
+    def token_import(self, principal: str, key: str, expires: Optional[str], description: str, min_length: int) -> Data:
+        now = _now()
+        when = None if expires is None else parse_duration_or_time(expires, now)
+        with edit_policy(self.policy_file, now=now) as editor:
+            self._find(editor.policy, principal)
+            token = editor.import_token(principal, key, min_length, when, description)
+        return {"id": token.id, "expires": _ts(token.expires)}
 
     def token_revoke(self, principal: str, token_id: str) -> Data:
         with edit_policy(self.policy_file) as editor:
@@ -398,6 +449,9 @@ class _ServerBackend:
 
     def token_issue(self, principal: str, expires: Optional[str], description: str) -> Data:
         return self.client.admin_token_issue(principal, expires, description)
+
+    def token_import(self, principal: str, key: str, expires: Optional[str], description: str, min_length: int) -> Data:
+        return self.client.admin_token_import(principal, key, expires, description, min_length)
 
     def token_revoke(self, principal: str, token_id: str) -> Data:
         return self.client.admin_token_revoke(principal, token_id)
@@ -591,7 +645,10 @@ class AdminHandler(BaseHandler):
             if backend is None:
                 return exit_codes.ERROR
             method = getattr(self, "_op_" + op.replace(".", "_"))
-            return int(method(backend, args))
+            code = int(method(backend, args))
+            if isinstance(backend, _LocalBackend):
+                self._warn_admin_expiry(backend.policy_if_readable())
+            return code
         except AdminError as exc:
             self.error(str(exc))
             return exc.code
@@ -662,9 +719,17 @@ class AdminHandler(BaseHandler):
 
     # ---- principals -------------------------------------------------------
 
+    def _warn_admin_expiry(self, policy: Optional[Policy]) -> None:
+        """Print the early warning about the last admin token expiring (stderr, so stdout stays clean for pipes)."""
+        text = None if policy is None else admin_expiry_warning(policy, _now())
+        if text:
+            self.say(f"warning: {text}", err=True)
+
     def _op_principal_list(self, backend: _Backend, args: argparse.Namespace) -> int:
         items = backend.principals()
         self._output(args, items, _principal_table(items))
+        if not isinstance(backend, _LocalBackend):  # local mode warns after every command, see handle()
+            self._warn_admin_expiry(_policy_from_listing(items))
         return exit_codes.OK
 
     def _op_principal_show(self, backend: _Backend, args: argparse.Namespace) -> int:
@@ -826,6 +891,44 @@ class AdminHandler(BaseHandler):
                 args.principal, args.token_id, args.grace, args.expires, args.description or ""
             ),
         )
+
+    def _read_key(self) -> str:
+        """The key to import, from standard input only (never argv, where it would sit in the process list and the
+        shell history): a line piped in, or typed without echo when stdin is a terminal."""
+        if sys.stdin is not None and sys.stdin.isatty():
+            key = getpass.getpass("Existing API key (not shown): ")
+        else:
+            raw = sys.stdin.read(_MAX_IMPORT_INPUT + 1) if sys.stdin is not None else ""
+            if len(raw) > _MAX_IMPORT_INPUT:
+                raise AdminError("standard input is too long to be one API key")
+            key = raw.removesuffix("\n").removesuffix("\r")  # one trailing line ending, as `echo` or a file adds
+        if "\n" in key or "\r" in key:
+            raise AdminError("standard input must hold exactly one API key")
+        return key
+
+    def _op_token_import(self, backend: _Backend, args: argparse.Namespace) -> int:
+        self._check_expiry(args.expires)
+        minimum = int(args.min_length)
+        if minimum < MIN_IMPORT_KEY_LENGTH_FLOOR:
+            raise AdminError(f"--min-length cannot be below {MIN_IMPORT_KEY_LENGTH_FLOOR}")
+        key = self._read_key()
+        problem = api_key_problem(key)  # the same checks in both modes, before anything is sent
+        if problem is not None:
+            raise AdminError(problem)
+        if len(key) < minimum:
+            raise AdminError(f"the key is shorter than {minimum} characters (--min-length lowers this, down to 16)")
+        if parse_token(key) is not None:
+            raise AdminError("this key is already in mst_ token format; use `token issue` or `token rotate` instead")
+        result = backend.token_import(args.principal, key, args.expires, args.description or "", minimum)
+        token_id = result.get("id")
+        self.say(_clean(token_id) if is_valid_token_id(token_id) else "id unknown")
+        self.say(
+            f"imported the key as token {_clean(token_id)} of {args.principal}; it still works as it is. It is stored "
+            "as an unsalted sha256 hash: once its client sends an mst_ token (`mattstash admin token issue`), "
+            f"revoke it with `mattstash admin token revoke {args.principal} {_clean(token_id)}`.",
+            err=True,
+        )
+        return self._warned(result)
 
     def _op_token_list(self, backend: _Backend, args: argparse.Namespace) -> int:
         items = backend.tokens(args.principal)
@@ -1050,6 +1153,26 @@ def add_admin_parser(subparsers: Any, global_opts: argparse.ArgumentParser) -> N
     t_issue.add_argument("--expires", metavar="WHEN", help="90d, 24h, 2w or a date such as 2027-01-01")
     t_issue.add_argument("--description", help="Free-text description")
     t_issue.add_argument("--output-file", metavar="PATH", help=output_help)
+    t_import = leaf(
+        token,
+        "import",
+        "token.import",
+        "Store an existing plain API key as a token (read from standard input)",
+        description="Store an EXISTING plain API key (for example the old MATTSTASH_API_KEY of a client) as a token "
+        "of PRINCIPAL, so the client keeps working while you move it to an mst_ token. The key is read from "
+        "standard input only (a piped line, or typed without echo on a terminal), never from an argument. "
+        "It is stored as an unsalted sha256 hash.",
+    )
+    t_import.add_argument("principal")
+    t_import.add_argument("--expires", metavar="WHEN", help="90d, 24h, 2w or a date such as 2027-01-01")
+    t_import.add_argument("--description", help="Free-text description")
+    t_import.add_argument(
+        "--min-length",
+        type=_min_length,
+        default=DEFAULT_MIN_KEY_LENGTH,
+        metavar="N",
+        help=f"Shortest key to accept (default {DEFAULT_MIN_KEY_LENGTH}, at least {MIN_IMPORT_KEY_LENGTH_FLOOR})",
+    )
     t_list = leaf(token, "list", "token.list", "List a principal's tokens (ids and expiry, never secrets)")
     t_list.add_argument("principal")
     as_json(t_list)

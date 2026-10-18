@@ -491,6 +491,49 @@ def test_migrate_keys_locally_and_the_server_picks_them_up(
     assert "v1-copy" not in ok(admin("principal", "list"))
 
 
+# ---- importing an existing key (zero-downtime migration) ----
+
+
+def test_token_import_through_the_real_cli_keeps_the_old_key_working(
+    admin, cli, run_mattstash_cli, admin_server: AdminServer
+) -> None:
+    old_key = "client-key-from-before-0.3-" + "k" * 20
+    ok(admin("principal", "add", "importer", "--kind", "agent"))
+    ok(admin("grant", "add", "importer", "--key", "app.*"))
+    # the key goes in on stdin only: the command has no argument for it
+    refused = run_mattstash_cli(
+        ["admin", "token", "import", "importer", old_key], admin_server.env(admin_server.admin_token)
+    )
+    assert refused.returncode == 2 and old_key not in refused.stdout  # argparse usage error
+    assert_unauthorized(cli("get", "app.db-password", token=old_key))  # not known yet
+    result = run_mattstash_cli(
+        ["admin", "token", "import", "importer", "--description", "old client"],
+        admin_server.env(admin_server.admin_token),
+        input=old_key + "\n",
+    )
+    token_id = ok(result).strip()
+    assert re.fullmatch(r"[a-z2-7]{12}", token_id) and old_key not in result.stdout + result.stderr
+    assert "unsalted sha256" in result.stderr
+    # the old key works at once, with the principal's grants and no others
+    assert ADMIN_SERVER_SECRETS["app.db-password"] in ok(
+        cli("get", "app.db-password", "--show-password", token=old_key)
+    )
+    assert_not_found(cli("get", "other.secret", token=old_key))
+    # and the move off it: issue an mst_ token, then revoke the imported one
+    new_token = issue(admin, "importer")
+    assert ADMIN_SERVER_SECRETS["app.db-password"] in ok(
+        cli("get", "app.db-password", "--show-password", token=new_token)
+    )
+    ok(admin("token", "revoke", "importer", token_id))
+    assert_unauthorized(cli("get", "app.db-password", token=old_key))
+    # neither the file nor the access log ever held the key
+    assert old_key not in admin_server.policy.read_text() and old_key not in admin_server.log.read_text()
+    bad = run_mattstash_cli(
+        ["admin", "token", "import", "importer"], admin_server.env(admin_server.admin_token), input="too-short\n"
+    )
+    assert bad.returncode == 1 and "shorter than 32" in bad.stderr
+
+
 # ---- the wire format of the contract ----
 
 

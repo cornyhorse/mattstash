@@ -19,6 +19,7 @@ from .models import ACTIONS, KINDS, LEGACY_KIND, Decision, Grant, Policy, Princi
 from .patterns import pattern_matches, validate_pattern, validate_tag
 from .store import (
     PolicyEditor,
+    admin_expiry_warning,
     check_lockout,
     check_lockout_change,
     dump_policy,
@@ -58,6 +59,7 @@ __all__ = [
     "Principal",
     "Token",
     "admin_decision",
+    "admin_expiry_warning",
     "can_admin",
     "check_duplicate_keys",
     "check_lockout",

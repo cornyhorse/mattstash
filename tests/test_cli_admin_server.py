@@ -2,6 +2,7 @@
 
 import json
 import stat
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -469,3 +470,83 @@ def test_json_output_never_contains_a_token_hash(run: Runner, server: FakeAdminS
     server.forced = lambda _request: httpx.Response(200, json=leaky)
     result = run(*ADMIN_ARGS, "principal", "list", "--json")
     assert result.code == 0 and "hmac-sha256" not in result.out and '"id": "abc"' in result.out
+
+
+# ---- token import -----------------------------------------------------------
+
+OLD_KEY = "old-client-key-" + "q" * 30
+
+
+def _stdin(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    import io
+    import sys
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+
+
+def test_token_import_posts_the_key_in_the_body_only(
+    run: Runner, server: FakeAdminServer, policy: Path, monkeypatch: pytest.MonkeyPatch
+):
+    assert run(*ADMIN_ARGS, "principal", "add", "bot", "--kind", "agent").code == 0
+    _stdin(monkeypatch, OLD_KEY + "\n")
+    result = run(*ADMIN_ARGS, "token", "import", "bot", "--description", "Mac", "--expires", "30d")
+    assert result.code == 0 and OLD_KEY not in result.out + result.err
+    request = last(server)
+    assert (request.method, path_of(request)) == ("POST", "/api/v1/admin/principals/bot/tokens/import")
+    assert json.loads(request.content) == {"key": OLD_KEY, "description": "Mac", "expires": "30d", "min_length": 32}
+    assert OLD_KEY not in str(request.url) and OLD_KEY not in str(request.headers)
+    token = load_policy(policy).principal("bot").tokens[0]  # type: ignore[union-attr]
+    assert result.out.strip() == token.id and verify_token_hash(token.hash, OLD_KEY)
+    assert "imported the key as token" in result.err
+
+
+def test_token_import_checks_the_key_locally_before_sending(
+    run: Runner, server: FakeAdminServer, monkeypatch: pytest.MonkeyPatch
+):
+    sent = len(server.requests)
+    for text, message in (("short\n", "shorter than 32"), ("mst_abcdefghijkl_" + "A" * 43, "mst_ token format")):
+        _stdin(monkeypatch, text)
+        result = run(*ADMIN_ARGS, "token", "import", "bot")
+        assert result.code == 1 and message in result.err
+    assert len(server.requests) == sent
+
+
+def test_token_import_server_errors_do_not_echo_the_key(
+    run: Runner, server: FakeAdminServer, monkeypatch: pytest.MonkeyPatch
+):
+    _stdin(monkeypatch, OLD_KEY + "\n")
+    missing = run(*ADMIN_ARGS, "token", "import", "nobody")
+    assert missing.code == exit_codes.NOT_FOUND and OLD_KEY not in missing.err
+    server.warning = "Saved to the policy file but NOT active: see the server log."
+    assert run(*ADMIN_ARGS, "principal", "add", "bot", "--kind", "agent").code == 1  # warning: saved, not active
+    _stdin(monkeypatch, OLD_KEY + "\n")
+    warned = run(*ADMIN_ARGS, "token", "import", "bot")
+    assert warned.code == 1 and "NOT active" in warned.err and OLD_KEY not in warned.err
+
+
+# ---- early warning: the last admin token is about to expire -----------------
+
+
+def test_principal_list_in_server_mode_warns_from_the_listing(
+    run: Runner, server: FakeAdminServer, policy: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from mattstash.authz import edit_policy
+
+    with edit_policy(policy) as editor:
+        editor.add_principal("matt", "human-device", admin=True)
+        editor.issue_token("matt", expires=datetime.now(UTC) + timedelta(days=5))
+    listed = run(*ADMIN_ARGS, "principal", "list")
+    assert listed.code == 0 and "warning: every admin token expires within 14 days" in listed.err
+    assert "warning" not in listed.out
+    assert "every admin token" not in run(*ADMIN_ARGS, "grant", "list").err  # only `principal list` looks
+    with edit_policy(policy) as editor:
+        editor.issue_token("matt")  # a token that never expires
+    assert "every admin token" not in run(*ADMIN_ARGS, "principal", "list").err
+
+
+def test_the_listing_warning_is_skipped_for_a_listing_in_an_unexpected_shape(run: Runner, server: FakeAdminServer):
+    server.forced = lambda request: (
+        httpx.Response(200, json={"principals": [{"name": "x"}]}) if request.method == "GET" else None
+    )
+    listed = run(*ADMIN_ARGS, "principal", "list", "--json")
+    assert listed.code == 0 and "every admin token" not in listed.err

@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import re
 import stat
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -16,9 +17,11 @@ from mattstash.authz import (
     PolicyError,
     Principal,
     Token,
+    admin_expiry_warning,
     dump_policy,
     edit_policy,
     empty_policy,
+    generate_token,
     has_usable_admin,
     hash_token,
     load_policy,
@@ -841,3 +844,119 @@ def test_edit_policy_locks_the_real_path_not_the_symlink(tmp_path: Path):
     assert seen == [str(real.resolve()) + ".lock"] * 2  # both routes take the same lock
     assert not (tmp_path / "link.json.lock").exists()  # no stray lock next to the link
     assert link.is_symlink() and {p.name for p in load_policy(real).principals} == {"matt", "bot", "bot2"}
+
+
+# -- import_token ----------------------------------------------------------
+
+OLD_KEY = "old-client-key-" + "x" * 30
+
+
+def test_import_token_stores_the_digest_under_a_fresh_id_and_the_key_still_matches(policy_path: Path) -> None:
+    import hashlib
+
+    bootstrap(policy_path)
+    with edit_policy(policy_path, now=NOW) as editor:
+        editor.add_principal("bot", "agent")
+        token = editor.import_token("bot", OLD_KEY, description="migrated client", expires=NOW + timedelta(days=30))
+    stored = load_policy(policy_path).principal("bot").tokens[0]  # type: ignore[union-attr]
+    assert stored == token and stored.hash == "sha256:" + hashlib.sha256(OLD_KEY.encode()).hexdigest()
+    assert verify_token_hash(stored.hash, OLD_KEY) and not verify_token_hash(stored.hash, OLD_KEY + "x")
+    assert (stored.created, stored.expires, stored.description) == (NOW, NOW + timedelta(days=30), "migrated client")
+    assert re.fullmatch(r"[a-z2-7]{12}", stored.id)
+    assert OLD_KEY not in policy_path.read_text()
+
+
+def test_import_token_refuses_bad_keys_without_repeating_them(policy_path: Path) -> None:
+    bootstrap(policy_path)
+    before = policy_path.read_bytes()
+    _, issued = generate_token()
+    cases = [
+        ("short-key-123456789012345678901", "shorter than 32"),  # 31 characters
+        ("", "empty"),
+        (OLD_KEY + "\n", "control or non-ASCII"),
+        (" " + OLD_KEY, "control or non-ASCII"),
+        (OLD_KEY.replace("x", "é"), "control or non-ASCII"),
+        (issued, "mst_ token format"),
+    ]
+    for key, message in cases:
+        with pytest.raises(PolicyError, match=message) as info, edit_policy(policy_path, now=NOW) as editor:
+            editor.import_token("matt-mac", key)
+        assert key == "" or key not in str(info.value)
+    with pytest.raises(PolicyError, match="no such principal"), edit_policy(policy_path, now=NOW) as editor:
+        editor.import_token("ghost", OLD_KEY)
+    assert policy_path.read_bytes() == before
+
+
+def test_import_token_min_length_can_be_lowered_but_never_below_16(policy_path: Path) -> None:
+    bootstrap(policy_path)
+    sixteen = "k" * 16
+    with edit_policy(policy_path, now=NOW) as editor:
+        editor.import_token("matt-mac", sixteen, min_length=16)
+        for floor in (15, 8, 0):
+            with pytest.raises(PolicyError, match="cannot be below 16"):
+                editor.import_token("matt-mac", "k" * 20, min_length=floor)
+        with pytest.raises(PolicyError, match="shorter than 17"):
+            editor.import_token("matt-mac", "j" * 16, min_length=17)
+
+
+def test_import_token_refuses_a_duplicate_key_and_a_past_expiry(policy_path: Path) -> None:
+    bootstrap(policy_path)
+    with edit_policy(policy_path, now=NOW) as editor:
+        editor.add_principal("bot", "agent")
+        editor.add_principal("bot2", "agent")
+        editor.import_token("bot", OLD_KEY)
+        with pytest.raises(PolicyError, match="already held by a token") as info:
+            editor.import_token("bot2", OLD_KEY)  # not even by another principal
+        assert OLD_KEY not in str(info.value)
+        with pytest.raises(PolicyError, match="already held"):
+            editor.import_token("bot", OLD_KEY)
+        with pytest.raises(PolicyError, match="must be in the future"):
+            editor.import_token("bot2", "z" * 40, expires=NOW)
+    assert load_policy(policy_path).principal("bot2").tokens == ()  # type: ignore[union-attr]
+
+
+# -- admin_expiry_warning ----------------------------------------------------
+
+
+def _admin(*tokens: Token, name: str = "matt-mac", **changes: Any) -> Principal:
+    return Principal(
+        name, changes.pop("kind", "human-device"), admin=changes.pop("admin", True), tokens=tokens, **changes
+    )
+
+
+def _token(expires: datetime | None, suffix: str = "a") -> Token:
+    return Token("aaaaaaaaaaa" + suffix, HASH, NOW - timedelta(days=100), expires)
+
+
+def test_warning_when_every_valid_admin_token_expires_within_the_horizon() -> None:
+    soon = NOW + timedelta(days=10)
+    policy = Policy(principals=(_admin(_token(NOW + timedelta(days=3)), _token(soon, "b")),))
+    text = admin_expiry_warning(policy, NOW)
+    assert text is not None and "within 14 days" in text and "2026-10-28T12:00:00Z" in text
+    assert "token issue" in text and HASH not in text and "aaaaaaaaaaa" not in text  # no token ids, no secrets
+    assert "within 20 days" in (admin_expiry_warning(policy, NOW, timedelta(days=20)) or "")
+    assert admin_expiry_warning(policy, NOW, timedelta(days=2)) is None  # not within 2 days
+    assert admin_expiry_warning(policy, NOW, timedelta(days=10)) is not None  # the boundary counts as within
+
+
+def test_no_warning_when_one_admin_token_lasts_or_never_expires() -> None:
+    soon = _token(NOW + timedelta(days=2))
+    for lasting in (_token(None, "b"), _token(NOW + timedelta(days=15), "b")):
+        assert admin_expiry_warning(Policy(principals=(_admin(soon, lasting),)), NOW) is None
+    other = _admin(_token(NOW + timedelta(days=400), "c"), name="mac-2")
+    assert admin_expiry_warning(Policy(principals=(_admin(soon), other)), NOW) is None  # across admins too
+
+
+def test_an_expired_admin_token_is_ignored_and_only_expired_tokens_get_their_own_warning() -> None:
+    expired = _token(NOW - timedelta(days=1))
+    assert admin_expiry_warning(Policy(principals=(_admin(expired, _token(None, "b")),)), NOW) is None
+    text = admin_expiry_warning(Policy(principals=(_admin(expired),)), NOW)
+    assert text is not None and "no admin has a valid token" in text and "--policy-file" in text
+    assert admin_expiry_warning(Policy(principals=(_admin(),)), NOW) is not None  # an admin without any token
+
+
+def test_no_warning_without_a_usable_admin_or_for_admins_that_cannot_administer() -> None:
+    assert admin_expiry_warning(Policy(), NOW) is None
+    soon = _token(NOW + timedelta(days=1))
+    for principal in (_admin(soon, disabled=True), _admin(soon, admin=False), _admin(soon, kind="agent", admin=False)):
+        assert admin_expiry_warning(Policy(principals=(principal,)), NOW) is None

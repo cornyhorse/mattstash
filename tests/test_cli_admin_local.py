@@ -1,6 +1,7 @@
 """``mattstash admin ...`` in local mode (design section 8): the policy file is edited directly."""
 
 import json
+import re
 import stat
 import sys
 from datetime import UTC, datetime, timedelta
@@ -580,3 +581,157 @@ def test_migrate_keys_with_a_server_url_in_the_environment_still_edits_the_file(
     monkeypatch.setenv("MATTSTASH_SERVER_URL", "http://localhost:9")
     assert run(*admin(policy, "migrate-keys", "--from", str(_v1(tmp_path)), "--kind", "human-device")).code == 0
     assert policy.exists()
+
+
+# ---- token import -----------------------------
+
+OLD_KEY = "old-client-key-" + "q" * 30
+
+
+def _stdin(monkeypatch: pytest.MonkeyPatch, text: str, tty: bool = False) -> None:
+    import io
+
+    stream = io.StringIO(text)
+    stream.isatty = lambda: tty  # type: ignore[method-assign]
+    monkeypatch.setattr(sys, "stdin", stream)
+
+
+def test_token_import_reads_the_key_from_stdin_and_the_key_keeps_working(
+    run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _stdin(monkeypatch, OLD_KEY + "\n")
+    result = run(*admin(bootstrapped, "token", "import", "bot", "--description", "Mac client", "--expires", "90d"))
+    assert result.code == 0 and OLD_KEY not in result.out + result.err
+    token_id = result.out.strip()
+    assert re.fullmatch(r"[a-z2-7]{12}", token_id)
+    assert f"imported the key as token {token_id} of bot" in result.err and "unsalted sha256" in result.err
+    assert f"token revoke bot {token_id}" in result.err
+    stored = next(t for t in load_policy(bootstrapped).principal("bot").tokens if t.id == token_id)  # type: ignore[union-attr]
+    assert verify_token_hash(stored.hash, OLD_KEY) and stored.hash.startswith("sha256:")
+    assert stored.description == "Mac client" and stored.expires is not None
+    assert OLD_KEY not in bootstrapped.read_text()
+
+
+@pytest.mark.parametrize("ending", ["", "\n", "\r\n"])
+def test_token_import_accepts_the_usual_line_endings(
+    run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch, ending: str
+):
+    _stdin(monkeypatch, OLD_KEY + ending)
+    assert run(*admin(bootstrapped, "token", "import", "bot")).code == 0
+    assert any(verify_token_hash(t.hash, OLD_KEY) for t in load_policy(bootstrapped).principal("bot").tokens)  # type: ignore[union-attr]
+
+
+def test_token_import_on_a_terminal_prompts_without_echo(
+    run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import getpass
+
+    prompts: list[str] = []
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": prompts.append(prompt) or OLD_KEY)
+    _stdin(monkeypatch, "", tty=True)
+    assert run(*admin(bootstrapped, "token", "import", "bot")).code == 0
+    assert prompts and "not shown" in prompts[0]
+    assert any(verify_token_hash(t.hash, OLD_KEY) for t in load_policy(bootstrapped).principal("bot").tokens)  # type: ignore[union-attr]
+
+
+def test_token_import_has_no_key_argument(run: Runner, bootstrapped: Path):
+    with pytest.raises(SystemExit):
+        run(*admin(bootstrapped, "token", "import", "bot", OLD_KEY))
+    with pytest.raises(SystemExit):
+        run(*admin(bootstrapped, "token", "import", "bot", "--key", OLD_KEY))
+
+
+@pytest.mark.parametrize(
+    ("stdin", "extra", "message"),
+    [
+        ("short-key\n", [], "shorter than 32"),
+        ("", [], "is empty"),
+        (" " + OLD_KEY + "\n", [], "control or non-ASCII"),
+        ("é" * 40 + "\n", [], "control or non-ASCII"),
+        (OLD_KEY + "\n" + OLD_KEY + "\n", [], "exactly one API key"),
+        ("k" * 2000, [], "too long to be one API key"),
+        ("mst_abcdefghijkl_" + "A" * 43 + "\n", [], "mst_ token format"),
+        ("k" * 20 + "\n", ["--min-length", "21"], "shorter than 21"),
+        (OLD_KEY + "\n", ["--min-length", "15"], "cannot be below 16"),
+        (OLD_KEY + "\n", ["--expires", "yesterday"], "cannot read 'yesterday'"),
+    ],
+)
+def test_token_import_refuses_bad_input_before_changing_anything(
+    run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch, stdin: str, extra: list[str], message: str
+):
+    before = bootstrapped.read_bytes()
+    _stdin(monkeypatch, stdin)
+    result = run(*admin(bootstrapped, "token", "import", "bot", *extra))
+    assert result.code == 1 and result.out == "" and message in result.err
+    assert OLD_KEY not in result.err and bootstrapped.read_bytes() == before
+
+
+def test_token_import_min_length_can_be_lowered_to_16(run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch):
+    _stdin(monkeypatch, "k" * 16 + "\n")
+    assert run(*admin(bootstrapped, "token", "import", "bot", "--min-length", "16")).code == 0
+
+
+def test_token_import_unknown_principal_and_duplicate_key(
+    run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _stdin(monkeypatch, OLD_KEY + "\n")
+    missing = run(*admin(bootstrapped, "token", "import", "nobody"))
+    assert missing.code == exit_codes.NOT_FOUND and "Principal not found" in missing.err
+    _stdin(monkeypatch, OLD_KEY + "\n")
+    assert run(*admin(bootstrapped, "token", "import", "bot")).code == 0
+    _stdin(monkeypatch, OLD_KEY + "\n")
+    again = run(*admin(bootstrapped, "token", "import", "ansible"))
+    assert again.code == 1 and "already held by a token" in again.err and OLD_KEY not in again.err
+
+
+def test_token_import_without_a_stdin_is_an_empty_key(run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(sys, "stdin", None)
+    result = run(*admin(bootstrapped, "token", "import", "bot"))
+    assert result.code == 1 and "is empty" in result.err
+
+
+# ---- early warning: the last admin token is about to expire -----------------
+
+
+def test_local_commands_warn_on_stderr_when_every_admin_token_expires_within_14_days(run: Runner, policy: Path):
+    assert run(*admin(policy, "principal", "add", "matt", "--kind", "human-device", "--admin")).code == 0
+    soon = run(*admin(policy, "token", "issue", "matt", "--expires", "3d"))
+    assert soon.code == 0 and "warning: every admin token expires within 14 days" in soon.err
+    lasting = run(*admin(policy, "token", "issue", "matt", "--expires", "400d"))
+    assert lasting.code == 0 and "every admin token" not in lasting.err  # one token that lasts is enough
+    run(*admin(policy, "token", "revoke", "matt", lasting.out.split("_")[1]))
+    listed = run(*admin(policy, "principal", "list"))
+    assert listed.code == 0 and "warning: every admin token expires within 14 days" in listed.err
+    assert "warning" not in listed.out and listed.out.startswith("NAME")
+    assert "mattstash admin token issue" in listed.err
+    other = run(*admin(policy, "grant", "list"))  # any admin command in local mode
+    assert other.code == 0 and "every admin token expires within 14 days" in other.err
+    as_json = run(*admin(policy, "principal", "list", "--json"))
+    assert json.loads(as_json.out) and "every admin token" in as_json.err  # stdout stays pure JSON
+
+
+def test_a_fresh_admin_token_ends_the_warning(run: Runner, policy: Path):
+    run(*admin(policy, "principal", "add", "matt", "--kind", "human-device", "--admin"))
+    run(*admin(policy, "token", "issue", "matt", "--expires", "2d"))
+    assert "every admin token" in run(*admin(policy, "principal", "list")).err
+    issued = run(*admin(policy, "token", "issue", "matt", "--expires", "90d"))
+    assert issued.code == 0 and "every admin token" not in issued.err
+    assert "every admin token" not in run(*admin(policy, "principal", "list")).err
+
+
+def test_no_expiry_warning_for_the_log_only_backend_or_a_failed_load(run: Runner, tmp_path: Path):
+    log = tmp_path / "access.jsonl"
+    log.write_text("")
+    assert "every admin token" not in run("admin", "log", "--log-file", str(log)).err
+    missing = run(*admin(tmp_path / "nope.json", "principal", "list"))
+    assert missing.code == 1 and "every admin token" not in missing.err
+
+
+def test_the_expiry_warning_survives_an_unreadable_policy_after_the_command(
+    run: Runner, bootstrapped: Path, monkeypatch: pytest.MonkeyPatch
+):
+    real = admin_module._LocalBackend.policy_if_readable
+    monkeypatch.setattr(
+        admin_module._LocalBackend, "policy_if_readable", lambda self: (bootstrapped.unlink(), real(self))[1]
+    )
+    assert run(*admin(bootstrapped, "principal", "list")).code == 0  # the file vanished after the listing: no crash

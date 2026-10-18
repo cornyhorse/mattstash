@@ -18,7 +18,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import httpx
 import pytest
@@ -172,18 +172,19 @@ def _cli_executable() -> str:
     return str(beside_python) if beside_python.exists() else (shutil.which("mattstash") or "mattstash")
 
 
-def run_cli(args: list, env: Dict[str, str]) -> subprocess.CompletedProcess:
+def run_cli(args: list, env: Dict[str, str], input: Optional[str] = None) -> subprocess.CompletedProcess:
     """
     Run mattstash CLI with given arguments and environment.
 
     Args:
         args: CLI arguments (e.g., ['get', 'my-secret'])
         env: Environment variables
+        input: Text for the command's standard input (``None``: no input)
 
     Returns:
         Completed process with stdout, stderr, and returncode
     """
-    return subprocess.run([_cli_executable(), *args], env=env, capture_output=True, text=True, timeout=60)
+    return subprocess.run([_cli_executable(), *args], env=env, capture_output=True, text=True, timeout=60, input=input)
 
 
 @pytest.fixture
