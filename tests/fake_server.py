@@ -81,22 +81,27 @@ class FakeServer:
         raw_path = request.url.raw_path.decode().split("?")[0]
         parts = raw_path.split("/")
         query = dict(request.url.params)
-        # ['', 'api', 'v1', 'credentials', '<name>', ('versions')]
+        # A server started with MATTSTASH_ALLOW_SLASH_NAMES=true: the name is the rest of the path, decoded.
+        # ['', 'api', 'v1', 'credentials', '<name>', ('versions')]; <one segment>/versions is the old versions route
         if parts[:4] == ["", "api", "v1", "credentials"]:
             if len(parts) == 4 and request.method == "GET":
                 return self._list(query)
-            name = unquote(parts[4]) if len(parts) > 4 else ""
             if len(parts) == 6 and parts[5] == "versions" and request.method == "GET":
-                versions = sorted(self.store.get(name, {}))
-                if not versions:
-                    return self._json(404, {"detail": f"Credential not found: {name}"})
-                labels = [str(n).zfill(10) for n in versions]
-                return self._json(200, {"name": name, "versions": labels, "latest": labels[-1]})
-            if len(parts) == 5:
-                return self._credential_route(request, name, query)
-        if len(parts) == 5 and parts[:4] == ["", "api", "v1", "db-url"]:
-            return self._json(200, {"url": f"fake://{unquote(parts[4])}?{request.url.query.decode()}"})
+                return self._versions(unquote(parts[4]))
+            if len(parts) > 4:
+                return self._credential_route(request, unquote("/".join(parts[4:])), query)
+        if len(parts) > 4 and parts[:4] == ["", "api", "v1", "versions"] and request.method == "GET":
+            return self._versions(unquote("/".join(parts[4:])))
+        if len(parts) > 4 and parts[:4] == ["", "api", "v1", "db-url"]:
+            return self._json(200, {"url": f"fake://{unquote('/'.join(parts[4:]))}?{request.url.query.decode()}"})
         return self._json(404, {"detail": "no such route"})
+
+    def _versions(self, name: str) -> httpx.Response:
+        versions = sorted(self.store.get(name, {}))
+        if not versions:
+            return self._json(404, {"detail": f"Credential not found: {name}"})
+        labels = [str(n).zfill(10) for n in versions]
+        return self._json(200, {"name": name, "versions": labels, "latest": labels[-1]})
 
     def _list(self, query: Dict[str, str]) -> httpx.Response:
         show = query.get("show_password") == "true"

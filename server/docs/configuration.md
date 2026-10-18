@@ -27,7 +27,9 @@ volume holding the `.kdbx`.
 | `MATTSTASH_API_KEY` | - | A single *legacy* (full-access) key. **Deprecated:** use a principal and token ([below](#principals-tokens-and-grants)). |
 | `MATTSTASH_API_KEYS_FILE` | - | Legacy key list **or** a v1 JSON key policy. **Deprecated**, see below. |
 | `MATTSTASH_POLICY_FILE` | - | JSON policy of principals, tokens and grants. Required by the admin API (`503` without it). Keep it off the data volume and mount it writable. |
-| `MATTSTASH_ACCESS_LOG_FILE` | - | Also write the access log (JSON lines) to this file, created `0600`. Unset: stdout only. A failed write refuses the request with `503`. |
+| `MATTSTASH_ACCESS_LOG_FILE` | - | Also write the access log (JSON lines) to this file, created `0600`. Unset: stdout only. A failed write refuses the request with `503` unless `MATTSTASH_ACCESS_LOG_FAIL_OPEN` is set. |
+| `MATTSTASH_ACCESS_LOG_FAIL_OPEN` | `false` | `true`: a failed access-log file write is logged as an error and the request proceeds (the stdout line is still written, marked `"error":"access-log-write-failed"`). `/ready` answers `503` while the file cannot be written, in both modes. |
+| `MATTSTASH_ALLOW_SLASH_NAMES` | `false` | `true`: names may contain `/` (`cloud/hetzner/s3-key`) and are addressed by path (see [Names with a slash](#names-with-a-slash)). Off: a `/` in a name is a `404`, as before. Set the same variable on clients that write such names. |
 | `MATTSTASH_ACCESS_LOG_MAX_BYTES` | `10485760` | Rotate the access log file at this size (10 MiB; 1 KiB-1 GiB). |
 | `MATTSTASH_ACCESS_LOG_BACKUPS` | `10` | Rotated access log files to keep (1-100). |
 | `MATTSTASH_MIN_KEY_LENGTH` | `32` | Minimum length of plaintext keys (8-256). Startup fails on weaker keys. |
@@ -160,7 +162,7 @@ Paths are relative to `/api/v1`. An ungranted read is answered exactly as for a 
 | `GET /credentials` | `list` on each entry | Entries without `list` are left out; the request is still `200`. |
 | Fields of a listed entry (username, URL, notes, value) | `read` | The entry carries only `name` and `version`; the other fields are `null`, the password is `*****`. |
 | `GET /search?q=&tag=` | `list` on each result | Filtered per entry. Matches names (case-insensitive substring) and tags only; never notes or values; returns names and tags only. |
-| `GET /credentials/{name}`, `GET /credentials/{name}/versions` | `read` | `404 Credential not found: <name>`, as for a missing name. |
+| `GET /credentials/{name}`, `GET /credentials/{name}/versions`, `GET /versions/{name}` | `read` | `404 Credential not found: <name>`, as for a missing name. |
 | `GET /db-url/{name}` | `read` | `404 Credential not found or unsuitable: <name>`. |
 | `POST /credentials/{name}` | `write` | `403 Insufficient permissions`, before the database is touched. |
 | `DELETE /credentials/{name}` | `delete` | `403`, as above. |
@@ -168,6 +170,22 @@ Paths are relative to `/api/v1`. An ungranted read is answered exactly as for a 
 
 `list` and `read` are independent: a principal with only `read` on `firefly.*` can fetch `firefly.token` by name but does
 not see it in `GET /credentials`.
+
+### Names with a slash
+
+Off by default: a name containing `/` is a `404` on every route and is not listed. With `MATTSTASH_ALLOW_SLASH_NAMES=true`
+(on the server, and on any CLI or library that writes such names) names like `cloud/hetzner/s3-key` work:
+
+- `GET`, `POST`, `DELETE /api/v1/credentials/{name:path}` and `GET /api/v1/db-url/{name:path}` take the whole rest of the
+  path as the name. A literal `/` and `%2F` route the same way.
+- `GET /api/v1/versions/{name:path}` lists versions. `GET /api/v1/credentials/{name}/versions` keeps working for names
+  without `/`; for a name with `/` it is ambiguous (`/credentials/a/versions` is the versions of `a`, never of `a/versions`),
+  so use `/versions/a/versions`. The CLI does this for any name that contains `/`.
+- A name must not start or end with `/`, contain `//` or have a `.` or `..` segment (`400 Invalid credential name`).
+  Other characters are as before (`A-Za-z0-9_.-`).
+- Grants, list and search treat the name as a plain string: `cloud/*` matches `cloud/x` and not `cloud` or `cloudx/y`. A
+  read the principal may not make is the same `404` as a missing name.
+- `?prefix=cloud/` filters the list.
 
 ### Admin API
 
@@ -262,7 +280,7 @@ Authentication happens in the outermost layer, before the application (and befor
 | Path | Purpose |
 |------|---------|
 | `GET /health`, `GET /api/health` | **Liveness.** `200` while the process serves requests. Never touches the database. |
-| `GET /ready`, `GET /api/ready` | **Readiness.** `200` only if the database can be read; otherwise `503 {"detail": "Not ready"}` (no details). |
+| `GET /ready`, `GET /api/ready` | **Readiness.** `200` only if the database can be read and, when `MATTSTASH_ACCESS_LOG_FILE` is set, the file can be written; otherwise `503 {"detail": "Not ready"}` (no details). |
 
 No authentication is required. Use `/health` for liveness probes and Docker `HEALTHCHECK`, `/ready` for readiness.
 
@@ -322,6 +340,11 @@ When the line is written:
   server answer `503` instead. For a read nothing of the response is sent; for a state-changing request the handler
   never runs, so no credential is created or deleted, no token is minted and the policy file is untouched. The server
   log gets `Access log write failed`. If the file cannot even be opened at startup, the server does not start.
+- **Opt-out:** with `MATTSTASH_ACCESS_LOG_FAIL_OPEN=true` the same failure is logged as an error (`Access log write failed`,
+  no paths or secrets), the stdout line is still emitted with `"error":"access-log-write-failed"` and the request
+  proceeds, so a full disk no longer stops the service but its audit trail has a gap in the file. In **both** modes
+  `/ready` and `/api/ready` answer `503 {"detail": "Not ready"}` from the first failed write until a write succeeds
+  (while it is failing, each probe retries the file with a small `access-log-probe` line), so monitoring sees it.
 - Each request produces exactly one line.
 
 Never logged: tokens or API keys, secret values, usernames, URLs, notes, descriptions or any other free text. Request bodies are not logged

@@ -214,6 +214,7 @@ All four are optional.
 |----------|---------|---------|
 | `MATTSTASH_POLICY_FILE` | - | The policy file (JSON). The admin API needs it and answers `503` without it. Keep it off the data volume. |
 | `MATTSTASH_ACCESS_LOG_FILE` | - | Also write the access log to this file, created with mode `0600`. Unset: the log goes to stdout only. |
+| `MATTSTASH_ACCESS_LOG_FAIL_OPEN` | `false` | `true`: a failed write to that file is logged as an error and the request proceeds instead of being refused with `503`. |
 | `MATTSTASH_ACCESS_LOG_MAX_BYTES` | `10485760` (10 MiB) | Rotate the access log file at this size. |
 | `MATTSTASH_ACCESS_LOG_BACKUPS` | `10` | Rotated access log files to keep. |
 
@@ -280,7 +281,8 @@ forge lines. Health probes are not logged.
   it is also written to that file.
 - **Rotation:** at `MATTSTASH_ACCESS_LOG_MAX_BYTES`, keeping `MATTSTASH_ACCESS_LOG_BACKUPS` files. No logrotate is needed.
 - **Fail closed:** if a line cannot be written to the file (full disk, permissions), the request is answered `503` and
-  an error is logged. An unlogged read is treated as worse than an outage. Stdout-only logging cannot fail this way.
+  an error is logged. An unlogged read is treated as worse than an outage. Stdout-only logging cannot fail this way. `MATTSTASH_ACCESS_LOG_FAIL_OPEN=true` opts out: the failure is logged as an
+  error and the request goes on. In both modes `/ready` answers `503` while the file cannot be written.
 - **Reading it:** `mattstash admin log`, in server or local mode (see the [CLI reference](cli-reference.md#admin---principals-tokens-grants-and-the-access-log)).
 
 ### Legacy keys and deprecation

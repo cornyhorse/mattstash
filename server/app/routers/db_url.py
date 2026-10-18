@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from mattstash.builders.db_url import AUTO_DRIVER, DIALECT_DRIVERS, DbUrlError, build_db_url, normalize_dialect
 
 from ..accesslog import note
@@ -10,7 +10,7 @@ from ..dependencies import MattStashDep, ReadAccess, authorize_name
 from ..errors import translate_errors
 from ..models.responses import DatabaseUrlResponse
 from ..rate_limit import limiter, read_limit
-from ..validation import require_valid_name
+from ..validation import require_slash_names_enabled, require_valid_name
 
 logger = logging.getLogger("mattstash.api")
 router = APIRouter()
@@ -32,7 +32,9 @@ _REASONS = {
 _DATABASE_NAME_MAX = 128
 
 
-@router.get("/db-url/{name}", response_model=DatabaseUrlResponse)
+@router.get(
+    "/db-url/{name:namepath}", response_model=DatabaseUrlResponse, dependencies=[Depends(require_slash_names_enabled)]
+)
 @limiter.limit(read_limit)
 def get_database_url(
     request: Request,

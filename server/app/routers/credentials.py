@@ -8,13 +8,16 @@ event loop, so health probes and other requests stay responsive while a write is
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from mattstash import MattStash
 from mattstash.authz import visible
 from mattstash.authz.models import utcnow
 from mattstash.models.credential import Credential
 
 from ..accesslog import note
+from ..config import config
 from ..dependencies import (
+    Caller,
     DeleteAccess,
     MattStashDep,
     ReadAccess,
@@ -34,7 +37,13 @@ from ..models.responses import (
     VersionListResponse,
 )
 from ..rate_limit import limiter, read_limit
-from ..validation import MAX_NAME_LENGTH, is_valid_name, require_valid_name, require_valid_prefix
+from ..validation import (
+    MAX_NAME_LENGTH,
+    is_valid_name,
+    require_slash_names_enabled,
+    require_valid_name,
+    require_valid_prefix,
+)
 
 logger = logging.getLogger("mattstash.api")
 router = APIRouter()
@@ -90,7 +99,44 @@ def _normalize_credential(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/credentials/{name}", response_model=CredentialResponse)
+# Declared before the {name:namepath} routes: /credentials/a/versions is the versions of "a", not a credential.
+def _versions(request: Request, name: str, mattstash: MattStash, caller: Caller) -> VersionListResponse:
+    require_valid_name(name)
+    authorize_name(request, caller, "read", "versions", name, mattstash=mattstash)
+    with translate_errors("versions"):
+        versions = mattstash.list_versions(name)
+
+    if not versions:
+        raise _not_found(name)
+
+    return VersionListResponse(
+        name=name,
+        versions=versions,
+        latest=versions[-1],  # Last version is the latest
+    )
+
+
+@router.get("/credentials/{name}/versions", response_model=VersionListResponse)
+@limiter.limit(read_limit)
+def list_versions(
+    request: Request,
+    name: str,
+    mattstash: MattStashDep,
+    caller: ReadAccess,
+) -> VersionListResponse:
+    """
+    List all versions of a credential whose name has no ``/``.
+
+    - **name**: Credential name
+    """
+    return _versions(request, name, mattstash, caller)
+
+
+@router.get(
+    "/credentials/{name:namepath}",
+    response_model=CredentialResponse,
+    dependencies=[Depends(require_slash_names_enabled)],
+)
 @limiter.limit(read_limit)
 def get_credential(
     request: Request,
@@ -219,32 +265,25 @@ def search_credentials(
     return SearchResponse(results=results, count=len(results))
 
 
-@router.get("/credentials/{name}/versions", response_model=VersionListResponse)
+@router.get(
+    "/versions/{name:namepath}",
+    response_model=VersionListResponse,
+    dependencies=[Depends(require_slash_names_enabled)],
+)
 @limiter.limit(read_limit)
-def list_versions(
+def list_versions_by_path(
     request: Request,
     name: str,
     mattstash: MattStashDep,
     caller: ReadAccess,
 ) -> VersionListResponse:
     """
-    List all versions of a credential.
+    List all versions of a credential; the name may contain ``/`` (when the server allows it). Unlike
+    ``/credentials/{name}/versions`` this cannot confuse the name ``a/versions`` with the versions of ``a``.
 
     - **name**: Credential name
     """
-    require_valid_name(name)
-    authorize_name(request, caller, "read", "versions", name, mattstash=mattstash)
-    with translate_errors("versions"):
-        versions = mattstash.list_versions(name)
-
-    if not versions:
-        raise _not_found(name)
-
-    return VersionListResponse(
-        name=name,
-        versions=versions,
-        latest=versions[-1],  # Last version is the latest
-    )
+    return _versions(request, name, mattstash, caller)
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +292,10 @@ def list_versions(
 
 
 @router.post(
-    "/credentials/{name}",
+    "/credentials/{name:namepath}",
     response_model=CreateCredentialResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_slash_names_enabled)],
 )
 @limiter.limit("30/minute")
 def create_credential(
@@ -285,6 +325,7 @@ def create_credential(
             url=body.url,
             notes=body.notes,
             tags=body.tags,
+            allow_slash=config.ALLOW_SLASH_NAMES,
         )
 
     if result is None:  # pragma: no cover - put() raises on failure
@@ -298,7 +339,9 @@ def create_credential(
     )
 
 
-@router.delete("/credentials/{name}", status_code=status.HTTP_200_OK)
+@router.delete(
+    "/credentials/{name:namepath}", status_code=status.HTTP_200_OK, dependencies=[Depends(require_slash_names_enabled)]
+)
 @limiter.limit("30/minute")
 def delete_credential(
     request: Request,

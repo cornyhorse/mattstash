@@ -130,11 +130,20 @@ def segment(value: str) -> str:
     return quote(value, safe="")
 
 
+def name_path(title: str) -> str:
+    """A credential name as the tail of a URL path: each ``/``-separated segment encoded, the separators literal.
+
+    Servers started with ``MATTSTASH_ALLOW_SLASH_NAMES=true`` route such names; reverse proxies tend to mangle ``%2F``.
+    """
+    return "/".join(segment(part) for part in title.split("/"))
+
+
 _STATUS_HINTS = {
     400: "the server rejected the request (invalid name or parameter)",
     401: "authentication failed; check the API key",
     403: "this API key is not allowed to do that",
-    404: "not found: a wrong --server-url, or a name the server cannot route (letters, digits, '_', '.', '-')",
+    404: "not found: a wrong --server-url, or a name the server cannot route (letters, digits, '_', '.', '-'; "
+    "'/' only if the server runs with MATTSTASH_ALLOW_SLASH_NAMES=true)",
     405: "the server does not allow this operation (it may be read-only)",
     413: "the request is too large for the server",
     429: "too many requests; slow down and retry",
@@ -417,7 +426,7 @@ class MattStashServerClient:
             if version is not None:
                 params["version"] = version
 
-            result = self._make_request("GET", f"/api/v1/credentials/{segment(title)}", params=params)
+            result = self._make_request("GET", f"/api/v1/credentials/{name_path(title)}", params=params)
         except ServerError as e:
             if e.secret_missing:
                 return None
@@ -475,7 +484,7 @@ class MattStashServerClient:
         if tags:
             data["tags"] = tags
 
-        result = self._make_request("POST", f"/api/v1/credentials/{segment(title)}", json_data=data)
+        result = self._make_request("POST", f"/api/v1/credentials/{name_path(title)}", json_data=data)
         self._require(result, "name", str)
         return result
 
@@ -492,7 +501,7 @@ class MattStashServerClient:
         """
         params: Optional[Dict[str, Any]] = {"version": version} if version is not None else None
         try:
-            result = self._make_request("DELETE", f"/api/v1/credentials/{segment(title)}", params=params)
+            result = self._make_request("DELETE", f"/api/v1/credentials/{name_path(title)}", params=params)
         except ServerError as e:
             if e.secret_missing:
                 return False
@@ -532,7 +541,10 @@ class MattStashServerClient:
             List of version strings
         """
         try:
-            result = self._make_request("GET", f"/api/v1/credentials/{segment(title)}/versions")
+            if "/" in title:  # /credentials/{name}/versions cannot tell "a/versions" from the versions of "a"
+                result = self._make_request("GET", f"/api/v1/versions/{name_path(title)}")
+            else:
+                result = self._make_request("GET", f"/api/v1/credentials/{segment(title)}/versions")
         except ServerError as e:
             if e.secret_missing:
                 return []
@@ -578,7 +590,7 @@ class MattStashServerClient:
         if database:
             params["database"] = database
 
-        result = self._make_request("GET", f"/api/v1/db-url/{segment(title)}", params=params)
+        result = self._make_request("GET", f"/api/v1/db-url/{name_path(title)}", params=params)
         url: str = self._require(result, "url", str)
         if not url:
             raise ServerError("server returned an unexpected response (empty 'url')")

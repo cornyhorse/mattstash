@@ -63,6 +63,10 @@ class Config:
     # without it (MATTSTASH_API_KEY, MATTSTASH_API_KEYS_FILE and MATTSTASH_REQUIRE_SCOPED_KEYS were removed in 0.3).
     POLICY_FILE: Optional[str] = (os.getenv("MATTSTASH_POLICY_FILE") or "").strip() or None
 
+    # Names containing "/" (cloud/hetzner/s3-key): refused by default. The same variable enables them in the library and
+    # CLI. When on, the server addresses them with path-style routes (docs/server-api: slash names).
+    ALLOW_SLASH_NAMES: bool = _get_bool_env("MATTSTASH_ALLOW_SLASH_NAMES")
+
     # Structured access log: always on stdout (logger ``mattstash.access``); also this file when set. A request whose
     # line cannot be written to the file is refused (fail closed), so put it on a volume that has room.
     ACCESS_LOG_FILE: Optional[str] = (os.getenv("MATTSTASH_ACCESS_LOG_FILE") or "").strip() or None

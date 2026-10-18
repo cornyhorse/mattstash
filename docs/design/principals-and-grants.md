@@ -29,7 +29,7 @@ keeps existing keys working.
 | Token *accessor*: a non-secret handle used to look up/revoke a token | yes | Every token has a public `token_id` embedded in it, used in logs, revocation and lookup. |
 | Token TTLs | yes | Optional `expires` on tokens and on grants. No renewal/periodic tokens. |
 | Audit device that never logs secrets | yes | One JSON line per request; values never logged. |
-| Audit is fail-closed (no audit, no request) | yes | If the access-log file can't be written, the request is refused with 503. |
+| Audit is fail-closed (no audit, no request) | yes | If the access-log file can't be written, the request is refused with 503. `MATTSTASH_ACCESS_LOG_FAIL_OPEN=true` opts out; `/ready` is 503 while the file is failing. |
 | HMAC of request values in the audit log | no | We log no values at all, only names and decisions; nothing to HMAC. |
 | Policies as named documents attached to tokens, entities/aliases, identity groups | no | One flat list of grants per principal. Groups can come later if the list grows. |
 | Deny capability, `required_parameters`, `allowed_parameters`, control groups | no | Default deny with no explicit deny rules keeps evaluation order-independent. Control groups ≈ §10.3 (ntfy approvals), later. |
@@ -146,7 +146,8 @@ Validation, applied when a grant is created or loaded:
   `firefly/*`?"), because an exact-name grant on a name ending in a separator is almost always a mistake.
 - Printable ASCII only, no whitespace, at most 255 characters (the server's name limit).
 - Patterns are not checked against the server's URL name rules. A pattern may contain `/` (titles can, see
-  PR #16), even though the HTTP API can't address such names yet (`docs/security-review.md`).
+  PR #16), and the HTTP API addresses such names when the server runs with `MATTSTASH_ALLOW_SLASH_NAMES=true`
+  (`docs/security-review.md`, Q9).
 
 **Why not keep raw prefixes?** A raw prefix is what v1 did, and it's how `firefly` ends up granting
 `firefly-mcp`. With an explicit `*` the reader of the grant can see exactly what it covers. v1 prefixes are

@@ -417,9 +417,12 @@ class MattStash:
         tags: Optional[List[str]] = None,
         version: Optional[int] = None,
         autoincrement: bool = True,
+        allow_slash: Optional[bool] = None,
     ) -> Optional[CredentialResult]:
         """
         Create or update an entry.
+
+        A ``/`` in ``title`` is refused unless ``allow_slash`` is true (default: ``MATTSTASH_ALLOW_SLASH_NAMES``).
 
         Modes:
           - Simple (credstash-like): only 'value' is provided -> stored in password field.
@@ -428,7 +431,7 @@ class MattStash:
         If versioning is used, the entry is stored as <title>@<version> (zero-padded).
         """
         # Validate before taking any lock or touching state.
-        validate_credential_title(title)
+        validate_credential_title(title, allow_slash=allow_slash)
         validate_username(username)
         validate_url(url)
         validate_notes(notes)
@@ -444,6 +447,7 @@ class MattStash:
                 tags=tags,
                 version=version,
                 autoincrement=autoincrement,
+                allow_slash=allow_slash,
             )
 
     def list_versions(self, title: str) -> List[str]:

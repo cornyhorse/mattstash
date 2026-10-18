@@ -347,7 +347,7 @@ def test_db_url_value_error_from_the_builder_is_a_generic_400(rw_client, monkeyp
 
 
 # ---------------------------------------------------------------------------
-# titles with "/" (allowed by the library since PR #16) are not addressable through the API
+# titles with "/" are not addressable unless MATTSTASH_ALLOW_SLASH_NAMES is on (see test_slash_names.py)
 # ---------------------------------------------------------------------------
 
 

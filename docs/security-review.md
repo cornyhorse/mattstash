@@ -455,9 +455,14 @@ Review round 2 of the server (fixed, each with a test; `server/tests/test_review
   `legacy-*` names that do not exist are `404`; empty query values mean "not given"; lock timeouts are told apart by
   type; the log file is closed if startup fails; tag lookup uses `MattStash.tags_of` instead of listing the vault.
 
-Decisions still open (design section 11): runners as admins; tag-based writes; an opt-out from fail-closed logging;
+Decisions still open (design section 11): runners as admins; tag-based writes; 
 the legacy removal timeline; whether `*` grants for agents are forbidden; whether list-only entries show username and
-URL; names with `/` over HTTP.
+URL.
+
+Decided in round 2: fail-closed logging stays the default, with the opt-out `MATTSTASH_ACCESS_LOG_FAIL_OPEN=true` (a failed
+file write is logged as an error, the stdout line is marked `access-log-write-failed`, the request proceeds); `/ready`
+and `/api/ready` answer 503 with a fixed body while the file cannot be written, in both modes. Names with `/` over HTTP:
+opt-in (Q9 above).
 
 ---
 
@@ -486,7 +491,7 @@ session scratchpad and are re-created as proper regression tests rather than com
 | Q6 | TLS | **Implement optional in-app TLS** (cert/key files via env) and the CLI plain-`http://` warning. |
 | Q7 | Extra scope | **All four groups:** CLI input hardening; container/k8s consumption (`env`, `exec`); ops commands (`backup`, `rotate-password`, `prune`, `delete --version`); server extras (TLS, non-PG db-url schemes). |
 | Q8 | Python floor | **3.11** (revised after review: 3.9 is EOL and 3.10 reaches EOL on 2026-10-31). Supported: 3.11-3.14. **Home version 3.14** for the Docker image, lint, type-checking, server tests, audit and release builds. 3.15 is not a target yet: the newest available build is a release candidate and `httptools` (via `uvicorn[standard]`) has no 3.15 wheels. |
-| Q9 | Secret-name separator | **`.`** (`myapp.db-password`). Names stay letters, digits, `_`, `.`, `-`: identical in the CLI, the library and the server. **Update:** PR #16 (merged just before this work) allows `/` in titles for the library and the CLI in local mode (`cloud/hetzner/s3-key`; `env --prefix cloud/` selects them). The server is unchanged: its `/credentials/{name}` URLs cannot address such a name (404, not listed), exactly like any title outside `[A-Za-z0-9_.-]`. Making `/` a real namespace separator in server mode (path-style routes, prefix scoping, URL encoding) is a possible follow-up. `.` stays the documented separator. |
+| Q9 | Secret-name separator | **`.`** (`myapp.db-password`). Names stay letters, digits, `_`, `.`, `-`: identical in the CLI, the library and the server. **Update:** PR #16 (merged just before this work) allows `/` in titles for the library and the CLI in local mode (`cloud/hetzner/s3-key`; `env --prefix cloud/` selects them). **Round 2 decision 7:** `/` is now opt-in. Writing a name with `/` (library `put`, CLI, server) is refused unless `MATTSTASH_ALLOW_SLASH_NAMES=true`, with an error that suggests `.`; reading, listing and deleting existing entries locally always works. With the variable set on the server, `GET/POST/DELETE /api/v1/credentials/{name:path}`, `GET /api/v1/db-url/{name:path}` and the new `GET /api/v1/versions/{name:path}` address such names (literal `/` and `%2F` route alike; `/credentials/a/versions` stays the versions of `a`, so use `/versions/a/versions` for the name `a/versions`). Names must not start or end with `/`, contain `//` or have a `.`/`..` segment. Grants and list/search filters match the name literally; a denied read of a `/` name is the same 404 as a missing one. With the variable off the server is unchanged (404). `.` stays the documented separator. |
 | Q10 | Branch protection | The required status check moves from the old job names (`lint-server`, `server-tests`, `integration`) to the single roll-up job **`ci-gate`** (the owner changes it in the repository settings; the project is maintained agentically, so lighter protections are acceptable). |
 | Q11 | Release gating | A focused third review of the round-2 changes runs before the pull request is opened. |
 | Q12 | Coverage target | **100% line coverage** of `src/mattstash` and `server/app` (baseline: library 90%, server 97.6%), reached with in-process tests and mocks; `# pragma: no cover` only where a unit test makes no sense (OS-specific or defensive code). Branch coverage is not a goal. Done after the review fixes so code that is about to change is not covered twice. **Done:** `src/mattstash` and `server/app` are at 100% (two `# pragma: no cover` lines for provably unreachable code); CI gates at 99% (the runner is not root, so a few ownership tests skip) and measures the library once, on Python 3.14. |

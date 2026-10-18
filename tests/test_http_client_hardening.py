@@ -68,8 +68,12 @@ def test_put_get_delete_versions_address_the_exact_name(server: FakeServer, clie
     # every request addressed the encoded segment, exactly once, with no fragment/query leakage
     for request in server.requests:
         raw = request.url.raw_path.decode()
-        assert raw.startswith("/api/v1/credentials/")
+        assert raw.startswith(("/api/v1/credentials/", "/api/v1/versions/"))
         assert "#" not in raw.split("?")[0] and " " not in raw
+    # a name with '/' asks for its versions through the unambiguous route; other names keep the old one
+    paths = [r.url.raw_path.decode() for r in server.requests]
+    assert any(p.startswith("/api/v1/versions/") for p in paths) == ("/" in title)
+    assert any(p.endswith("/versions") for p in paths) == ("/" not in title)
 
 
 def test_hash_in_title_no_longer_truncates_the_name(server: FakeServer, client: MattStashServerClient):

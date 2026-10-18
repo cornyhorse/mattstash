@@ -22,6 +22,8 @@ from typing import Optional
 
 from ...models.credential import serialize_credential
 from ...module_functions import put
+from ...utils.exceptions import InvalidCredentialError
+from ...utils.validation import validate_credential_title
 from .. import exit_codes
 from ..inputs import (
     InputError,
@@ -275,6 +277,12 @@ class PutHandler(BaseHandler):
 
     def _handle_server_mode(self, args: Namespace, request: PutRequest) -> int:
         """Handle put command in server mode."""
+        if "/" in request.title:  # refuse early, with the advice, instead of the server's bare 400
+            try:
+                validate_credential_title(request.title)
+            except InvalidCredentialError as exc:
+                self.error(str(exc))
+                return exit_codes.ERROR
         try:
             client = self.get_server_client(args)
             if client is None:

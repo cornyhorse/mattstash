@@ -71,6 +71,7 @@ from stdin is one line typed without echo; use a pipe or `--value-file` for a mu
 | `MATTSTASH_API_KEY_FILE` | File holding the server API key (or a principal's token) |
 | `MATTSTASH_POLICY_FILE` | `admin`, local mode: the policy file to edit (see [`admin`](#admin---principals-tokens-grants-and-the-access-log)) |
 | `MATTSTASH_ACCESS_LOG_FILE` | `admin log`, local mode: the access log file to read |
+| `MATTSTASH_ALLOW_SLASH_NAMES` | `1`/`true`/`yes`: allow `/` in the names `put` writes (refused by default; use `.`) |
 | `MATTSTASH_ALLOW_INSECURE_HTTP` | `1`/`true`/`yes` silences the warning about sending the API key over plain `http://` |
 | `MATTSTASH_ENABLE_CACHE`, `MATTSTASH_CACHE_TTL` | Connection caching (see [caching](caching.md)) |
 | `MATTSTASH_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR`, `CRITICAL`; error messages are always written to stderr, whatever the level |
@@ -213,9 +214,11 @@ carries on with an empty value that merely looks like success. Works in local an
 
 ### `put` - Store/Update a Credential
 
-Creates a new version of the credential. A title may contain `/` as a namespace separator (`cloud/hetzner/s3-key`) in
-local mode, but not in server mode: the server cannot address such a name (404) and does not list it, so use `.`
-(`myapp.db-password`) for secrets that must be reachable through the server. Two modes:
+Creates a new version of the credential. Use `.` as the separator (`myapp.db-password`). A title containing `/` is
+refused unless `MATTSTASH_ALLOW_SLASH_NAMES=true` is set (then `cloud/hetzner/s3-key` works; it must not start or end with
+`/`, contain `//` or have a `.`/`..` segment). Reading, listing, versioning and deleting existing entries whose titles
+contain `/` always works locally. In server mode the server must also run with `MATTSTASH_ALLOW_SLASH_NAMES=true`
+(otherwise it answers 404); the CLI then asks for `versions` of such a name through `GET /api/v1/versions/<name>`. Two modes:
 
 #### Simple secret mode (credstash-like)
 ```bash

@@ -41,6 +41,7 @@ from mattstash.utils.filelock import FileLock
 from mattstash.utils.fileops import match_owner
 from mattstash.utils.validation import (
     sanitize_error_message,
+    slash_names_allowed,
     validate_credential_title,
     validate_notes,
     validate_url,
@@ -608,8 +609,52 @@ def test_invalid_credential_titles_are_refused(title: str, message: str):
 
 
 @pytest.mark.parametrize("title", ["cloud/hetzner/s3-key", "myapp/db-password", "a/b", "trailing/"])
-def test_forward_slashes_are_allowed_in_titles_as_namespace_separators(title: str):
-    validate_credential_title(title)  # PR #16: "/" is no longer rejected
+def test_forward_slashes_are_refused_by_default_with_advice_to_use_a_dot(title: str):
+    with pytest.raises(
+        InvalidCredentialError, match=r"use '\.' as the separator.*myapp\.db-password.*ALLOW_SLASH_NAMES"
+    ):
+        validate_credential_title(title)
+
+
+@pytest.mark.parametrize("value", ["true", "1", "YES", "on"])
+def test_slash_names_are_enabled_by_the_environment(monkeypatch: pytest.MonkeyPatch, value: str):
+    monkeypatch.setenv("MATTSTASH_ALLOW_SLASH_NAMES", value)
+    assert slash_names_allowed()
+    validate_credential_title("cloud/hetzner/s3-key")
+    with pytest.raises(InvalidCredentialError):  # the explicit argument wins
+        validate_credential_title("cloud/hetzner/s3-key", allow_slash=False)
+
+
+@pytest.mark.parametrize("value", ["", "false", "0", "no", "banana"])
+def test_slash_names_stay_off_for_other_values(monkeypatch: pytest.MonkeyPatch, value: str):
+    monkeypatch.setenv("MATTSTASH_ALLOW_SLASH_NAMES", value)
+    assert not slash_names_allowed()
+    with pytest.raises(InvalidCredentialError):
+        validate_credential_title("a/b")
+    validate_credential_title("a/b", allow_slash=True)
+
+
+@pytest.mark.parametrize("title", ["cloud/hetzner/s3-key", "myapp/db-password", "a/b", "a/.hidden", "a/b.c/d-e_f"])
+def test_valid_slash_names_when_enabled(title: str):
+    validate_credential_title(title, allow_slash=True)
+
+
+@pytest.mark.parametrize(
+    ("title", "message"),
+    [
+        ("/a", "start or end"),
+        ("a/", "start or end"),
+        ("trailing/", "start or end"),
+        ("a//b", "'//'"),
+        ("a/./b", "'.' or '..' segment"),
+        ("a/../b", "'.' or '..' segment"),
+        ("a/..", "'.' or '..' segment"),
+        ("./a", "start with"),  # the existing leading-dot rule
+    ],
+)
+def test_slash_segment_rules(title: str, message: str):
+    with pytest.raises(InvalidCredentialError, match=message):
+        validate_credential_title(title, allow_slash=True)
 
 
 def test_a_credential_title_at_the_limit_is_accepted():

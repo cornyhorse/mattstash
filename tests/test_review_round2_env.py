@@ -117,7 +117,12 @@ def test_m2_cli_docker_env(db: Path, capsys: pytest.CaptureFixture[str]):
 # ---------------------------------------------------------------------------
 
 
-def test_m3_dotted_prefix_works_end_to_end_through_put(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+def test_m3_dotted_prefix_works_end_to_end_through_put(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
     path = tmp_path / "m3.kdbx"
     MattStash.create(str(path), password="pw", sidecar=False)
     stdin = io.TextIOWrapper(io.BytesIO(b"s3cret\n"))
@@ -126,8 +131,11 @@ def test_m3_dotted_prefix_works_end_to_end_through_put(tmp_path: Path, capsys: p
     capsys.readouterr()
     assert main(["--db", str(path), "--password", "pw", "env", "--prefix", "myapp.", "--upper"]) == 0
     assert capsys.readouterr().out == "export DB_PASSWORD=s3cret\n"
-    # '/' is allowed in a title too (local mode; the server cannot address such a name), but '.' is the documented
-    # separator, and a '/' prefix selects only the '/' titles
+    # '/' is refused by default (with advice to use '.'); MATTSTASH_ALLOW_SLASH_NAMES=true opts in, and then a '/'
+    # prefix selects only the '/' titles
+    assert main(["--db", str(path), "--password", "pw", "put", "myapp/db-password", "--value", "x"]) == 1
+    assert "use '.' as the separator" in caplog.text
+    monkeypatch.setenv("MATTSTASH_ALLOW_SLASH_NAMES", "true")
     assert main(["--db", str(path), "--password", "pw", "put", "myapp/db-password", "--value", "x"]) == 0
     capsys.readouterr()
     assert main(["--db", str(path), "--password", "pw", "env", "--prefix", "myapp/", "--upper"]) == 0
