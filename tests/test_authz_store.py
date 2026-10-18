@@ -300,6 +300,36 @@ def test_grant_validation() -> None:
     expect_error(broken(description="x" * 501), "description")
 
 
+def test_star_grants_are_only_for_human_devices() -> None:
+    def with_star(kind: str, key: str = "*") -> dict[str, Any]:
+        document = good_document()
+        document["principals"][1]["kind"] = kind
+        document["grants"][0]["key"] = key
+        return document
+
+    expect_error(with_star("agent"), "only for human-device principals, not agents")
+    expect_error(with_star("runner"), "only for human-device principals, not runners")
+    parse_policy(text_of(with_star("human-device")))
+    for kind in ("agent", "runner", "human-device"):
+        parse_policy(text_of(with_star(kind, "a*")))  # a raw prefix is still fine for everyone
+
+
+def test_the_editor_refuses_a_star_grant_for_an_agent_or_runner(policy_path: Path) -> None:
+    bootstrap(policy_path)
+    before = policy_path.read_bytes()
+    with edit_policy(policy_path, now=NOW) as editor:
+        editor.add_principal("bot", "agent")
+        editor.add_principal("ansible", "runner")
+        editor.add_principal("mac-2", "human-device")
+        for name in ("bot", "ansible"):
+            with pytest.raises(PolicyError, match="only for human-device"):
+                editor.add_grant(name, key="*")
+        editor.add_grant("bot", key="svc*")
+        editor.add_grant("mac-2", key="*", actions=["list", "read", "write", "delete"])
+    assert policy_path.read_bytes() != before
+    assert {(g.principal, g.key) for g in load_policy(policy_path).grants} == {("bot", "svc*"), ("mac-2", "*")}
+
+
 def test_tag_grants_cannot_write_or_delete() -> None:
     for actions in (["write"], ["list", "delete"]):
         document = good_document()

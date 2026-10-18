@@ -330,7 +330,7 @@ def migrated(tmp_path, key_policy_file):
     from mattstash.authz import edit_policy
 
     with edit_policy(tmp_path / "migrated.json", create=True) as ed:
-        ed.import_v1(key_policy_file.read_text(), 32)
+        ed.import_v1(key_policy_file.read_text(), 32, "human-device")
     return str(tmp_path / "migrated.json")
 
 
@@ -341,14 +341,14 @@ def test_a_migrated_policy_authenticates_the_old_plain_keys_and_enforces_the_con
     state = get_auth_state()
     assert state.sha256_tokens == 4 and state.legacy_sources == ()
     app = authenticate(APP_KEY)
-    assert (app.principal.name, app.principal.kind, app.reason) == ("app", "agent", "ok")
+    assert (app.principal.name, app.principal.kind, app.reason) == ("app", "human-device", "ok")
     assert app.token_id  # the migrated token's public id is reported
     assert evaluate(app.policy, app.principal, "write", "app-x").allowed
     assert not evaluate(app.policy, app.principal, "write", "other").allowed
     reader = authenticate(READ_KEY)
     assert evaluate(reader.policy, reader.principal, "read", "other").allowed
     assert not evaluate(reader.policy, reader.principal, "write", "other").allowed
-    assert authenticate(ADMIN_KEY).principal.admin
+    assert not authenticate(ADMIN_KEY).principal.admin  # the v1 'admin' op (reload only) is not carried over
     assert authenticate("n" * 40).principal is None
 
 

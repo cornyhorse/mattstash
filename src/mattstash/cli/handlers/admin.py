@@ -44,6 +44,7 @@ from ...authz import (
     validate_pattern,
     validate_tag,
 )
+from ...authz.legacy import v1_admin_ids
 from ...authz.models import utcnow
 from ...utils.exceptions import ServerError
 from .. import exit_codes
@@ -871,13 +872,12 @@ class AdminHandler(BaseHandler):
             kind: Any = None
             with contextlib.suppress(
                 AdminError, ServerError
-            ):  # the warning is best effort; the add reports real errors
+            ):  # best effort: the add itself reports a missing principal or an unreachable server
                 kind = backend.principal(args.principal).get("kind")
-            if kind == "agent":
-                self.say(
-                    f"warning: granting '*' (every secret) to the agent {args.principal}; "
-                    "prefer a narrower pattern such as 'service.*'",
-                    err=True,
+            if kind in ("agent", "runner"):
+                raise AdminError(
+                    f"'*' (every secret) can only be granted to a human-device principal, not the {kind} "
+                    f"{args.principal}; use a narrower pattern such as 'service.*'"
                 )
         grant = backend.grant_add(args.principal, key, tag, actions, args.expires, args.description or "")
         self.say(str(grant["id"]))
@@ -928,20 +928,22 @@ class AdminHandler(BaseHandler):
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             raise AdminError(f"{source} is not valid UTF-8") from None
+        kind = self.opt(args, "kind", str) or "agent"
         with edit_policy(policy_file, create=True) as editor:
-            names = editor.import_v1(text, args.min_length)
-            admins = [n for n in names if (p := editor.policy.principal(n)) is not None and p.admin]
+            names = editor.import_v1(text, args.min_length, kind)
         for name in names:
             self.say(name)
-        for name in admins:
-            # v1 "admin" meant only reload and cache invalidation; a v2 admin creates principals, tokens and grants.
+        for name in v1_admin_ids(text, args.min_length, names):
             self.warning(
-                f"{name} had the v1 'admin' op and is now a full admin (it can grant itself access); "
-                f"if it should not manage the policy, demote it: mattstash admin principal update {name} --no-admin"
+                f"{name} had the v1 'admin' op (reload only); it is migrated as a non-admin {kind}. "
+                "If it must manage the policy, make it a human-device principal and run: "
+                f"mattstash admin principal update {name} --admin"
             )
         self.say(
-            f"migrated {len(names)} key{'' if len(names) == 1 else 's'}; each keeps its old key (stored as sha256). "
-            "Issue new tokens later to move to the salted scheme.",
+            f"migrated {len(names)} key{'' if len(names) == 1 else 's'} as non-admin {kind} principals; each keeps "
+            "its old key (stored as sha256). Issue new tokens later to move to the salted scheme. "
+            "Reloading the vault (`/admin/reload`) now needs a policy admin; the server already polls the vault "
+            "every 5 seconds, so a reload is rarely needed.",
             err=True,
         )
         return exit_codes.OK
@@ -1113,4 +1115,11 @@ def add_admin_parser(subparsers: Any, global_opts: argparse.ArgumentParser) -> N
         default=DEFAULT_MIN_KEY_LENGTH,
         metavar="N",
         help=f"Shortest key to accept (default {DEFAULT_MIN_KEY_LENGTH}, the server's minimum)",
+    )
+    migrate.add_argument(
+        "--kind",
+        choices=KINDS,
+        default="agent",
+        help="Kind of the new principals (default agent). A key without prefixes needs --kind human-device: "
+        "only human devices may hold the '*' grant. Migrated principals are never admins.",
     )

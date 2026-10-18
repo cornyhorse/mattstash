@@ -12,12 +12,13 @@ import hashlib
 import json
 import re
 import secrets
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Optional
 
 from .errors import PolicyError
-from .models import LEGACY_KIND, Grant, Policy, Principal, Token
+from .models import KINDS, LEGACY_KIND, Grant, Policy, Principal, Token
 from .store import validate_name, validate_policy
 from .tokens import generate_token
 
@@ -236,18 +237,30 @@ def legacy_from_keys_file_text(text: str, min_length: int) -> tuple[list[LegacyK
     return keys, grants, bool(keys)
 
 
-def migrate_v1(text: str, into: Policy, min_length: int, now: datetime) -> Policy:
-    """Add the keys of a v1 JSON policy to ``into`` as v2 principals, keeping each key working.
+def v1_admin_ids(text: str, min_length: int, only: Iterable[str]) -> list[str]:
+    """The ids among ``only`` whose v1 entry had the ``admin`` op, in file order (for the migration's notes)."""
+    wanted = set(only)
+    entries = _parse_v1_json(_strip_comments(text.removeprefix("\ufeff")), min_length)
+    return [entry.key_id for entry in entries if entry.key_id in wanted and "admin" in entry.ops]
 
-    Keys with ``admin`` become ``human-device`` admins, others ``agent``. Each stored hash is the v1 digest
-    (``sha256:<hex>``) so existing callers keep their key; re-issue tokens later to get the salted scheme. A plain
-    list has no names to migrate, so it is refused with a hint.
+
+def migrate_v1(text: str, into: Policy, min_length: int, now: datetime, kind: str = "agent") -> Policy:
+    """Add the keys of a v1 JSON policy to ``into`` as v2 principals of ``kind``, keeping each key working.
+
+    The principals are never admins: v1 ``admin`` meant only "reload", and a v2 admin manages the whole policy. A key
+    without prefixes (every name) needs the ``*`` grant, which only ``human-device`` principals may hold, so it is an
+    error for any other ``kind``. Each stored hash is the v1 digest (``sha256:<hex>``) so existing callers keep their
+    key; re-issue tokens later to get the salted scheme. A plain list has no names to migrate, so it is refused with
+    a hint.
     """
-    text = text.removeprefix("﻿")
+    if kind not in KINDS:
+        raise PolicyError(f"kind must be one of {', '.join(KINDS)}")
+    text = text.removeprefix("\ufeff")
     if _first_content_character(text) not in ("{", "["):
         raise PolicyError(
             "only a JSON key policy can be migrated: a plain list of keys has no names. "
-            "Create principals with `mattstash admin principal add` and issue tokens instead"
+            "Create principals with `mattstash admin principal add`, then give each client's existing key to "
+            "`mattstash admin token import`"
         )
     entries = _parse_v1_json(_strip_comments(text), min_length)
     taken = {p.name.casefold() for p in into.principals}
@@ -261,6 +274,13 @@ def migrate_v1(text: str, into: Policy, min_length: int, now: datetime) -> Polic
         if entry.key_id.casefold() in taken:
             raise PolicyError(f"cannot migrate key {entry.key_id!r}: a principal with that name already exists")
         taken.add(entry.key_id.casefold())
+        entry_grants = _entry_grants(entry)
+        if kind != "human-device" and any(pattern == "*" for pattern, _ in entry_grants):
+            raise PolicyError(
+                f"cannot migrate key {entry.key_id!r} as {kind}: it has no prefixes, so it can read every secret, "
+                "and the '*' grant is only for human-device principals. Re-run with --kind human-device, or "
+                "narrow the key's prefixes first"
+            )
         stored = f"sha256:{entry.digest.hex()}"
         if stored in existing:
             raise PolicyError(f"cannot migrate key {entry.key_id!r}: The same API key is configured more than once")
@@ -270,20 +290,9 @@ def migrate_v1(text: str, into: Policy, min_length: int, now: datetime) -> Polic
             if token_id not in used_token_ids:
                 break
         used_token_ids.add(token_id)
-        admin = "admin" in entry.ops
         token = Token(token_id, stored, now, None, "migrated from a v1 key policy")
-        principals.append(
-            Principal(
-                entry.key_id,
-                "human-device" if admin else "agent",
-                "migrated from a v1 key policy",
-                admin,
-                False,
-                now,
-                (token,),
-            )
-        )
-        for pattern, actions in _entry_grants(entry):
+        principals.append(Principal(entry.key_id, kind, "migrated from a v1 key policy", False, False, now, (token,)))
+        for pattern, actions in entry_grants:
             while True:
                 grant_id = f"g_{secrets.token_hex(4)}"
                 if grant_id not in used_grant_ids:

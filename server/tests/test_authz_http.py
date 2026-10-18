@@ -537,15 +537,16 @@ def test_migrated_policy_serves_the_old_plain_keys_over_http(make_client, tmp_pa
     from mattstash.authz import edit_policy
 
     with edit_policy(tmp_path / "migrated.json", create=True) as ed:
-        ed.import_v1(key_policy_file.read_text(), 32)
+        ed.import_v1(key_policy_file.read_text(), 32, "human-device")
     client = make_client(API_KEY=None, POLICY_FILE=str(tmp_path / "migrated.json"), ALLOW_WRITES=True)
     assert names(client.get("/api/v1/credentials", headers=auth(APP_KEY))) == ["app-db", "app-token"]
     assert client.post("/api/v1/credentials/other", json={"value": "x"}, headers=auth(APP_KEY)).status_code == 403
     assert client.post("/api/v1/credentials/app-new", json={"value": "x"}, headers=auth(APP_KEY)).status_code == 201
     assert client.get("/api/v1/credentials/other", headers=auth(READ_KEY)).status_code == 200
-    assert client.post("/api/v1/admin/reload", headers=auth(ADMIN_KEY)).status_code == 200
+    # the v1 'admin' op (reload only) is not carried over: migrated principals are never admins
+    assert client.post("/api/v1/admin/reload", headers=auth(ADMIN_KEY)).status_code == 403
     assert client.get("/api/v1/credentials", headers=auth("n" * 40)).status_code == 401
-    assert json.loads(client.get("/api/v1/admin/principals", headers=auth(ADMIN_KEY)).text)["principals"]
+    assert client.get("/api/v1/admin/principals", headers=auth(ADMIN_KEY)).status_code == 403
 
 
 # ---------------------------------------------------------------------------

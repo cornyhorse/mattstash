@@ -79,9 +79,9 @@ def test_migrate_refuses_a_key_hashed_and_plain_in_the_file() -> None:
 def test_migrate_refuses_a_key_already_in_the_policy(tmp_path: Path) -> None:
     path = tmp_path / "policy.json"
     with edit_policy(path, now=NOW, create=True) as editor:
-        editor.import_v1(v1({"id": "a", "key": KEY}), 16)
+        editor.import_v1(v1({"id": "a", "key": KEY}), 16, "human-device")
     with pytest.raises(PolicyError, match="more than once"), edit_policy(path, now=NOW) as editor:
-        editor.import_v1(v1({"id": "other", "key": KEY}), 16)
+        editor.import_v1(v1({"id": "other", "key": KEY}), 16, "human-device")
     assert [p.name for p in load_policy(path).principals] == ["a"]
 
 

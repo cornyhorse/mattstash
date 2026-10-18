@@ -126,19 +126,24 @@ def _validate_principal(
         _validate_token(token, principal.name, seen_token_ids, seen_hashes)
 
 
-def _validate_grant(grant: Grant, names: set[str], seen_ids: set[str]) -> None:
+def _validate_grant(grant: Grant, kinds: Mapping[str, str], seen_ids: set[str]) -> None:
     if not isinstance(grant.id, str) or not _GRANT_ID_RE.fullmatch(grant.id):
         raise PolicyError("grant id must be 'g_' followed by 8 lowercase hex digits")
     if grant.id in seen_ids:
         raise PolicyError(f"duplicate grant id {grant.id!r}")
     seen_ids.add(grant.id)
     where = f"grant {grant.id}"
-    if grant.principal not in names:
+    if grant.principal not in kinds:
         raise PolicyError(f"{where}: unknown principal {grant.principal!r}")
     if (grant.key is None) == (grant.tag is None):
         raise PolicyError(f"{where}: provide exactly one of 'key' and 'tag'")
     if grant.key is not None:
         validate_pattern(grant.key)
+        if grant.key == "*" and kinds[grant.principal] != "human-device":
+            raise PolicyError(
+                f"{where}: the '*' grant (every secret) is only for human-device principals, not "
+                f"{kinds[grant.principal]}s; use a narrower pattern such as 'service.*'"
+            )
     if grant.tag is not None:
         validate_tag(grant.tag)
     if not grant.actions:
@@ -166,10 +171,10 @@ def validate_policy(policy: Policy) -> None:
     token_hashes: set[str] = set()
     for principal in policy.principals:
         _validate_principal(principal, names, token_ids, token_hashes)
-    exact_names = {principal.name for principal in policy.principals}
+    kinds = {principal.name: principal.kind for principal in policy.principals}
     grant_ids: set[str] = set()
     for grant in policy.grants:
-        _validate_grant(grant, exact_names, grant_ids)
+        _validate_grant(grant, kinds, grant_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -633,12 +638,13 @@ class PolicyEditor:
 
     # -- import -----------------------------------------------------------
 
-    def import_v1(self, text: str, min_length: int) -> tuple[str, ...]:
-        """Convert a v1 JSON key policy into principals and grants (see ``legacy.migrate_v1``); returns the names."""
+    def import_v1(self, text: str, min_length: int, kind: str = "agent") -> tuple[str, ...]:
+        """Convert a v1 JSON key policy into non-admin principals of ``kind`` and their grants (see
+        ``legacy.migrate_v1``); returns the names."""
         from .legacy import migrate_v1  # local import: legacy builds on this module
 
         before = {p.name for p in self._policy.principals}
-        self._set(migrate_v1(text, self._policy, min_length, self.now))
+        self._set(migrate_v1(text, self._policy, min_length, self.now, kind))
         return tuple(p.name for p in self._policy.principals if p.name not in before)
 
 

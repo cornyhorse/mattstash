@@ -323,7 +323,9 @@ def test_check_explains_decisions(admin) -> None:
 
 
 def test_a_non_admin_token_cannot_use_admin_commands(admin, cli) -> None:
-    token = agent(admin, "nosy", "*:list,read,write,delete")  # even a '*' grant is not admin
+    ok(admin("principal", "add", "nosy", "--kind", "human-device"))  # a human device, not an admin
+    token = issue(admin, "nosy")
+    ok(admin("grant", "add", "nosy", "--key", "*", "--actions", "list,read,write,delete"))  # even '*' is not admin
     for argv in (
         ["principal", "list"],
         ["principal", "show", "root-admin"],
@@ -443,7 +445,7 @@ def test_migrate_keys_locally_and_the_server_picks_them_up(
             {
                 "keys": [
                     {"id": "v1-reader", "key": reader_key, "ops": ["read"], "prefixes": ["app."]},
-                    {"id": "v1-boss", "key": boss_key, "ops": ["read", "write", "admin"]},
+                    {"id": "v1-boss", "key": boss_key, "ops": ["read", "write", "admin"], "prefixes": ["other."]},
                 ]
             }
         )
@@ -453,6 +455,7 @@ def test_migrate_keys_locally_and_the_server_picks_them_up(
         ["admin", "migrate-keys", "--from", str(keys), "--policy-file", str(admin_server.policy)], env
     )
     assert ok(result).split() == ["v1-reader", "v1-boss"] and "migrated 2 keys" in result.stderr
+    assert "v1-boss had the v1 'admin' op" in result.stderr and "needs a policy admin" in result.stderr
     assert reader_key not in result.stdout + result.stderr
     policy_text = admin_server.policy.read_text()
     assert reader_key not in policy_text and "sha256:" in policy_text
@@ -465,17 +468,22 @@ def test_migrate_keys_locally_and_the_server_picks_them_up(
     assert cli("put", "app.v1", "--value", "x", token=reader_key).returncode == 1
     assert cli("admin", "principal", "list", token=reader_key).returncode == 1  # read-only key: not an admin
     names = {p["name"]: p for p in json.loads(ok(admin("principal", "list", "--json")))}
-    assert names["v1-reader"]["kind"] == "agent" and names["v1-boss"]["admin"] is True
+    assert names["v1-reader"]["kind"] == "agent" and names["v1-boss"]["admin"] is False
 
-    # the migrated admin key administers (a sha256-scheme token behaves like any other)
-    assert "v1-boss" in ok(cli("admin", "principal", "list", token=boss_key))
+    # the v1 admin op (reload only) is gone: the migrated key is a plain agent now (a sha256-scheme token otherwise
+    # behaves like any other)
+    assert cli("admin", "principal", "list", token=boss_key).returncode == 1
+    assert "403" in cli("admin", "principal", "list", token=boss_key).stderr
+    assert ADMIN_SERVER_SECRETS["other.secret"] in ok(cli("get", "other.secret", "--show-password", token=boss_key))
     # a key can't be migrated twice, in the file or into the policy
     again = run_mattstash_cli(
         ["admin", "migrate-keys", "--from", str(keys), "--policy-file", str(admin_server.policy)], env
     )
     assert again.returncode == 1 and "already exists" in again.stderr
     renamed = tmp_path / "renamed.json"
-    renamed.write_text(json.dumps({"keys": [{"id": "v1-copy", "key": reader_key, "ops": ["read"]}]}))
+    renamed.write_text(
+        json.dumps({"keys": [{"id": "v1-copy", "key": reader_key, "ops": ["read"], "prefixes": ["x."]}]})
+    )
     duplicate = run_mattstash_cli(
         ["admin", "migrate-keys", "--from", str(renamed), "--policy-file", str(admin_server.policy)], env
     )

@@ -347,11 +347,11 @@ def test_migrated_v1_keys_are_not_legacy_kind_but_report_their_token(
     from .conftest import APP_KEY
 
     with edit_policy(tmp_path / "migrated.json", create=True) as ed:
-        ed.import_v1(key_policy_file.read_text(), 32)
+        ed.import_v1(key_policy_file.read_text(), 32, "human-device")
     client = make_client(API_KEY=None, POLICY_FILE=str(tmp_path / "migrated.json"), ACCESS_LOG_FILE=log_path)
     response = client.get("/api/v1/credentials/app-db", headers=auth(APP_KEY))
     record = last(log_path)
-    assert (record["principal"], record["kind"], record["decision"]) == ("app", "agent", "allowed")
+    assert (record["principal"], record["kind"], record["decision"]) == ("app", "human-device", "allowed")
     assert record["token"] and "deprecation" not in response.headers
 
 

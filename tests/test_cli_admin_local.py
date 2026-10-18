@@ -354,14 +354,21 @@ def test_grant_add_needs_exactly_one_selector(run: Runner, bootstrapped: Path):
         run(*admin(bootstrapped, "grant", "add", "bot", "--key", "a", "--tag", "b"))
 
 
-def test_star_grant_to_an_agent_warns(run: Runner, bootstrapped: Path):
-    warned = run(*admin(bootstrapped, "grant", "add", "bot", "--key", "*"))
-    assert warned.code == 0 and "warning: granting '*'" in warned.err and warned.out.startswith("g_")
-    for principal in ("ansible", "matt"):
-        assert "warning" not in run(*admin(bootstrapped, "grant", "add", principal, "--key", "*")).err
-    assert "warning" not in run(*admin(bootstrapped, "grant", "add", "bot", "--key", "x*")).err
+def test_star_grant_is_refused_for_agents_and_runners_before_writing(run: Runner, bootstrapped: Path):
+    before = bootstrapped.read_text()
+    for principal, kind in (("bot", "agent"), ("ansible", "runner")):
+        refused = run(*admin(bootstrapped, "grant", "add", principal, "--key", "*"))
+        assert refused.code == 1 and refused.out == ""
+        assert f"not the {kind} {principal}" in refused.err and "human-device" in refused.err
+    assert bootstrapped.read_text() == before  # refused by the pre-check, nothing written
+
+
+def test_star_grant_is_fine_for_a_human_device_and_a_raw_prefix_for_an_agent(run: Runner, bootstrapped: Path):
+    allowed = run(*admin(bootstrapped, "grant", "add", "matt", "--key", "*"))
+    assert allowed.code == 0 and allowed.out.startswith("g_") and allowed.err == ""
+    assert run(*admin(bootstrapped, "grant", "add", "bot", "--key", "x*")).code == 0
     unknown = run(*admin(bootstrapped, "grant", "add", "nobody", "--key", "*"))
-    assert unknown.code == 2 and "warning" not in unknown.err
+    assert unknown.code == 2 and "Principal not found" in unknown.err
 
 
 def test_check_exit_codes_and_wording(run: Runner, bootstrapped: Path):
@@ -506,28 +513,45 @@ def _v1(tmp_path: Path, keys: object = None) -> Path:
     return path
 
 
-def test_migrate_keys_keeps_the_old_keys_working(run: Runner, policy: Path, tmp_path: Path):
-    result = run(*admin(policy, "migrate-keys", "--from", str(_v1(tmp_path))))
+def test_migrate_keys_keeps_the_old_keys_working_as_non_admin_principals(run: Runner, policy: Path, tmp_path: Path):
+    result = run(*admin(policy, "migrate-keys", "--from", str(_v1(tmp_path)), "--kind", "human-device"))
     assert result.code == 0 and result.out.split() == ["billing", "root"]
-    assert "migrated 2 keys" in result.err
-    # root had the v1 "admin" op, which only allowed reload: becoming a full admin is called out, with the remedy
-    assert "root had the v1 'admin' op and is now a full admin" in result.err
-    assert "mattstash admin principal update root --no-admin" in result.err
+    assert "migrated 2 keys as non-admin human-device principals" in result.err
+    # root had the v1 "admin" op, which only allowed reload: it is dropped, and the way back is called out
+    assert "root had the v1 'admin' op (reload only); it is migrated as a non-admin human-device" in result.err
+    assert "mattstash admin principal update root --admin" in result.err
     assert "billing had" not in result.err
+    # reload now needs an admin; the server polls the vault anyway
+    assert "needs a policy admin" in result.err and "every 5 seconds" in result.err
     loaded = load_policy(policy)
     billing, root = loaded.principals
-    assert (billing.kind, billing.admin, root.kind, root.admin) == ("agent", False, "human-device", True)
+    assert (billing.kind, billing.admin, root.kind, root.admin) == ("human-device", False, "human-device", False)
     assert verify_token_hash(billing.tokens[0].hash, K1) and verify_token_hash(root.tokens[0].hash, K2)
     assert {(g.principal, g.key) for g in loaded.grants} == {("billing", "inv.*"), ("root", "*")}
     assert K1 not in policy.read_text()
 
 
+def test_migrate_keys_defaults_to_agent_and_refuses_a_key_that_needs_star(run: Runner, policy: Path, tmp_path: Path):
+    source = _v1(tmp_path)  # root has no prefixes: it would need '*'
+    refused = run(*admin(policy, "migrate-keys", "--from", str(source)))
+    assert refused.code == 1 and refused.out == "" and not policy.exists()
+    assert "'root' as agent" in refused.err and "--kind human-device" in refused.err and K2 not in refused.err
+    narrow = _v1(tmp_path, {"keys": [{"id": "billing", "key": K1, "prefixes": ["inv."]}]})
+    assert run(*admin(policy, "migrate-keys", "--from", str(narrow))).code == 0
+    assert [(p.kind, p.admin) for p in load_policy(policy).principals] == [("agent", False)]
+    other = policy.with_name("runner.json")
+    assert run(*admin(other, "migrate-keys", "--from", str(narrow), "--kind", "runner")).code == 0
+    assert load_policy(other).principals[0].kind == "runner"
+    with pytest.raises(SystemExit):
+        run(*admin(policy, "migrate-keys", "--from", str(narrow), "--kind", "legacy"))
+
+
 def test_migrate_keys_min_length_and_errors(run: Runner, policy: Path, tmp_path: Path):
-    short = _v1(tmp_path, {"keys": [{"id": "x", "key": "short-key-of-20-chars"}]})
+    short = _v1(tmp_path, {"keys": [{"id": "x", "key": "short-key-of-20-chars", "prefixes": ["x."]}]})
     refused = run(*admin(policy, "migrate-keys", "--from", str(short)))
     assert refused.code == 1 and "shorter than 32" in refused.err and not policy.exists()
     accepted = run(*admin(policy, "migrate-keys", "--from", str(short), "--min-length", "10"))
-    assert accepted.code == 0 and "migrated 1 key;" in accepted.err
+    assert accepted.code == 0 and "migrated 1 key as non-admin agent principal" in accepted.err
     again = run(*admin(policy, "migrate-keys", "--from", str(short), "--min-length", "10"))
     assert again.code == 1 and "already exists" in again.err
     with pytest.raises(SystemExit):
@@ -554,5 +578,5 @@ def test_migrate_keys_with_a_server_url_in_the_environment_still_edits_the_file(
     run: Runner, policy: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("MATTSTASH_SERVER_URL", "http://localhost:9")
-    assert run(*admin(policy, "migrate-keys", "--from", str(_v1(tmp_path)))).code == 0
+    assert run(*admin(policy, "migrate-keys", "--from", str(_v1(tmp_path)), "--kind", "human-device")).code == 0
     assert policy.exists()

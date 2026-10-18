@@ -14,7 +14,7 @@ from mattstash.utils.exceptions import DatabaseLockError, DatabaseLockTimeoutErr
 
 from app.security import api_keys
 
-from .conftest import FULL_KEY, auth
+from .conftest import FULL_KEY, RUNNER_PREFIXES, auth
 
 READ_ONLY = {"detail": "Policy file is read-only; edit it and POST /admin/invalidate-api-key-cache"}
 NO_FILE = {"detail": "No policy file configured (MATTSTASH_POLICY_FILE)"}
@@ -330,7 +330,7 @@ def test_rotate_errors(adm, policy_tokens):
 
 def test_list_grants_with_and_without_a_principal_filter(adm):
     everything = adm.get(f"{BASE}/grants").json()["grants"]
-    assert len(everything) == 8
+    assert len(everything) == 7 + len(RUNNER_PREFIXES)
     mine = adm.get(f"{BASE}/grants", params={"principal": "SCRIBE"}).json()["grants"]
     assert len(mine) == 1 and mine[0]["key"] == "app-*" and mine[0]["actions"] == ["delete", "list", "read", "write"]
     assert set(mine[0]) == {

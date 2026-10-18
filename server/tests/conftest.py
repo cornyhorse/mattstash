@@ -54,6 +54,7 @@ READ_KEY = "read-only-scoped-key--" + "b" * 20
 APP_KEY = "app-prefix-scoped-key--" + "c" * 20
 WRITE_KEY = "writer-scoped-key------" + "d" * 20
 ADMIN_KEY = "admin-scoped-key-------" + "e" * 20
+RUNNER_PREFIXES = "adfnors"  # the first letters of every entry in the ``data`` fixture
 DB = {"username": "dbuser", "password": "db-secret", "url": "db.internal:5432"}
 
 
@@ -282,7 +283,8 @@ def policy_tokens(tmp_path) -> dict[str, str]:
 
     matt: admin human-device without any data grant. hermes: ``firefly.*`` list+read, exact ``firefly-mcp`` read,
     tag ``shared`` list+read. lister: ``firefly.*`` list only. fireflyer: ``firefly.*`` list+read.
-    scribe: ``app-*`` all four. runner: ``*`` list+read.
+    scribe: ``app-*`` all four. runner: every name of the ``data`` fixture
+    (one ``<letter>*`` grant per first letter), list+read.
     expired / off: valid tokens that must not work (past expiry, disabled principal).
     """
     from datetime import timedelta
@@ -306,8 +308,9 @@ def policy_tokens(tmp_path) -> dict[str, str]:
         ed.add_grant("lister", key="firefly.*", actions=["list"])
         ed.add_grant("fireflyer", key="firefly.*", actions=["list", "read"])
         ed.add_grant("scribe", key="app-*", actions=["list", "read", "write", "delete"])
-        ed.add_grant("runner", key="*", actions=["list", "read"])
-        ed.add_grant("off", key="*", actions=["list", "read"])
+        for prefix in RUNNER_PREFIXES:  # '*' alone is only for human-device principals
+            ed.add_grant("runner", key=f"{prefix}*", actions=["list", "read"])
+        ed.add_grant("off", key="a*", actions=["list", "read"])
         for name in ("matt", "hermes", "lister", "fireflyer", "scribe", "runner", "off"):
             tokens[name] = ed.issue_token(name)[1]
         ed.set_disabled("off", True)
