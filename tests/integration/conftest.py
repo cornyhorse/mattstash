@@ -15,6 +15,8 @@ import subprocess
 import sys
 import time
 from collections.abc import Generator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 
@@ -22,6 +24,7 @@ import httpx
 import pytest
 
 from mattstash import MattStash
+from mattstash.authz import edit_policy
 
 SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
 
@@ -43,24 +46,21 @@ def _scrubbed_environment() -> Dict[str, str]:
     return {k: v for k, v in os.environ.items() if not k.startswith(("MATTSTASH_", "KDBX_"))}
 
 
-@pytest.fixture(scope="session")
-def server_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str, None, None]:
-    """Start the API server on a free port (read/write, one valid API key) and return its URL."""
+def _require_server_dependencies() -> None:
     missing = [m for m in _REQUIRED_MODULES if importlib.util.find_spec(m) is None]
     if missing:
         pytest.skip(f"server dependencies not installed: {', '.join(missing)}")
 
-    workdir = tmp_path_factory.mktemp("integration-server")
-    db_path = workdir / "integration.kdbx"
-    MattStash.create(str(db_path), password=DB_PASSWORD, sidecar=False)
 
+@contextmanager
+def _running_server(workdir: Path, db_path: Path, extra_env: Dict[str, str]) -> Generator[str, None, None]:
+    """Run ``python -m app`` on a free port against ``db_path`` until the block ends; yields the base URL."""
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
     env = {
         **_scrubbed_environment(),
         "MATTSTASH_DB_PATH": str(db_path),
         "KDBX_PASSWORD": DB_PASSWORD,
-        "MATTSTASH_API_KEY": API_KEY,
         "MATTSTASH_ALLOW_WRITES": "true",
         "MATTSTASH_HOST": "127.0.0.1",
         "MATTSTASH_PORT": str(port),
@@ -68,6 +68,7 @@ def server_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str, None,
         # the tests make many requests (some deliberately with bad keys) from one address
         "MATTSTASH_RATE_LIMIT": "100000/minute",
         "MATTSTASH_AUTH_FAIL_LIMIT": "10000",
+        **extra_env,
     }
     log_path = workdir / "server.log"
     with open(log_path, "wb") as log:
@@ -95,6 +96,58 @@ def server_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str, None,
             except subprocess.TimeoutExpired:  # pragma: no cover
                 process.kill()
                 process.wait()
+
+
+@pytest.fixture(scope="session")
+def server_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str, None, None]:
+    """Start the API server on a free port (read/write, one valid API key) and return its URL."""
+    _require_server_dependencies()
+    workdir = tmp_path_factory.mktemp("integration-server")
+    db_path = workdir / "integration.kdbx"
+    MattStash.create(str(db_path), password=DB_PASSWORD, sidecar=False)
+    with _running_server(workdir, db_path, {"MATTSTASH_API_KEY": API_KEY}) as url:
+        yield url
+
+
+#: Secrets the admin server's database starts with: name -> value (the tests check that no value reaches a log).
+ADMIN_SERVER_SECRETS = {
+    "app.db-password": "app-db-secret-value-8d1f",
+    "app.api-key": "app-api-secret-value-52ac",
+    "other.secret": "other-secret-value-77be",
+}
+
+
+@dataclass(frozen=True)
+class AdminServer:
+    """A server with a policy file (one admin, one token) and an access log, and the paths the tests inspect."""
+
+    url: str
+    policy: Path
+    log: Path
+    admin_token: str
+
+    def env(self, token: str) -> Dict[str, str]:
+        """CLI environment in client mode with ``token`` as the API key."""
+        return {**_scrubbed_environment(), "MATTSTASH_SERVER_URL": self.url, "MATTSTASH_API_KEY": token}
+
+
+@pytest.fixture(scope="module")
+def admin_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[AdminServer, None, None]:
+    """A server started with ``MATTSTASH_POLICY_FILE`` (bootstrapped here with the library) and an access log."""
+    _require_server_dependencies()
+    workdir = tmp_path_factory.mktemp("admin-server")
+    db_path = workdir / "admin.kdbx"
+    store = MattStash.create(str(db_path), password=DB_PASSWORD, sidecar=False)
+    for name, value in ADMIN_SERVER_SECRETS.items():
+        store.put(name, value=value, autoincrement=False)
+    policy, log = workdir / "policy.json", workdir / "access.jsonl"
+    with edit_policy(policy, create=True) as editor:
+        editor.add_principal("root-admin", "human-device", "bootstrapped by the tests", admin=True)
+    with edit_policy(policy) as editor:
+        _, admin_token = editor.issue_token("root-admin", description="bootstrap")
+    extra = {"MATTSTASH_POLICY_FILE": str(policy), "MATTSTASH_ACCESS_LOG_FILE": str(log)}
+    with _running_server(workdir, db_path, extra) as url:
+        yield AdminServer(url, policy, log, admin_token)
 
 
 @pytest.fixture

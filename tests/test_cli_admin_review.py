@@ -385,3 +385,13 @@ def test_log_without_a_policy_file_reads_just_the_log(run: Runner, tmp_path: Pat
     assert run("admin", "log", "--log-file", str(log), "--since", "999999w").code == 1
     local = run("admin", "--policy-file", str(tmp_path / "none.json"), "log")
     assert local.code == 1 and "no access log file" in local.err
+
+
+def test_rotating_the_sole_admin_token_into_a_short_lived_one_is_refused(run: Runner, mode: Mode) -> None:
+    prepare(run, mode)
+    (admin_token,) = load_policy(mode.policy).principal("matt").tokens  # type: ignore[union-attr]
+    before = mode.policy.read_bytes()
+    result = run(*mode.argv, "token", "rotate", "matt", admin_token.id, "--grace", "1h", "--expires", "1m")
+    assert result.code == 1 and "within the hour" in result.err and TOKEN_RE.search(result.out) is None
+    assert mode.policy.read_bytes() == before
+    assert run(*mode.argv, "token", "rotate", "matt", admin_token.id, "--grace", "1h", "--expires", "2h").code == 0

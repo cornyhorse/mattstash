@@ -423,6 +423,24 @@ Known gaps to close before this is marked done:
   log. The docs describe the library's behaviour; the design text needs to be reconciled.
 - Local-mode CLI edits always apply the lockout rule, because the CLI cannot see the server's legacy admin keys.
 
+Review round 1 of the library and CLI (fixed, each with a test):
+
+- A v1 key listed twice, or already in the policy, is refused by `migrate_v1`; `validate_policy` rejects one token
+  hash on two tokens.
+- A new token must expire in the future; the lockout check also looks an hour ahead (rotating the only admin token
+  into one that expires within the hour is refused).
+- Rewriting the policy keeps its permission bits (masked with `0640`) and, for root, its owner; a symlinked path is
+  followed, not replaced.
+- Out-of-range dates and huge integers are `PolicyError`s, not tracebacks; `Token.hash` is not in any `repr`;
+  `format_record` and `read_records` never raise and bound line length; `evaluate` ignores malformed grants and tag
+  grants for write/delete.
+- CLI: a token is written to stdout directly and never to stderr (a failed delivery names the token id for
+  revocation); empty `--principal`/`--since` are errors in both modes; `--grace` is relative only.
+- Server follow-ups: `rotate` accepts an absolute date as `grace` (xfail test in
+  `tests/integration/test_cli_server_admin.py`); `access-log?principal=` and `?since=` with an empty value mean "no
+  filter" while `grants?principal=` does the same, the CLI refuses empty values; the server tests that issue an already
+  expired token must build the editor with an earlier `now`.
+
 Decisions still open (design section 11): runners as admins; tag-based writes; an opt-out from fail-closed logging;
 the legacy removal timeline; whether `*` grants for agents are forbidden; whether list-only entries show username and
 URL; names with `/` over HTTP.
