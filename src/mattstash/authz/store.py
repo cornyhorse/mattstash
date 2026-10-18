@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import stat
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
@@ -21,12 +22,14 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from ..utils.filelock import FileLock
+from ..utils.fileops import match_owner
 from .errors import PolicyError
 from .evaluate import can_admin
 from .models import (
     ACTIONS,
     KINDS,
     POLICY_VERSION,
+    TAG_ACTIONS,
     Grant,
     Policy,
     Principal,
@@ -42,9 +45,10 @@ _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", re.ASCII)
 _GRANT_ID_RE = re.compile(r"g_[0-9a-f]{8}", re.ASCII)
 RESERVED_PREFIX = "legacy-"
 MAX_DESCRIPTION_LENGTH = 500
-#: Tag grants may not write: whoever can write an entry can retag it, so a tag-based write grant would let a
-#: principal widen its own reach (design section 4.3).
-TAG_ACTIONS = ("list", "read")
+#: Largest revision accepted: keeps ``revision + 1`` and its JSON text far from any integer-size limit.
+MAX_REVISION = 2**63 - 1
+#: A change is refused when it leaves every admin token expiring within this long, having had one that outlasts it.
+LOCKOUT_HORIZON = timedelta(hours=1)
 
 
 def empty_policy() -> Policy:
@@ -77,7 +81,13 @@ def _check_aware(value: object, where: str) -> None:
         raise PolicyError(f"{where} must be a timezone-aware datetime")
 
 
-def _validate_token(token: Token, owner: str, seen_ids: set[str]) -> None:
+def _hash_identity(stored: str) -> str:
+    """What makes two stored hashes "the same credential": the hex digest for the unsalted ``sha256:`` scheme (so
+    case or formatting can't hide a duplicate), the whole string for the salted scheme (salts never repeat)."""
+    return stored.split(":", 1)[1] if stored.startswith("sha256:") else stored
+
+
+def _validate_token(token: Token, owner: str, seen_ids: set[str], seen_hashes: set[str]) -> None:
     where = f"principal {owner!r}, token {token.id!r}"
     if not is_valid_token_id(token.id):
         raise PolicyError(f"principal {owner!r}: token id must be 12 characters of [a-z2-7]")
@@ -85,13 +95,20 @@ def _validate_token(token: Token, owner: str, seen_ids: set[str]) -> None:
         raise PolicyError(f"{where}: duplicate token id")
     seen_ids.add(token.id)
     validate_token_hash(token.hash)
+    identity = _hash_identity(token.hash)
+    if identity in seen_hashes:
+        # two tokens with one hash: the same secret would authenticate as two principals (message: no hash in it)
+        raise PolicyError(f"{where}: the same token secret is already used by another token")
+    seen_hashes.add(identity)
     _check_aware(token.created, f"{where}: 'created'")
     if token.expires is not None:
         _check_aware(token.expires, f"{where}: 'expires'")
     _check_description(token.description, where)
 
 
-def _validate_principal(principal: Principal, seen_names: set[str], seen_token_ids: set[str]) -> None:
+def _validate_principal(
+    principal: Principal, seen_names: set[str], seen_token_ids: set[str], seen_hashes: set[str]
+) -> None:
     validate_name(principal.name)
     folded = principal.name.casefold()
     if folded in seen_names:
@@ -106,7 +123,7 @@ def _validate_principal(principal: Principal, seen_names: set[str], seen_token_i
     if principal.created is not None:
         _check_aware(principal.created, f"{where}: 'created'")
     for token in principal.tokens:
-        _validate_token(token, principal.name, seen_token_ids)
+        _validate_token(token, principal.name, seen_token_ids, seen_hashes)
 
 
 def _validate_grant(grant: Grant, names: set[str], seen_ids: set[str]) -> None:
@@ -142,12 +159,13 @@ def validate_policy(policy: Policy) -> None:
     """Raise :class:`PolicyError` unless the whole document is consistent."""
     if policy.version != POLICY_VERSION:
         raise PolicyError(f"unsupported policy version {policy.version!r}; this build reads version {POLICY_VERSION}")
-    if type(policy.revision) is not int or policy.revision < 0:
-        raise PolicyError("revision must be a non-negative integer")
+    if type(policy.revision) is not int or not 0 <= policy.revision <= MAX_REVISION:
+        raise PolicyError(f"revision must be an integer from 0 to {MAX_REVISION}")
     names: set[str] = set()
     token_ids: set[str] = set()
+    token_hashes: set[str] = set()
     for principal in policy.principals:
-        _validate_principal(principal, names, token_ids)
+        _validate_principal(principal, names, token_ids, token_hashes)
     exact_names = {principal.name for principal in policy.principals}
     grant_ids: set[str] = set()
     for grant in policy.grants:
@@ -211,7 +229,10 @@ def _datetime(value: Any, where: str) -> datetime:
         raise PolicyError(f"{where} is not an RFC 3339 timestamp") from None
     if parsed.utcoffset() is None:
         raise PolicyError(f"{where} has no timezone; write it in UTC with a trailing 'Z'")
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except (OverflowError, ValueError):  # 0001-01-01T00:00:00+05:00 has no UTC equivalent
+        raise PolicyError(f"{where} is outside the range of supported dates") from None
 
 
 def _optional_datetime(value: Any, where: str) -> Optional[datetime]:
@@ -274,10 +295,16 @@ def parse_policy(text: str) -> Policy:
         raise PolicyError(f"policy file is not valid JSON (line {exc.lineno}, column {exc.colno})") from None
     except RecursionError:
         raise PolicyError("policy file is nested too deeply") from None
+    except PolicyError:  # a duplicate field, from the hook (PolicyError is a ValueError)
+        raise
+    except ValueError:  # an integer with more digits than Python converts (sys.int_info.default_max_str_digits)
+        raise PolicyError("policy file contains a number that is too large") from None
     data = _object(document, "policy", ("version", "principals", "grants"), ("revision",))
     version, revision = data["version"], data.get("revision", 0)
     if type(version) is not int:
         raise PolicyError("policy 'version' must be an integer")
+    if not 0 <= version <= MAX_REVISION:
+        raise PolicyError(f"unsupported policy version; this build reads version {POLICY_VERSION}")
     if type(revision) is not int:
         raise PolicyError("policy 'revision' must be an integer")
     policy = Policy(
@@ -359,21 +386,37 @@ def load_policy(path: PathLike) -> Policy:
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    """Temp file in the same directory (created 0600, never world-readable even briefly), fsync, rename over."""
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    """Replace ``path`` with ``text``: temp file in the same directory, fsync, rename over.
+
+    * A symlink is followed (``os.path.realpath``), so the link survives and the target is what is replaced.
+    * An existing file keeps its permission bits, masked with ``0o640`` (never world-accessible, never executable;
+      group read stays so a service account in the group can read what an admin writes), and its owner and group
+      when we may set them (root: both; others: the group, best effort). A new file is 0600.
+    * The temp file starts 0600, so the content is never readable by more than the final mode allows, even briefly.
+    """
+    target = Path(os.path.realpath(path))
+    try:
+        reference: Optional[os.stat_result] = os.stat(target)
+    except OSError:
+        reference = None
+    mode = 0o600 if reference is None else stat.S_IMODE(reference.st_mode) & 0o640
+    temporary = target.with_name(f".{target.name}.{secrets.token_hex(6)}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(text.encode("utf-8"))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        os.chmod(temporary, mode)
+        if reference is not None:
+            match_owner(reference, str(temporary))
+        os.replace(temporary, target)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(temporary)
         raise
     with contextlib.suppress(OSError):  # best effort: not possible on every platform or filesystem
-        directory = os.open(path.parent, os.O_RDONLY)
+        directory = os.open(target.parent, os.O_RDONLY)
         try:
             os.fsync(directory)
         finally:
@@ -381,7 +424,8 @@ def _write_atomic(path: Path, text: str) -> None:
 
 
 def save_policy(path: PathLike, policy: Policy) -> None:
-    """Validate and atomically replace the policy file (mode 0600). Does not lock: use :func:`edit_policy`."""
+    """Validate and atomically replace the policy file (see :func:`_write_atomic` for mode and owner). Does not lock:
+    use :func:`edit_policy`."""
     text = dump_policy(policy)
     parse_policy(text)  # never write what we could not read back
     _write_atomic(Path(path), text)
@@ -397,6 +441,14 @@ def has_usable_admin(policy: Policy, now: datetime) -> bool:
     return any(can_admin(p) and any(not t.is_expired(now) for t in p.tokens) for p in policy.principals)
 
 
+def _outlasts(policy: Policy, now: datetime, horizon: datetime) -> bool:
+    """True if some admin holds a token that is valid now and is still valid at ``horizon`` (or never expires)."""
+    return any(
+        can_admin(p) and any(not t.is_expired(now) and (t.expires is None or t.expires > horizon) for t in p.tokens)
+        for p in policy.principals
+    )
+
+
 def check_lockout(policy: Policy, now: datetime, legacy_admin_available: bool) -> None:
     """Refuse a policy that nobody could administer, unless a legacy admin key (outside the file) still can."""
     if legacy_admin_available or has_usable_admin(policy, now):
@@ -405,6 +457,28 @@ def check_lockout(policy: Policy, now: datetime, legacy_admin_available: bool) -
         "this change would leave no admin principal with a valid token, so nobody could manage the policy; "
         "add or enable another admin (or issue it a token) first"
     )
+
+
+def check_lockout_change(before: Policy, after: Policy, now: datetime, legacy_admin_available: bool) -> None:
+    """Refuse a change that locks the admins out now or within the hour. A legacy admin key waives both rules.
+
+    1. If ``before`` had an enabled admin with a valid token, ``after`` must still have one (:func:`check_lockout`).
+    2. If ``before`` had an admin token that never expires or outlasts ``now + LOCKOUT_HORIZON`` (one hour), then
+       ``after`` must still have one. Otherwise every remaining admin token would expire within the hour: rotating
+       the only admin token with ``--grace 1h`` to a replacement that expires in a minute is such a change.
+
+    A policy that was already within the hour of lockout is not blocked from changing: it is how you repair it.
+    """
+    if legacy_admin_available:
+        return
+    if has_usable_admin(before, now):
+        check_lockout(after, now, legacy_admin_available)
+    horizon = now + LOCKOUT_HORIZON
+    if _outlasts(before, now, horizon) and not _outlasts(after, now, horizon):
+        raise PolicyError(
+            "this change would leave every admin token expiring within the hour, so nobody could manage the policy "
+            "soon; give the admin token a later expiry (or add another admin) first"
+        )
 
 
 class PolicyEditor:
@@ -437,6 +511,10 @@ class PolicyEditor:
         )
 
     def _new_token(self, expires: Optional[datetime], description: str) -> tuple[Token, str]:
+        if expires is not None:
+            _check_aware(expires, "token expiry")
+            if expires <= self.now:
+                raise PolicyError("a new token's expiry must be in the future")
         used = {token.id for principal in self._policy.principals for token in principal.tokens}
         while True:
             token_id, plaintext = generate_token()
@@ -506,7 +584,8 @@ class PolicyEditor:
         expires: Optional[datetime] = None,
         description: str = "",
     ) -> tuple[Token, str]:
-        """Issue a replacement and retire ``token_id``: removed now, or expiring after ``grace`` (never extended)."""
+        """Issue a replacement and retire ``token_id``: removed now, or expiring after ``grace`` (never extended:
+        its new expiry is the earlier of its current one and now + grace)."""
         owner = self._principal(principal)
         old = self._token(owner, token_id)
         if grace < timedelta(0):
@@ -572,10 +651,11 @@ def edit_policy(
     On a clean exit the new document is validated by a round trip through the parser, checked for lockout, given
     ``revision + 1`` and saved atomically. If the body raises, nothing is saved.
 
-    The lockout check (a change must leave an enabled admin with an unexpired token, unless
-    ``legacy_admin_available``) applies only when the policy *before* the edit had such an admin. That is what
-    makes bootstrapping work: on an empty file you add an admin principal, then issue its token, as separate edits;
-    neither is refused, though the first leaves no usable admin yet.
+    The lockout check (:func:`check_lockout_change`; waived by ``legacy_admin_available``) refuses a change that
+    leaves no enabled admin with an unexpired token, and one that leaves only admin tokens expiring within the
+    hour when the policy before had a token that lasts longer. It applies only when the policy *before* the edit
+    had such an admin. That is what makes bootstrapping work: on an empty file you add an admin principal, then
+    issue its token, as separate edits; neither is refused, though the first leaves no usable admin yet.
 
     ``create=True`` starts from an empty policy when the file does not exist; otherwise ``FileNotFoundError``.
     """
@@ -595,8 +675,7 @@ def edit_policy(
         after = replace(editor.policy, revision=before.revision + 1)
         text = dump_policy(after)
         parse_policy(text)
-        if has_usable_admin(before, moment):
-            check_lockout(after, moment, legacy_admin_available)
+        check_lockout_change(before, after, moment, legacy_admin_available)
         _write_atomic(target, text)
 
 
@@ -611,18 +690,36 @@ _UNITS: Mapping[str, Callable[[int], timedelta]] = {
     "d": lambda n: timedelta(days=n),
     "w": lambda n: timedelta(weeks=n),
 }
+_DATE_RANGE = "outside the range of supported dates"
+
+
+def parse_duration(text: str) -> timedelta:
+    """``30m``, ``24h``, ``7d`` or ``2w`` (up to six digits) as a ``timedelta``; :class:`PolicyError` otherwise."""
+    match = _DURATION_RE.fullmatch(text.strip())
+    if match is None:
+        raise PolicyError(f"cannot read {text!r} as a duration (30m, 24h, 7d, 2w)")
+    return _UNITS[match.group(2)](int(match.group(1)))
 
 
 def parse_duration_or_time(text: str, now: datetime) -> datetime:
-    """``90d``, ``24h``, ``30m``, ``2w`` (from ``now``) or an ISO date/datetime (UTC unless it says otherwise)."""
+    """``90d``, ``24h``, ``30m``, ``2w`` (from ``now``) or an ISO date/datetime (UTC unless it says otherwise).
+
+    Raises :class:`PolicyError` for anything unreadable or outside the range of dates (``999999w``, year 0001 with
+    a positive offset).
+    """
     cleaned = text.strip()
-    match = _DURATION_RE.fullmatch(cleaned)
-    if match:
-        return now + _UNITS[match.group(2)](int(match.group(1)))
+    if _DURATION_RE.fullmatch(cleaned):
+        try:
+            return now + parse_duration(cleaned)
+        except OverflowError:
+            raise PolicyError(f"{text!r} is {_DATE_RANGE}") from None
     try:
         parsed = datetime.fromisoformat(cleaned)
     except ValueError:
         raise PolicyError(f"cannot read {text!r} as a duration (90d, 24h, 30m, 2w) or a date (2027-01-01)") from None
     if parsed.utcoffset() is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except (OverflowError, ValueError):
+        raise PolicyError(f"{text!r} is {_DATE_RANGE}") from None

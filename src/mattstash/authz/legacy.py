@@ -46,8 +46,11 @@ class _V1Entry:
     prefixes: Optional[tuple[str, ...]]  # None: every credential name
 
 
-def _digest(key: str) -> bytes:
-    return hashlib.sha256(key.encode("utf-8")).digest()
+def _digest(key: str, where: str) -> bytes:
+    try:
+        return hashlib.sha256(key.encode("utf-8")).digest()
+    except UnicodeEncodeError:  # a lone surrogate, e.g. from a malformed JSON escape or an undecodable env byte
+        raise PolicyError(f"API key {where} contains a character that cannot be encoded as UTF-8") from None
 
 
 def _check_length(key: str, where: str, min_length: int) -> None:
@@ -69,17 +72,17 @@ def _synthetic_grant(principal: str, pattern: str, actions: frozenset[str], suff
     )
 
 
-def _full_access(key: str, name: str) -> tuple[LegacyKey, tuple[Grant, ...]]:
+def _full_access(key: str, name: str, where: str) -> tuple[LegacyKey, tuple[Grant, ...]]:
     """A legacy full-access key: admin, with the implicit grant ``*`` on every action. The name is positional
     (``legacy-env``, ``legacy-1``...), never derived from the key."""
     principal = Principal(name=name, kind=LEGACY_KIND, description="legacy full-access API key", admin=True)
-    return LegacyKey(_digest(key), principal), (_synthetic_grant(name, "*", _ALL_ACTIONS),)
+    return LegacyKey(_digest(key, where), principal), (_synthetic_grant(name, "*", _ALL_ACTIONS),)
 
 
 def legacy_from_env_key(key: str, min_length: int) -> tuple[LegacyKey, tuple[Grant, ...]]:
     """``MATTSTASH_API_KEY``: principal ``legacy-env``, admin, grant ``*`` with every action."""
     _check_length(key, "from MATTSTASH_API_KEY", min_length)
-    return _full_access(key, "legacy-env")
+    return _full_access(key, "legacy-env", "from MATTSTASH_API_KEY")
 
 
 def _actions_for_ops(ops: frozenset[str]) -> frozenset[str]:
@@ -114,7 +117,7 @@ def _parse_v1_entry(entry: Any, index: int, min_length: int) -> _V1Entry:
         if not isinstance(plaintext, str):
             raise PolicyError(f"API key {where}: 'key' must be a string")
         _check_length(plaintext, where, min_length)
-        digest = _digest(plaintext)
+        digest = _digest(plaintext, where)
     else:
         if not isinstance(hashed, str) or not _SHA256_HEX_RE.fullmatch(hashed):
             raise PolicyError(f"API key {where}: 'key_sha256' must be 64 hex characters")
@@ -156,6 +159,12 @@ def _parse_v1_json(text: str, min_length: int) -> list[_V1Entry]:
         document = json.loads(text, object_pairs_hook=_reject_duplicate_fields)
     except json.JSONDecodeError as exc:
         raise PolicyError(f"API keys file is not valid JSON (line {exc.lineno}, column {exc.colno})") from None
+    except RecursionError:
+        raise PolicyError("API keys file is nested too deeply") from None
+    except PolicyError:  # a duplicate field, from the hook (PolicyError is a ValueError)
+        raise
+    except ValueError:  # an integer with more digits than Python converts
+        raise PolicyError("API keys file contains a number that is too large") from None
     entries = document.get("keys") if isinstance(document, dict) else document
     if not isinstance(entries, list) or not entries:
         raise PolicyError("API key policy must contain a non-empty 'keys' list")
@@ -163,6 +172,8 @@ def _parse_v1_json(text: str, min_length: int) -> list[_V1Entry]:
     ids = [e.key_id for e in parsed]
     if len(set(ids)) != len(ids):
         raise PolicyError("API key policy contains duplicate ids")
+    if len({e.digest for e in parsed}) != len(parsed):
+        raise PolicyError("The same API key is configured more than once")
     return parsed
 
 
@@ -218,7 +229,7 @@ def legacy_from_keys_file_text(text: str, min_length: int) -> tuple[list[LegacyK
         if re.search(r"\s", line):
             raise PolicyError(f"API key on line {number} of the API keys file contains whitespace; one key per line")
         _check_length(line, f"on line {number} of the API keys file", min_length)
-        key, key_grants = _full_access(line, f"legacy-{len(keys) + 1}")
+        key, key_grants = _full_access(line, f"legacy-{len(keys) + 1}", f"on line {number} of the API keys file")
         keys.append(key)
         grants.extend(key_grants)
     check_duplicate_keys(keys)
@@ -242,6 +253,7 @@ def migrate_v1(text: str, into: Policy, min_length: int, now: datetime) -> Polic
     taken = {p.name.casefold() for p in into.principals}
     used_token_ids = {t.id for p in into.principals for t in p.tokens}
     used_grant_ids = {g.id for g in into.grants}
+    existing = {t.hash for p in into.principals for t in p.tokens}
     principals = list(into.principals)
     grants = list(into.grants)
     for entry in entries:
@@ -249,13 +261,17 @@ def migrate_v1(text: str, into: Policy, min_length: int, now: datetime) -> Polic
         if entry.key_id.casefold() in taken:
             raise PolicyError(f"cannot migrate key {entry.key_id!r}: a principal with that name already exists")
         taken.add(entry.key_id.casefold())
+        stored = f"sha256:{entry.digest.hex()}"
+        if stored in existing:
+            raise PolicyError(f"cannot migrate key {entry.key_id!r}: The same API key is configured more than once")
+        existing.add(stored)
         while True:
             token_id, _ = generate_token()
             if token_id not in used_token_ids:
                 break
         used_token_ids.add(token_id)
         admin = "admin" in entry.ops
-        token = Token(token_id, f"sha256:{entry.digest.hex()}", now, None, "migrated from a v1 key policy")
+        token = Token(token_id, stored, now, None, "migrated from a v1 key policy")
         principals.append(
             Principal(
                 entry.key_id,

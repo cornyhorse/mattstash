@@ -5,7 +5,7 @@ shared between threads and swapped atomically without anyone being able to mutat
 timezone-aware (UTC); the store rejects naive ones when it loads a file.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Optional
 
@@ -13,6 +13,9 @@ KINDS = ("human-device", "agent", "runner")
 #: Never stored in a policy file. Only the in-memory principals built from the v1 key sources (``legacy.py``).
 LEGACY_KIND = "legacy"
 ACTIONS = ("list", "read", "write", "delete")
+#: Tag grants may not write: whoever can write an entry can retag it, so a tag-based write grant would let a
+#: principal widen its own reach (design section 4.3).
+TAG_ACTIONS = ("list", "read")
 
 POLICY_VERSION = 2
 
@@ -27,7 +30,7 @@ class Token:
     """A credential of a principal. Only its salted hash is kept; ``id`` is the public, loggable handle."""
 
     id: str
-    hash: str
+    hash: str = field(repr=False)  # never in a repr: reprs end up in logs and tracebacks
     created: datetime
     expires: Optional[datetime] = None
     description: str = ""

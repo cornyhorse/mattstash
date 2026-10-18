@@ -97,7 +97,9 @@ The server logs a deprecation warning for those at startup.
 
 **Rotation.** `token issue` adds a token. A principal can hold several at once, so you can issue the new one,
 deploy it, then `token revoke <id>`. `token rotate <principal> --grace 24h` does both in one step. It issues a new
-token and sets the old one's `expires` to now + grace (default 0, i.e. immediately).
+token and sets the old one's `expires` to the earlier of its current expiry and now + grace (default 0, i.e.
+immediately). `--grace` takes a relative duration only (`30m`, `24h`, `7d`, `2w`). A new token's `expires` must be
+in the future.
 
 The plaintext token is shown **once**, when it's issued (CLI stdout, or `--output-file` written with mode 0600).
 It is never stored, logged or returned again.
@@ -127,7 +129,8 @@ Otherwise the request is denied. Since there are no deny rules, the order of gra
 ### 4.2 Key patterns
 
 Matching is plain, case-sensitive string comparison of the pattern against the credential name as stored in
-KeePass. There is no Unicode or case normalisation, no trimming, and `.`, `/`, `-` get no special treatment.
+KeePass. There is no Unicode or case normalisation, no trimming, and the separators `.`, `/`, `-`, `_` get no special
+treatment.
 
 | Pattern | Matches | Doesn't match |
 | --- | --- | --- |
@@ -139,7 +142,7 @@ KeePass. There is no Unicode or case normalisation, no trimming, and `.`, `/`, `
 
 Validation, applied when a grant is created or loaded:
 - `*` may appear only once, as the last character. `a*b`, `**`, `*a` are errors.
-- A pattern that ends in a separator but has no `*` (`firefly/`, `firefly.`) is an error ("did you mean
+- A pattern that ends in a separator (`.`, `/`, `-` or `_`) but has no `*` (`firefly/`, `firefly.`) is an error ("did you mean
   `firefly/*`?"), because an exact-name grant on a name ending in a separator is almost always a mistake.
 - Printable ASCII only, no whitespace, at most 255 characters (the server's name limit).
 - Patterns are not checked against the server's URL name rules. A pattern may contain `/` (titles can, see
@@ -220,7 +223,9 @@ the restriction. `version` is checked for the same reason.
 **Writing.** Admin API mutations and the CLI's local mode both:
 - take an exclusive lock (`mattstash.utils.filelock`) and re-read the file from disk, never the cache,
 - validate the whole new document,
-- write a temporary file in the same directory with mode 0600, `fsync`, then `os.replace`,
+- write a temporary file in the same directory (created 0600), `fsync`, give it the existing file's permission bits
+  masked with `0640` (never world-accessible or executable) and, for root, its owner and group, then `os.replace` it.
+  A symlinked policy path is resolved first, so the link survives. A new file is 0600,
 - increment `revision`.
 
 The server picks up changes from other writers by checking the file's mtime and size on each request (a
@@ -231,7 +236,11 @@ then edit the source and reload.
 
 **Lockout protection.** A change that would leave no enabled admin principal with a valid token is refused,
 unless a legacy admin key (§7) is configured. That covers removing or disabling the last admin, revoking or
-expiring its last token, and clearing its admin flag.
+expiring its last token, and clearing its admin flag. It also looks an hour ahead: if before the change some
+admin held a token that never expires or outlasts `now + 1h`, and after it every usable admin token expires within
+the hour (say, rotating the only admin token with `--grace 1h` to a replacement that expires in a minute), the change
+is refused. A policy that is already within the hour of lockout is not blocked from changing, since that is how you
+repair it.
 
 **Who can change it.** Only an admin, and admins can only be `human-device`, so an agent or runner token can
 never change the policy even if a grant is misconfigured. There is no `admin` action in grants. Admin is a

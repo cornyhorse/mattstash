@@ -76,9 +76,10 @@ def _split_hash(stored: object) -> Optional[tuple[str, str, str]]:
 
 
 def verify_token_hash(stored: str, plaintext: str) -> bool:
-    """Constant-time check of ``plaintext`` against a stored hash. False, never an exception, for a malformed hash."""
+    """Constant-time check of ``plaintext`` against a stored hash. False, never an exception, for a malformed hash
+    or a ``plaintext`` that is not a string."""
     parts = _split_hash(stored)
-    if parts is None:
+    if parts is None or not isinstance(plaintext, str):
         return False
     scheme, salt_hex, digest = parts
     if scheme == HMAC_SCHEME:

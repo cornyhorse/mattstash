@@ -665,7 +665,6 @@ def test_bootstrap_is_allowed_without_a_usable_admin(policy_path: Path) -> None:
         lambda e, tid: e.set_disabled("matt-mac", True),
         lambda e, tid: e.remove_principal("matt-mac"),
         lambda e, tid: e.set_admin("matt-mac", False),
-        lambda e, tid: e.rotate_token("matt-mac", tid, expires=NOW),  # replacement already expired, old removed
     ],
 )
 def test_lockout_is_refused(policy_path: Path, mutate: Any) -> None:

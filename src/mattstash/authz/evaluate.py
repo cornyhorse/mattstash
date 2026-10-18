@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional
 
 from .errors import PolicyError
-from .models import ACTIONS, LEGACY_KIND, Decision, Grant, Policy, Principal, utcnow
+from .models import ACTIONS, LEGACY_KIND, TAG_ACTIONS, Decision, Grant, Policy, Principal, utcnow
 from .patterns import pattern_matches
 
 _ADMIN_KINDS = ("human-device", LEGACY_KIND)
@@ -37,6 +37,12 @@ def _decide(
     for grant in grants:
         if grant.is_expired(now) or action not in grant.actions:
             continue
+        # Defence in depth: the store refuses these shapes, but a Grant can be built by hand. A grant with both
+        # selectors or neither matches nothing, and a tag grant never allows write or delete (design section 4.3).
+        if (grant.key is None) == (grant.tag is None):
+            continue
+        if grant.tag is not None and action not in TAG_ACTIONS:
+            continue
         matched = grant.key is not None and pattern_matches(grant.key, name)
         matched = matched or (grant.tag is not None and grant.tag in tags)
         if matched:
@@ -48,6 +54,13 @@ def _check_action(action: str) -> None:
     if action not in ACTIONS:
         # a typo in calling code would otherwise silently deny everything; fail loudly instead
         raise PolicyError(f"unknown action {action!r}; expected one of {', '.join(ACTIONS)}")
+
+
+def _tag_set(tags: Iterable[str]) -> frozenset[str]:
+    if isinstance(tags, str):
+        # iterating a str yields characters, which would silently turn "prod" into the tags p, r, o, d
+        raise TypeError("tags must be an iterable of strings, not a single string")
+    return frozenset(tags)
 
 
 def evaluate(
@@ -63,7 +76,7 @@ def evaluate(
     if principal.disabled:
         return Decision(False, "disabled")
     moment = utcnow() if now is None else now
-    return _decide(policy.grants_for(principal.name), principal, action, name, frozenset(tags), moment)
+    return _decide(policy.grants_for(principal.name), principal, action, name, _tag_set(tags), moment)
 
 
 def visible(
@@ -79,7 +92,7 @@ def visible(
         return []
     moment = utcnow() if now is None else now
     grants = policy.grants_for(principal.name)
-    return [name for name, tags in items if _decide(grants, principal, action, name, frozenset(tags), moment).allowed]
+    return [name for name, tags in items if _decide(grants, principal, action, name, _tag_set(tags), moment).allowed]
 
 
 def explain(
