@@ -436,10 +436,24 @@ Review round 1 of the library and CLI (fixed, each with a test):
   grants for write/delete.
 - CLI: a token is written to stdout directly and never to stderr (a failed delivery names the token id for
   revocation); empty `--principal`/`--since` are errors in both modes; `--grace` is relative only.
-- Server follow-ups: `rotate` accepts an absolute date as `grace` (xfail test in
-  `tests/integration/test_cli_server_admin.py`); `access-log?principal=` and `?since=` with an empty value mean "no
-  filter" while `grants?principal=` does the same, the CLI refuses empty values; the server tests that issue an already
-  expired token must build the editor with an earlier `now`.
+- Server follow-ups from this round (all fixed in round 2 below): `rotate` accepted an absolute date as `grace`;
+  `access-log?principal=` with an empty value matched nothing; the server tests that issue an already expired token
+  build the editor with an earlier `now`. The CLI still refuses empty values.
+
+Review round 2 of the server (fixed, each with a test; `server/tests/test_review_fixes.py`):
+
+- A v1 `ops: ["admin"]` key could call the new admin routes (create principals, grants, tokens) through the reload
+  scope; scoped legacy keys now reach only `reload` and `invalidate-api-key-cache` (reason `legacy-scoped`).
+- A change saved but not activated (reload failure) is `409` when it reduces access and carries a warning and
+  `X-Policy-Active: false` otherwise; an admin edit that would clash with a legacy principal name is refused before it
+  is saved.
+- State-changing requests write their access line at the decision, before any effect, and fail closed (503, nothing
+  done); admin lines carry `target_token`, `grant_key`/`grant_tag`/`actions`, reads carry `reveal` and `version`;
+  a cancelled request logs `client-disconnected` with no made-up status.
+- v1 keys without `read` now get `200` empty / `404` instead of `403` (pinned by tests, documented); token issue and
+  rotate take no body; `grace` is a relative duration only (the xfail is gone); grants must expire in the future;
+  `legacy-*` names that do not exist are `404`; empty query values mean "not given"; lock timeouts are told apart by
+  type; the log file is closed if startup fails; tag lookup uses `MattStash.tags_of` instead of listing the vault.
 
 Decisions still open (design section 11): runners as admins; tag-based writes; an opt-out from fail-closed logging;
 the legacy removal timeline; whether `*` grants for agents are forbidden; whether list-only entries show username and

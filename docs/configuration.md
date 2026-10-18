@@ -291,7 +291,9 @@ nothing. They are **deprecated**:
 - Each legacy source becomes a principal: `legacy-env` for `MATTSTASH_API_KEY`, `legacy-1`, `legacy-2`, ... for a plain
   key file, and for a v1 JSON policy one principal per key, named after its `id`. Legacy principals have kind `legacy`.
   `MATTSTASH_API_KEY` and a plain key file are full access (every action on every name). A v1 prefix `p` becomes the
-  pattern `p*`, which keeps its old meaning. `ops: read` becomes `list,read`, and `admin` becomes the admin flag.
+  pattern `p*`, which keeps its old meaning. `ops: read` becomes `list,read`, and `admin` becomes the admin flag, which for a v1 key still means only
+  `POST /admin/reload` and `POST /admin/invalidate-api-key-cache` (the other admin routes need a policy-file admin or a
+  full-access legacy key).
 - The server logs a deprecation warning at startup for each legacy source, answers requests authenticated by a legacy key
   with `Deprecation: true`, and records `"kind":"legacy"` in the access log. Use the log to find every caller before
   you remove a key.

@@ -188,6 +188,13 @@ Rules that keep tag grants safe:
 | `DELETE /credentials/{name}` | `delete` (key-pattern grant) | 403, as above. |
 | `/admin/*` | principal is admin (and `human-device` or legacy) | 403. |
 
+**v1 `ops: ["admin"]` keeps its v1 meaning.** In v1, `admin` allowed only `POST /admin/reload` and
+`POST /admin/invalidate-api-key-cache`. A legacy principal that comes from a v1 JSON key policy (a *scoped* legacy
+key) therefore passes only those two routes; every other admin route (principals, tokens, grants, `check`, the
+access log) answers 403 with the reason `legacy-scoped`, even though the key is flagged admin. The env key and the
+keys of a plain list always had full access and may call every admin route. To give a v1 admin key the new admin
+powers, migrate it (`migrate-keys`): it then becomes a `human-device` admin principal.
+
 `list` and `read` are independent. A principal with only `read` on `firefly.*` can fetch `firefly.token` by
 name but won't see it in `list`, which is "need to know, but don't enumerate". The CLI's `grant add` defaults to
 `list,read`.
@@ -255,20 +262,46 @@ admin request:
 ```json
 {"ts":"2026-10-18T12:03:44.120Z","principal":"hermes-finance","kind":"agent","token":"k7m2q7xw4h3a",
  "action":"read","route":"get","key":"firefly.token","decision":"allowed","grant":"g_3fd9a1c2",
- "client":"100.101.7.3","status":200}
+ "client":"100.101.7.3","status":200,"reveal":true}
 ```
 
-- `decision` is `allowed` or `denied`. `reason` appears on denials: `no-grant`, `not-admin`, `unknown-token`,
-  `bad-token`, `expired-token`, `disabled`, `no-token`.
-- `key` is the credential name, or for list/search the `prefix`/`q`/`tag` filter. `count` is the number of
-  entries returned. Health probes aren't logged.
+- `decision` is `allowed` or `denied`. `reason` appears on denials: `no-grant`, `not-admin`, `legacy-scoped` (a v1
+  admin-only key calling an admin route it never had), `unknown-token`, `bad-token`, `expired-token`, `disabled`,
+  `no-token`, `throttled` (too many failed authentications from this client; answered 429 before the key is looked
+  at) and `auth-unavailable` (the key store could not be read; answered 503).
+- `key` is the credential name, or for list/search the `prefix`/`q` filter (`tag` is logged as `tag`). `count` is the
+  number of entries returned. Health probes aren't logged.
+- **What a value reveal looks like.** `reveal: true` is added when a secret value was returned: `show_password=true`
+  on get or list, `mask_password=false` on db-url. A request that found nothing reveals nothing and carries no
+  `reveal`. `version` is added when a specific version was requested (including `0`).
+- **Admin lines** name their target, never a secret: `key` is the principal (or the grant id for grant removal);
+  `target_token` is the id of the token being revoked or rotated (the OLD one; the id of a token that issue or
+  rotate creates exists only in the response, because the line is written before it is minted); `grant_key`,
+  `grant_tag` and `actions` (comma-separated) describe a grant being added.
 - **Never logged:** the token or any part of its secret, secret values, usernames, URLs, notes, request bodies,
   query strings other than the filter fields above. For a malformed token, only the parsed `token_id` is
   logged, and only if it has the right shape. Every string is escaped to printable ASCII and capped at 256
   characters, so a client can't forge lines.
-- `status` is the HTTP status. The security middleware writes the line at `http.response.start`, before any
-  byte of the response is sent, from the decision the route dependency recorded. That ordering is what makes
-  failing closed possible.
+- **`decision` is present only if the request reached an authorization decision.** A request rejected before one
+  carries no `decision`, only the `status`: 400 (invalid name or Content-Length), 404 for a route that does not exist,
+  405 (read-only server), 413, 422 (an unparsable body; a body that parses but is invalid is validated after the
+  admin decision, so such an admin line has the decision and no status), and a rate-limit 429 on credential routes
+  (slowapi's per-route limit; on admin routes it is raised after the decision, so the line has it). Failed
+  authentications and throttled clients are decisions (`denied`).
+
+**When the line is written, and `status`.**
+
+- A **read**, or any request that never reaches a decision, is written by the security middleware at
+  `http.response.start`, with the `status` that is about to be sent and before any byte of the response goes out.
+- A **state-changing request** (POST, PATCH, PUT, DELETE) that reaches an authorization decision gets its line **at
+  the decision**, written synchronously by the route's dependency before anything has happened: before the
+  credential is written or deleted, before the policy file is edited, before a token is minted. Such a line has
+  **no `status`**, because the outcome does not exist yet; it says what was decided, not what happened (an allowed
+  delete of a missing name is still a 404). If the line cannot be written the request is answered 503 and the
+  handler never runs, so nothing changed. This covers denials too: a refused write is also logged at its decision.
+- Either way each request produces exactly one line. A request that ends without a response is logged from
+  `finally` with status 500; one that was cancelled because the client went away first is logged with
+  `"error":"client-disconnected"` and no status.
 
 **Where it goes.**
 - `MATTSTASH_ACCESS_LOG_FILE` unset (default): JSON lines on stdout via the `mattstash.access` logger, which
@@ -281,7 +314,9 @@ admin request:
 works the same in a container. The admin API reads the current file and its backups.
 
 **Fail closed.** If the file is configured and a line can't be written (disk full, permissions), the request is
-refused with 503 and an error goes to the server log. As in Vault, an unlogged secret read is worse than an
+refused with 503 and an error goes to the server log (the line that could not be written goes to stdout, marked
+`status: 503` and `error: access-log-write-failed`). For a read, nothing of the response is sent. For a
+state-changing request, nothing is done (see above). As in Vault, an unlogged secret read is worse than an
 outage. Writing to stdout can't fail in a way we can detect, so stdout-only mode doesn't fail closed.
 
 Reading it: `mattstash admin log [--principal P] [--decision denied] [--since 24h] [--limit N]`, which uses
@@ -295,6 +330,8 @@ Reading it: `mattstash admin log [--principal P] [--decision denied] [--since 24
 | `MATTSTASH_API_KEYS_FILE`, plain list | Keeps working. Principals `legacy-1`, `legacy-2`, …, same as `legacy-env`. |
 | `MATTSTASH_API_KEYS_FILE`, v1 JSON policy | Keeps working. Each key becomes a principal of kind `legacy` named after its `id`. `ops: read` becomes `list,read`, `write` and `delete` stay as they are, `admin` becomes the admin flag. Each prefix `p` becomes `p*` (exactly the old `startswith` meaning); no prefixes means `*`. |
 | `MATTSTASH_REQUIRE_SCOPED_KEYS=true` | Still refuses to start if *unscoped* legacy keys are configured. |
+| v1 key with `ops: ["admin"]` | Reload and invalidate only, exactly as in v1 (§4.4). The new admin routes answer 403 `legacy-scoped`. The env key and plain-list keys keep every admin route. |
+| v1 key without `read` in its `ops` (`write` only, `admin` only) | **Changed, deliberately:** `GET /credentials` answers `200 {"credentials":[],"count":0}` (it used to be 403), and get, versions and db-url answer the 404 of a missing name (`Credential not found: <name>`; db-url: `Credential not found or unsuitable: <name>`). Such a key holds no `list` or `read` grant, and a read it may not do is indistinguishable from a missing name. `write` and `delete` keep their 403. |
 
 - Legacy principals are built in memory on each load and never written to the policy file. Their names can't
   clash with file principals because `legacy-*` is reserved and a v1 `id` that clashes is a load error.
@@ -352,10 +389,13 @@ principals with partial grants:
    fail and log `denied`).
 2. Route dependency `authorize(action)`: for single-name routes, evaluates the grant and records
    `{action, key, decision, grant}` in `request.state`. A denial raises 404 or 403 per §4.4.
-   List and search filter per entry with the same evaluation function.
-3. Middleware, at `http.response.start`: writes the access line with the status. If the file sink fails,
-   the response is replaced by `503` before anything has been sent. A request that ends without a response (a
-   crash) is logged from `finally` with status 500.
+   List and search filter per entry with the same evaluation function. For a state-changing request this step also
+   writes the access line (no `status`) before returning; if that fails the request is answered 503 and the handler
+   does not run.
+3. Middleware, at `http.response.start`: writes the access line with the status for every request not yet written.
+   If the file sink fails, the response is replaced by `503` before anything has been sent. A request that ends
+   without a response (a crash) is logged from `finally` with status 500, or with `error: client-disconnected` if
+   the client went away.
 
 Evaluation lives in the library (`mattstash.authz`) so the server, the CLI's local mode and
 `admin check` share one implementation, which is tested and type-checked under the library's 100% coverage and
