@@ -937,7 +937,7 @@ class AdminHandler(BaseHandler):
             # v1 "admin" meant only reload and cache invalidation; a v2 admin creates principals, tokens and grants.
             self.warning(
                 f"{name} had the v1 'admin' op and is now a full admin (it can grant itself access); "
-                f"if it only needs to reload, demote it: mattstash admin principal update {name} --no-admin"
+                f"if it should not manage the policy, demote it: mattstash admin principal update {name} --no-admin"
             )
         self.say(
             f"migrated {len(names)} key{'' if len(names) == 1 else 's'}; each keeps its old key (stored as sha256). "
