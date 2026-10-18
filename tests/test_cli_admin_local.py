@@ -124,6 +124,22 @@ def test_disable_and_enable(run: Runner, bootstrapped: Path):
     assert run(*admin(bootstrapped, "principal", "disable", "nobody")).code == 2
 
 
+def test_update_admin_flag_and_description(run: Runner, bootstrapped: Path):
+    assert run(*admin(bootstrapped, "principal", "add", "mac2", "--kind", "human-device")).code == 0
+    assert run(*admin(bootstrapped, "principal", "update", "MAC2", "--admin")).out.strip() == "mac2: admin=yes"
+    assert load_policy(bootstrapped).principal("mac2").admin is True  # type: ignore[union-attr]
+    changed = run(*admin(bootstrapped, "principal", "update", "mac2", "--no-admin", "--description", "spare"))
+    assert changed.out.strip() == "mac2: admin=no"
+    updated = load_policy(bootstrapped).principal("mac2")
+    assert updated is not None and (updated.admin, updated.description) == (False, "spare")
+    nothing = run(*admin(bootstrapped, "principal", "update", "mac2"))
+    assert nothing.code == 1 and "nothing to change" in nothing.err
+    assert run(*admin(bootstrapped, "principal", "update", "bot", "--admin")).code == 1  # agents are never admins
+    assert run(*admin(bootstrapped, "principal", "update", "nobody", "--no-admin")).code == 2
+    lockout = run(*admin(bootstrapped, "principal", "update", "matt", "--no-admin"))
+    assert lockout.code == 1 and "admin" in lockout.err  # the last admin cannot drop the flag
+
+
 def test_remove_needs_yes_without_a_terminal(run: Runner, bootstrapped: Path):
     run(*admin(bootstrapped, "grant", "add", "bot", "--key", "a.*"))
     result = run(*admin(bootstrapped, "principal", "remove", "bot"))
@@ -494,6 +510,10 @@ def test_migrate_keys_keeps_the_old_keys_working(run: Runner, policy: Path, tmp_
     result = run(*admin(policy, "migrate-keys", "--from", str(_v1(tmp_path))))
     assert result.code == 0 and result.out.split() == ["billing", "root"]
     assert "migrated 2 keys" in result.err
+    # root had the v1 "admin" op, which only allowed reload: becoming a full admin is called out, with the remedy
+    assert "root had the v1 'admin' op and is now a full admin" in result.err
+    assert "mattstash admin principal update root --no-admin" in result.err
+    assert "billing had" not in result.err
     loaded = load_policy(policy)
     billing, root = loaded.principals
     assert (billing.kind, billing.admin, root.kind, root.admin) == ("agent", False, "human-device", True)

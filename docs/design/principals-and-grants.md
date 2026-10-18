@@ -335,15 +335,17 @@ Reading it: `mattstash admin log [--principal P] [--decision denied] [--since 24
 
 - Legacy principals are built in memory on each load and never written to the policy file. Their names can't
   clash with file principals because `legacy-*` is reserved and a v1 `id` that clashes is a load error.
-- Every legacy key is matched in constant time by comparing its SHA-256 digest with every legacy record (the
-  existing code path). This only runs when the token isn't in `mst_` format.
+- A token that isn't in `mst_` format is matched in constant time by comparing its SHA-256 digest with every
+  legacy key and every policy-file token stored as `sha256:` (migrated keys), with no early exit.
 - **Deprecation:** a startup warning per legacy source, a `Deprecation: true` response header on requests
   authenticated by a legacy key, and `"kind":"legacy"` in the access log. That way you can find every caller
   before switching legacy keys off. Nothing is removed in this release. A later major release will drop the
   plain sources (proposed: 0.4).
 - `mattstash admin migrate-keys --from keys.json` converts a v1 JSON policy into v2 principals and grants. It
   keeps each digest as `sha256:<hex>`, so existing callers keep their keys. Re-issue tokens later to move to the
-  salted scheme.
+  salted scheme. Migrated keys are ordinary file principals, not `legacy`: a key with the v1 `admin` op becomes a
+  `human-device` admin, every other key an `agent`. Because a v2 admin can do far more than v1's reload and
+  invalidate, the CLI warns for each key that became an admin; demote it if it only needs to reload.
 - `MATTSTASH_POLICY_FILE` and the legacy sources can be configured together while migrating.
 
 ## 8. CLI
@@ -361,6 +363,7 @@ mattstash admin principal list
 mattstash admin principal add NAME --kind {human-device,agent,runner} [--description TEXT] [--admin]
 mattstash admin principal show NAME
 mattstash admin principal disable|enable NAME
+mattstash admin principal update NAME [--admin | --no-admin] [--description TEXT]
 mattstash admin principal remove NAME [--yes]
 
 mattstash admin token issue PRINCIPAL [--expires 90d|2027-01-01] [--description TEXT] [--output-file PATH]

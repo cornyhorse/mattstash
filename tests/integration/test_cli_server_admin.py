@@ -127,6 +127,9 @@ def test_principal_lifecycle(admin, cli, admin_server: AdminServer) -> None:
     assert_unauthorized(cli("keys", token=token))
     assert ok(admin("principal", "enable", "lifecycle")).strip() == "lifecycle: enabled"
     assert "app.db-password" in ok(cli("keys", token=token))
+    assert ok(admin("principal", "update", "lifecycle", "--description", "renamed")).strip() == "lifecycle: admin=no"
+    assert json.loads(ok(admin("principal", "show", "lifecycle", "--json")))["description"] == "renamed"
+    assert admin("principal", "update", "lifecycle", "--admin").returncode == 1  # an agent is never an admin
 
     # duplicate and invalid names are errors, not crashes
     for args in (["lifecycle", "--kind", "agent"], ["LIFECYCLE", "--kind", "agent"], ["bad name", "--kind", "agent"]):

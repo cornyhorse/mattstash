@@ -160,6 +160,9 @@ class _Backend(_LogReader, Protocol):
     def principal_set_disabled(self, name: str, disabled: bool) -> Data:
         """Disable or enable a principal."""
 
+    def principal_update(self, name: str, admin: Optional[bool], description: Optional[str]) -> Data:
+        """Change the admin flag and/or the description (None = leave as is)."""
+
     def principal_remove(self, name: str) -> Data:
         """Remove a principal and its grants."""
 
@@ -270,6 +273,16 @@ class _LocalBackend:
             updated = self._find(editor.policy, name)
         return _principal_out(updated, _now())
 
+    def principal_update(self, name: str, admin: Optional[bool], description: Optional[str]) -> Data:
+        with edit_policy(self.policy_file) as editor:
+            name = self._find(editor.policy, name).name
+            if description is not None:
+                editor.set_description(name, description)
+            if admin is not None:
+                editor.set_admin(name, admin)
+            updated = self._find(editor.policy, name)
+        return _principal_out(updated, _now())
+
     def principal_remove(self, name: str) -> Data:
         with edit_policy(self.policy_file) as editor:
             found = self._find(editor.policy, name)
@@ -367,6 +380,14 @@ class _ServerBackend:
 
     def principal_set_disabled(self, name: str, disabled: bool) -> Data:
         return self.client.admin_principal_update(name, {"disabled": disabled})
+
+    def principal_update(self, name: str, admin: Optional[bool], description: Optional[str]) -> Data:
+        changes: Dict[str, Any] = {}
+        if admin is not None:
+            changes["admin"] = admin
+        if description is not None:
+            changes["description"] = description
+        return self.client.admin_principal_update(name, changes)
 
     def principal_remove(self, name: str) -> Data:
         return self.client.admin_principal_remove(name)
@@ -666,6 +687,13 @@ class AdminHandler(BaseHandler):
     def _op_principal_enable(self, backend: _Backend, args: argparse.Namespace) -> int:
         return self._set_disabled(backend, args, False)
 
+    def _op_principal_update(self, backend: _Backend, args: argparse.Namespace) -> int:
+        if args.admin is None and args.description is None:
+            raise AdminError("nothing to change: pass --admin, --no-admin or --description")
+        item = backend.principal_update(args.name, args.admin, args.description)
+        self.say(f"{_clean(item.get('name'))}: admin={'yes' if item.get('admin') else 'no'}")
+        return exit_codes.OK
+
     @staticmethod
     def _confirm(question: str) -> bool:
         """Ask on stderr (stdout stays clean for pipes) and read one line from stdin; end of input means no."""
@@ -880,8 +908,15 @@ class AdminHandler(BaseHandler):
             raise AdminError(f"{source} is not valid UTF-8") from None
         with edit_policy(policy_file, create=True) as editor:
             names = editor.import_v1(text, args.min_length)
+            admins = [n for n in names if (p := editor.policy.principal(n)) is not None and p.admin]
         for name in names:
             self.say(name)
+        for name in admins:
+            # v1 "admin" meant only reload and cache invalidation; a v2 admin creates principals, tokens and grants.
+            self.warning(
+                f"{name} had the v1 'admin' op and is now a full admin (it can grant itself access); "
+                f"if it only needs to reload, demote it: mattstash admin principal update {name} --no-admin"
+            )
         self.say(
             f"migrated {len(names)} key{'' if len(names) == 1 else 's'}; each keeps its old key (stored as sha256). "
             "Issue new tokens later to move to the salted scheme.",
@@ -964,6 +999,12 @@ def add_admin_parser(subparsers: Any, global_opts: argparse.ArgumentParser) -> N
         "name"
     )
     leaf(principal, "enable", "principal.enable", "Undo disable").add_argument("name")
+    p_update = leaf(principal, "update", "principal.update", "Change a principal's admin flag or description")
+    p_update.add_argument("name")
+    p_update.add_argument(
+        "--admin", action=argparse.BooleanOptionalAction, default=None, help="Make admin (--admin) or not (--no-admin)"
+    )
+    p_update.add_argument("--description", help="New description")
     p_remove = leaf(principal, "remove", "principal.remove", "Remove a principal with its grants and tokens")
     p_remove.add_argument("name")
     p_remove.add_argument("--yes", action="store_true", help="Do not ask for confirmation")

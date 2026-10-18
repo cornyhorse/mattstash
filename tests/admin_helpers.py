@@ -118,7 +118,9 @@ class FakeAdminServer:
             case ("GET", ["principals", name]):
                 return 200, b.principal(name)
             case ("PATCH", ["principals", name]):
-                return 200, b.principal_set_disabled(name, body["disabled"])
+                if "disabled" in body:
+                    return 200, b.principal_set_disabled(name, body["disabled"])
+                return 200, b.principal_update(name, body.get("admin"), body.get("description"))
             case ("DELETE", ["principals", name]):
                 return 200, b.principal_remove(name)
             case ("GET", ["principals", name, "tokens"]):

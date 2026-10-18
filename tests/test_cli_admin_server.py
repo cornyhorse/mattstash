@@ -82,6 +82,16 @@ def test_principal_endpoints(run: Runner, server: FakeAdminServer, policy: Path)
     assert run(*ADMIN_ARGS, "principal", "enable", "bot").out.strip() == "bot: enabled"
     assert json.loads(last(server).content) == {"disabled": False}
 
+    assert run(*ADMIN_ARGS, "principal", "update", "bot", "--description", "renamed").out.strip() == "bot: admin=no"
+    request = last(server)
+    assert (request.method, path_of(request), json.loads(request.content)) == (
+        "PATCH",
+        "/api/v1/admin/principals/bot",
+        {"description": "renamed"},
+    )
+    refused = run(*ADMIN_ARGS, "principal", "update", "bot", "--admin")
+    assert refused.code == 1 and json.loads(last(server).content) == {"admin": True}
+
     removed = run(*ADMIN_ARGS, "principal", "remove", "bot", "--yes")
     assert removed.code == 0 and "removed principal bot (0 grants removed)" in removed.out
     assert (last(server).method, path_of(last(server))) == ("DELETE", "/api/v1/admin/principals/bot")

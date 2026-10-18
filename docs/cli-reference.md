@@ -592,6 +592,7 @@ mattstash admin principal add NAME --kind {human-device,agent,runner} [--descrip
 mattstash admin principal show NAME [--json]
 mattstash admin principal disable NAME
 mattstash admin principal enable NAME
+mattstash admin principal update NAME [--admin | --no-admin] [--description TEXT]
 mattstash admin principal remove NAME [--yes]
 
 mattstash admin token issue PRINCIPAL [--expires WHEN] [--description TEXT] [--output-file PATH]
@@ -633,6 +634,7 @@ subcommand.
 |--------|---------|
 | `--kind` | `human-device` (a Mac; the only kind that may be an admin), `agent` (an AI agent or MCP server) or `runner` (a CI or Ansible host) |
 | `--admin` | The principal may change principals, tokens and grants, and read the access log. Only `human-device` may be an admin; the grants still decide what it can read. |
+| `--no-admin` | `principal update`: drop the admin flag (refused if it would leave no admin with a valid token). |
 | `--yes` | `principal remove` without asking. Without it, removal needs an interactive terminal. |
 | `--expires WHEN` | `90d`, `24h`, `2w`, a date (`2027-01-01`) or a full RFC 3339 time. Tokens and grants. |
 | `--output-file PATH` | Write the token to this new file (mode 0600) instead of stdout. An existing file is never overwritten. |
