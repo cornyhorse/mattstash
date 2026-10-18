@@ -28,8 +28,6 @@ from mattstash.authz import edit_policy
 
 SERVER_DIR = Path(__file__).resolve().parents[2] / "server"
 
-#: >= the server's minimum key length (32); the value itself is arbitrary.
-API_KEY = "integration-test-key-0123456789abcdef"
 DB_PASSWORD = "integration-test-master-password"
 
 _REQUIRED_MODULES = ("fastapi", "uvicorn", "slowapi")
@@ -98,15 +96,34 @@ def _running_server(workdir: Path, db_path: Path, extra_env: Dict[str, str]) -> 
                 process.wait()
 
 
+@dataclass(frozen=True)
+class DataServer:
+    """The data-plane server: its URL and the token of its one principal (human-device, ``*`` on every action)."""
+
+    url: str
+    token: str
+
+
 @pytest.fixture(scope="session")
-def server_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str, None, None]:
-    """Start the API server on a free port (read/write, one valid API key) and return its URL."""
+def data_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[DataServer, None, None]:
+    """Start the API server on a free port (read/write, one principal with one token) and return URL and token."""
     _require_server_dependencies()
     workdir = tmp_path_factory.mktemp("integration-server")
     db_path = workdir / "integration.kdbx"
     MattStash.create(str(db_path), password=DB_PASSWORD, sidecar=False)
-    with _running_server(workdir, db_path, {"MATTSTASH_API_KEY": API_KEY}) as url:
-        yield url
+    policy = workdir / "policy.json"
+    with edit_policy(policy, create=True) as editor:
+        editor.add_principal("integration", "human-device", "the integration tests' client")
+        editor.add_grant("integration", key="*", actions=["list", "read", "write", "delete"])
+    with edit_policy(policy) as editor:
+        _, token = editor.issue_token("integration")
+    with _running_server(workdir, db_path, {"MATTSTASH_POLICY_FILE": str(policy)}) as url:
+        yield DataServer(url, token)
+
+
+@pytest.fixture(scope="session")
+def server_url(data_server: DataServer) -> str:
+    return data_server.url
 
 
 #: Secrets the admin server's database starts with: name -> value (the tests check that no value reaches a log).
@@ -151,9 +168,10 @@ def admin_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[AdminSer
 
 
 @pytest.fixture
-def cli_env(server_url: str) -> Dict[str, str]:
-    """Environment for the CLI in server mode (never the developer's own vault)."""
-    return {**_scrubbed_environment(), "MATTSTASH_SERVER_URL": server_url, "MATTSTASH_API_KEY": API_KEY}
+def cli_env(data_server: DataServer) -> Dict[str, str]:
+    """Environment for the CLI in server mode with the principal's token (never the developer's own vault).
+    ``MATTSTASH_API_KEY`` is the CLIENT's variable: it keeps its name and holds whatever token the client has."""
+    return {**_scrubbed_environment(), "MATTSTASH_SERVER_URL": data_server.url, "MATTSTASH_API_KEY": data_server.token}
 
 
 @pytest.fixture

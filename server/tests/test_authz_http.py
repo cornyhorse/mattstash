@@ -1,7 +1,8 @@
 """Authentication and authorization over HTTP against the real app and a real database, route by route.
 
 Every route is covered for: allowed, denied (a denied read must be byte-for-byte what a missing name answers), and each
-kind of legacy key (env key, plain keys file, v1 JSON policy).
+kind of old key that survives as a token: an imported key (``token import``, the ``full`` principal of the default
+fixtures) and the keys of a v1 JSON policy migrated with ``admin migrate-keys``.
 """
 
 import json
@@ -19,37 +20,35 @@ def bearer(token: str) -> dict[str, str]:
 @pytest.fixture
 def pc(make_client, policy_path, data):
     """Client for the v2 policy file, writes enabled."""
-    return make_client(API_KEY=None, POLICY_FILE=policy_path, ALLOW_WRITES=True)
+    return make_client(POLICY_FILE=policy_path, ALLOW_WRITES=True)
 
 
 @pytest.fixture
 def pro(make_client, policy_path, data):
     """Same, read-only server."""
-    return make_client(API_KEY=None, POLICY_FILE=policy_path)
+    return make_client(POLICY_FILE=policy_path)
 
 
 @pytest.fixture
-def legacy(make_client, tmp_path, key_policy_file, data):
-    """``legacy("env" | "plain" | "v1")``: a client for one kind of legacy key source (one at a time: the server
-    configuration is process-wide, so the cached key state is dropped when switching)."""
+def old_keys(make_client, tmp_path, key_policy_file, data):
+    """``old_keys("imported" | "v1")``: a client for one kind of old key that now lives in a policy file. "imported" is
+    the default ``full`` principal (``FULL_KEY``); "v1" is the v1 JSON key policy converted by ``migrate-keys`` (kind
+    human-device, because two of its keys have no prefixes and so need ``*``). The server configuration is
+    process-wide, so the cached key state is dropped when switching."""
+    from mattstash.authz import edit_policy
+
     from app.security import api_keys
 
-    plain = tmp_path / "plain.txt"
-    plain.write_text("# plain list\n" + "p" * 40 + "\n")
+    migrated = tmp_path / "migrated.json"
+    with edit_policy(migrated, create=True) as ed:
+        ed.import_v1(key_policy_file.read_text(), 32, "human-device")
 
     def _client(kind: str):
         api_keys._state = None
-        sources = {
-            "env": {"API_KEY": FULL_KEY},
-            "plain": {"API_KEY": None, "API_KEYS_FILE": str(plain)},
-            "v1": {"API_KEY": None, "API_KEYS_FILE": str(key_policy_file)},
-        }
-        return make_client(ALLOW_WRITES=True, **sources[kind])
+        overrides = {"imported": {}, "v1": {"POLICY_FILE": str(migrated)}}
+        return make_client(ALLOW_WRITES=True, **overrides[kind])
 
     return _client
-
-
-PLAIN = "p" * 40
 
 
 def names(response) -> list[str]:
@@ -237,13 +236,12 @@ def test_list_is_filtered_by_name_grants(pc, policy_tokens):
     assert "other" in everything and "firefly-mcp" in everything and len(everything) == 11
 
 
-def test_list_for_legacy_keys(legacy):
-    assert len(names(legacy("env").get("/api/v1/credentials", headers=auth(FULL_KEY)))) == 11
-    assert len(names(legacy("plain").get("/api/v1/credentials", headers=auth(PLAIN)))) == 11
-    v1 = legacy("v1")
+def test_list_for_old_keys(old_keys):
+    assert len(names(old_keys("imported").get("/api/v1/credentials", headers=auth(FULL_KEY)))) == 11
+    v1 = old_keys("v1")
     assert names(v1.get("/api/v1/credentials", headers=auth(APP_KEY))) == ["app-db", "app-token"]
     assert len(names(v1.get("/api/v1/credentials", headers=auth(READ_KEY)))) == 11
-    assert v1.get("/api/v1/credentials", headers=auth(ADMIN_KEY)).json()["count"] == 0  # admin only
+    assert v1.get("/api/v1/credentials", headers=auth(ADMIN_KEY)).json()["count"] == 0  # its v1 key had only `admin`
 
 
 # ---------------------------------------------------------------------------
@@ -311,10 +309,9 @@ def test_search_is_denied_nothing_but_filtered(pc, policy_tokens):
     assert pc.get("/api/v1/search?q=fire", headers=bearer(policy_tokens["matt"])).json() == {"results": [], "count": 0}
 
 
-def test_search_for_legacy_keys(legacy):
-    assert legacy("env").get("/api/v1/search?q=firefly", headers=auth(FULL_KEY)).json()["count"] == 4
-    assert legacy("plain").get("/api/v1/search?q=firefly", headers=auth(PLAIN)).json()["count"] == 4
-    v1 = legacy("v1")
+def test_search_for_old_keys(old_keys):
+    assert old_keys("imported").get("/api/v1/search?q=firefly", headers=auth(FULL_KEY)).json()["count"] == 4
+    v1 = old_keys("v1")
     assert v1.get("/api/v1/search?q=firefly", headers=auth(READ_KEY)).json()["count"] == 4
     assert v1.get("/api/v1/search?q=db", headers=auth(APP_KEY)).json()["count"] == 1  # app-db only: prefix app-
     assert v1.get("/api/v1/search?q=db", headers=auth(ADMIN_KEY)).json()["count"] == 0
@@ -398,11 +395,10 @@ def test_tag_grants_decide_by_the_tags_of_the_latest_version(pc, policy_tokens):
     assert pc.get("/api/v1/credentials/shared-note", headers=bearer(policy_tokens["fireflyer"])).status_code == 404
 
 
-def test_read_for_legacy_keys(legacy):
+def test_read_for_old_keys(old_keys):
     path = "/api/v1/credentials/other?show_password=true"
-    assert legacy("env").get(path, headers=auth(FULL_KEY)).json()["password"] == "private"
-    assert legacy("plain").get(path, headers=auth(PLAIN)).json()["password"] == "private"
-    v1 = legacy("v1")
+    assert old_keys("imported").get(path, headers=auth(FULL_KEY)).json()["password"] == "private"
+    v1 = old_keys("v1")
     assert v1.get(path, headers=auth(READ_KEY)).json()["password"] == "private"
     assert v1.get("/api/v1/credentials/other/versions", headers=auth(READ_KEY)).status_code == 200
     assert (
@@ -464,12 +460,12 @@ def test_put_ordering_403_beats_405_for_a_principal_that_can_never_write(pro, po
     assert pro.delete("/api/v1/credentials/app-x", headers=bearer(policy_tokens["hermes"])).status_code == 403
 
 
-def test_put_for_legacy_keys(legacy, data):
-    env_post = legacy("env").post("/api/v1/credentials/legacy-one", json={"value": "v"}, headers=auth(FULL_KEY))
-    assert env_post.status_code == 201
-    plain_post = legacy("plain").post("/api/v1/credentials/legacy-two", json={"value": "v"}, headers=auth(PLAIN))
-    assert plain_post.status_code == 201
-    v1 = legacy("v1")
+def test_put_for_old_keys(old_keys, data):
+    imported = old_keys("imported").post(
+        "/api/v1/credentials/imported-one", json={"value": "v"}, headers=auth(FULL_KEY)
+    )
+    assert imported.status_code == 201
+    v1 = old_keys("v1")
     assert v1.post("/api/v1/credentials/app-new", json={"value": "v"}, headers=auth(APP_KEY)).status_code == 201
     assert v1.post("/api/v1/credentials/anything", json={"value": "v"}, headers=auth(WRITE_KEY)).status_code == 201
     for key, name in ((APP_KEY, "other"), (READ_KEY, "app-x"), (ADMIN_KEY, "app-x")):
@@ -496,10 +492,9 @@ def test_delete_allowed_and_denied(pc, policy_tokens, data):
         assert pc.delete("/api/v1/credentials/other", headers=bearer(policy_tokens[who])).status_code == 403
 
 
-def test_delete_for_legacy_keys(legacy):
-    assert legacy("env").delete("/api/v1/credentials/other", headers=auth(FULL_KEY)).status_code == 200
-    assert legacy("plain").delete("/api/v1/credentials/app-db", headers=auth(PLAIN)).status_code == 200
-    v1 = legacy("v1")
+def test_delete_for_old_keys(old_keys):
+    assert old_keys("imported").delete("/api/v1/credentials/other", headers=auth(FULL_KEY)).status_code == 200
+    v1 = old_keys("v1")
     assert v1.delete("/api/v1/credentials/app-token", headers=auth(APP_KEY)).status_code == 200
     assert v1.delete("/api/v1/credentials/firefly", headers=auth(APP_KEY)).status_code == 403
     for key in (WRITE_KEY, READ_KEY, ADMIN_KEY):  # no `delete` op
@@ -522,32 +517,36 @@ def test_only_admins_reach_admin_routes(pc, policy_tokens):
     assert pc.post("/api/v1/admin/reload", headers=bearer(policy_tokens["matt"])).status_code == 200
 
 
-def test_legacy_admins(legacy):
-    assert legacy("env").post("/api/v1/admin/invalidate-api-key-cache", headers=auth(FULL_KEY)).status_code == 200
-    v1 = legacy("v1")
-    assert v1.post("/api/v1/admin/reload", headers=auth(ADMIN_KEY)).status_code == 200
-    for key in (READ_KEY, APP_KEY, WRITE_KEY):
+def test_admins_among_the_old_keys(old_keys):
+    assert (
+        old_keys("imported").post("/api/v1/admin/invalidate-api-key-cache", headers=auth(FULL_KEY)).status_code == 200
+    )
+    v1 = old_keys("v1")  # migrated principals are never admins, not even the one whose v1 key had `admin`
+    for key in (ADMIN_KEY, READ_KEY, APP_KEY, WRITE_KEY):
         assert v1.post("/api/v1/admin/reload", headers=auth(key)).status_code == 403
 
 
 # ---------------------------------------------------------------------------
-# rotation of legacy keys without a restart (unchanged behaviour)
+# rotation of imported keys without a restart
 # ---------------------------------------------------------------------------
 
 
-def test_key_rotation_without_restart(make_client, tmp_path, seed):
-    seed(x={"value": "1"})
-    keys = tmp_path / "keys.txt"
-    keys.write_text("o" * 40 + "\n")
-    client = make_client(API_KEY=None, API_KEYS_FILE=str(keys))
-    old, new = {"X-API-Key": "o" * 40}, {"X-API-Key": "n" * 40}
-    assert client.get("/api/v1/credentials", headers=old).status_code == 200
+def test_key_rotation_without_restart(make_client, default_policy, seed):
+    from mattstash.authz import edit_policy
 
-    keys.write_text("o" * 40 + "\n" + "n" * 40 + "\n")  # add a key, keep the old one while clients migrate
+    seed(x={"value": "1"})
+    client = make_client()
+    old, new = {"X-API-Key": FULL_KEY}, {"X-API-Key": "n" * 40}
+    assert client.get("/api/v1/credentials", headers=old).status_code == 200
+    assert client.get("/api/v1/credentials", headers=new).status_code == 401
+
+    with edit_policy(default_policy) as ed:  # add a key, keep the old one while clients migrate
+        ed.import_token("full", "n" * 40)
     client.post("/api/v1/admin/invalidate-api-key-cache", headers=old)
     assert client.get("/api/v1/credentials", headers=new).status_code == 200
 
-    keys.write_text("n" * 40 + "\n")  # revoke the old key
+    with edit_policy(default_policy) as ed:  # revoke the old key
+        ed.revoke_token("full", ed.policy.principal("full").tokens[0].id)  # the first one: FULL_KEY
     client.post("/api/v1/admin/invalidate-api-key-cache", headers=new)
     assert client.get("/api/v1/credentials", headers=old).status_code == 401
     assert client.get("/api/v1/credentials", headers=new).status_code == 200
@@ -558,7 +557,7 @@ def test_migrated_policy_serves_the_old_plain_keys_over_http(make_client, tmp_pa
 
     with edit_policy(tmp_path / "migrated.json", create=True) as ed:
         ed.import_v1(key_policy_file.read_text(), 32, "human-device")
-    client = make_client(API_KEY=None, POLICY_FILE=str(tmp_path / "migrated.json"), ALLOW_WRITES=True)
+    client = make_client(POLICY_FILE=str(tmp_path / "migrated.json"), ALLOW_WRITES=True)
     assert names(client.get("/api/v1/credentials", headers=auth(APP_KEY))) == ["app-db", "app-token"]
     assert client.post("/api/v1/credentials/other", json={"value": "x"}, headers=auth(APP_KEY)).status_code == 403
     assert client.post("/api/v1/credentials/app-new", json={"value": "x"}, headers=auth(APP_KEY)).status_code == 201
@@ -570,10 +569,10 @@ def test_migrated_policy_serves_the_old_plain_keys_over_http(make_client, tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# v1 `ops: ["admin"]` stays what it was: reload and invalidate only
+# migrated keys are never admins: not even the v1 `ops: ["admin"]` key
 # ---------------------------------------------------------------------------
 
-_MUTATING_AND_READING = [
+_ADMIN_ROUTES = [
     ("GET", "/principals", None),
     ("POST", "/principals", {"name": "intruder", "kind": "agent"}),
     ("GET", "/principals/reader", None),
@@ -586,41 +585,40 @@ _MUTATING_AND_READING = [
     ("DELETE", "/grants/g_00000000", None),
     ("POST", "/check", {"principal": "hermes", "action": "read", "name": "x"}),
     ("GET", "/access-log", None),
+    ("POST", "/reload", None),
+    ("POST", "/invalidate-api-key-cache", None),
 ]
 
 
-@pytest.mark.parametrize(("method", "path", "body"), _MUTATING_AND_READING)
-def test_a_v1_admin_only_key_cannot_use_the_new_admin_endpoints(
+@pytest.mark.parametrize(("method", "path", "body"), _ADMIN_ROUTES)
+def test_migrated_v1_keys_cannot_use_any_admin_endpoint(
     make_client, key_policy_file, policy_path, policy_tokens, tmp_path, method, path, body
 ):
+    from mattstash.authz import edit_policy
+
+    with edit_policy(policy_path) as ed:
+        ed.import_v1(key_policy_file.read_text(), 32, "human-device")
     log = tmp_path / "access.jsonl"
-    client = make_client(
-        API_KEY=None,
-        API_KEYS_FILE=str(key_policy_file),
-        POLICY_FILE=policy_path,
-        ACCESS_LOG_FILE=str(log),
-        ALLOW_WRITES=True,
-    )
+    client = make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=str(log), ALLOW_WRITES=True)
     before = Path(policy_path).read_text()
     for key in (ADMIN_KEY, READ_KEY, WRITE_KEY, APP_KEY):
         response = client.request(method, "/api/v1/admin" + path, json=body, headers=auth(key))
         assert response.status_code == 403 and response.json() == {"detail": "Insufficient permissions"}, key
     assert Path(policy_path).read_text() == before
-    # what v1 admin meant still works
-    assert client.post("/api/v1/admin/reload", headers=auth(ADMIN_KEY)).status_code == 200
-    assert client.post("/api/v1/admin/invalidate-api-key-cache", headers=auth(ADMIN_KEY)).status_code == 200
     # ... and the file's own admin is unaffected
     assert client.get("/api/v1/admin/principals", headers=bearer(policy_tokens["matt"])).status_code == 200
     denied = [json.loads(line) for line in log.read_text().splitlines()]
-    assert {r["reason"] for r in denied if r["principal"] == "ops" and r["decision"] == "denied"} == {"legacy-scoped"}
+    assert {r["reason"] for r in denied if r["principal"] == "ops" and r["decision"] == "denied"} == {"not-admin"}
 
 
-def test_full_access_legacy_keys_keep_every_admin_endpoint(make_client, policy_path, policy_tokens, tmp_path):
-    plain = tmp_path / "plain.txt"
-    plain.write_text("p" * 40 + "\n")
-    for kwargs, key in (({"API_KEY": FULL_KEY}, FULL_KEY), ({"API_KEY": None, "API_KEYS_FILE": str(plain)}, "p" * 40)):
-        client = make_client(POLICY_FILE=policy_path, **kwargs)
-        assert client.get("/api/v1/admin/principals", headers=auth(key)).status_code == 200
-        assert client.get("/api/v1/admin/grants", headers=auth(key)).status_code == 200
-        check = {"principal": "hermes", "action": "read", "name": "firefly.x"}
-        assert client.post("/api/v1/admin/check", json=check, headers=auth(key)).json()["allowed"] is True
+def test_an_imported_key_of_an_admin_keeps_every_admin_endpoint(make_client, policy_path, policy_tokens):
+    from mattstash.authz import edit_policy
+
+    with edit_policy(policy_path) as ed:
+        ed.import_token("matt", "p" * 40)
+    client = make_client(POLICY_FILE=policy_path)
+    key = "p" * 40
+    assert client.get("/api/v1/admin/principals", headers=auth(key)).status_code == 200
+    assert client.get("/api/v1/admin/grants", headers=auth(key)).status_code == 200
+    check = {"principal": "hermes", "action": "read", "name": "firefly.x"}
+    assert client.post("/api/v1/admin/check", json=check, headers=auth(key)).json()["allowed"] is True

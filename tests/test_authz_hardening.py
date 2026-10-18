@@ -36,7 +36,6 @@ from mattstash.authz import (
     visible,
 )
 from mattstash.authz import accesslog as accesslog_module
-from mattstash.authz.legacy import legacy_from_env_key, legacy_from_keys_file_text
 
 NOW = datetime(2026, 10, 18, 12, 0, 0, tzinfo=UTC)
 DIGEST = "ab" * 32
@@ -63,8 +62,6 @@ def test_migrate_refuses_the_same_key_twice_in_the_file() -> None:
     text = v1({"id": "a", "key": KEY, "ops": ["read"]}, {"id": "b", "key": KEY, "ops": ["admin"]})
     with pytest.raises(PolicyError, match="The same API key is configured more than once"):
         migrate_v1(text, Policy(), 16, NOW)
-    with pytest.raises(PolicyError, match="The same API key is configured more than once"):
-        legacy_from_keys_file_text(text, 16)
 
 
 def test_migrate_refuses_a_key_hashed_and_plain_in_the_file() -> None:
@@ -205,13 +202,11 @@ def test_horizon_rule_unit() -> None:
     short = Principal(
         "a", "human-device", admin=True, tokens=(Token("aaaaaaaaaaaa", HMAC, NOW, NOW + timedelta(minutes=5)),)
     )
-    check_lockout_change(Policy(principals=(admin,)), Policy(principals=(admin,)), NOW, False)
+    check_lockout_change(Policy(principals=(admin,)), Policy(principals=(admin,)), NOW)
     with pytest.raises(PolicyError, match="within the hour"):
-        check_lockout_change(Policy(principals=(admin,)), Policy(principals=(short,)), NOW, False)
+        check_lockout_change(Policy(principals=(admin,)), Policy(principals=(short,)), NOW)
     # the before-state was already short: not blocked
-    check_lockout_change(Policy(principals=(short,)), Policy(principals=(short,)), NOW, False)
-    # a legacy admin waives it
-    check_lockout_change(Policy(principals=(admin,)), Policy(principals=(short,)), NOW, True)
+    check_lockout_change(Policy(principals=(short,)), Policy(principals=(short,)), NOW)
 
 
 # -- M4: permissions, ownership and symlinks ----
@@ -517,9 +512,5 @@ def test_underscore_is_a_separator_in_patterns() -> None:
 
 
 def test_lone_surrogates_in_keys_are_policy_errors() -> None:
-    with pytest.raises(PolicyError, match="cannot be encoded"):
-        legacy_from_env_key("\udc80" * 40, 16)
-    with pytest.raises(PolicyError, match="cannot be encoded"):
-        legacy_from_keys_file_text("\udc80" * 40, 16)
     with pytest.raises(PolicyError, match="cannot be encoded"):
         migrate_v1(json.dumps({"keys": [{"id": "a", "key": "\ud800" * 40}]}), Policy(), 16, NOW)

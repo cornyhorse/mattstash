@@ -17,7 +17,6 @@ from app.security import api_keys
 from .conftest import FULL_KEY, RUNNER_PREFIXES, auth
 
 READ_ONLY = {"detail": "Policy file is read-only; edit it and POST /admin/invalidate-api-key-cache"}
-NO_FILE = {"detail": "No policy file configured (MATTSTASH_POLICY_FILE)"}
 FORBIDDEN = {"detail": "Insufficient permissions"}
 BASE = "/api/v1/admin"
 
@@ -35,7 +34,7 @@ def log_path(tmp_path) -> str:
 def adm(make_client, policy_path, policy_tokens, log_path, data):
     """Client acting as the admin principal ``matt``; the access log is written to a file."""
     os.makedirs(os.path.dirname(log_path))
-    client = make_client(API_KEY=None, POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
+    client = make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
     client.headers.update(bearer(policy_tokens["matt"]))
     return client
 
@@ -99,22 +98,19 @@ def test_an_agent_cannot_make_itself_an_admin_through_the_api(adm):
 # ---------------------------------------------------------------------------
 
 
-def test_list_principals_never_includes_hashes_and_flags_legacy_ones(make_client, policy_path, policy_tokens):
-    client = make_client(API_KEY=FULL_KEY, POLICY_FILE=policy_path)
-    response = client.get(f"{BASE}/principals", headers=bearer(policy_tokens["matt"]))
+def test_list_principals_never_includes_hashes(adm, policy_tokens):
+    response = adm.get(f"{BASE}/principals")
     assert response.status_code == 200
     by_name = {p["name"]: p for p in response.json()["principals"]}
-    assert by_name["legacy-env"]["legacy"] is True and by_name["legacy-env"]["admin"] is True
-    assert by_name["legacy-env"]["tokens"] == [] and by_name["legacy-env"]["created"] is None
+    assert set(by_name) == {"matt", "hermes", "lister", "fireflyer", "scribe", "runner", "expired", "off"}
+    assert "legacy" not in by_name["matt"]  # the field went with the legacy keys
     hermes = by_name["hermes"]
-    assert hermes["legacy"] is False and hermes["kind"] == "agent" and hermes["disabled"] is False
+    assert hermes["kind"] == "agent" and hermes["disabled"] is False and hermes["admin"] is False
     (token,) = hermes["tokens"]
     assert set(token) == {"id", "created", "expires", "description", "expired"}
     assert token["expired"] is False and token["expires"] is None
     assert by_name["expired"]["tokens"][0]["expired"] is True
     assert "hmac" not in response.text and "sha256" not in response.text and "hash" not in response.text
-    # the same listing is available to the legacy admin key
-    assert client.get(f"{BASE}/principals", headers=auth(FULL_KEY)).status_code == 200
 
 
 def test_create_principal(adm, policy_path):
@@ -122,7 +118,8 @@ def test_create_principal(adm, policy_path):
     assert response.status_code == 201
     body = response.json()
     assert body["name"] == "bot-1" and body["kind"] == "agent" and body["description"] == "a bot"
-    assert body["admin"] is False and body["disabled"] is False and body["legacy"] is False and body["tokens"] == []
+    assert body["admin"] is False and body["disabled"] is False and body["tokens"] == []
+    assert "legacy" not in body
     parse_time(body["created"])
     assert on_disk(policy_path).principal("bot-1") is not None
     laptop = adm.post(f"{BASE}/principals", json={"name": "laptop", "kind": "human-device", "admin": True})
@@ -136,7 +133,7 @@ def test_create_principal(adm, policy_path):
         {"name": "legacy-x", "kind": "agent"},  # reserved
         {"name": "bad name", "kind": "agent"},
         {"name": "x", "kind": "robot"},
-        {"name": "x", "kind": "legacy"},  # never stored in a file
+        {"name": "x", "kind": "legacy"},  # there is no such kind any more
     ],
 )
 def test_create_principal_validation_errors_are_400_with_the_library_message(adm, body):
@@ -157,7 +154,7 @@ def test_show_principal_includes_its_grants_and_ignores_case(adm):
     body = response.json()
     assert body["name"] == "hermes" and len(body["grants"]) == 3
     assert {g["key"] or g["tag"] for g in body["grants"]} == {"firefly.*", "firefly-mcp", "shared"}
-    assert all(g["principal"] == "hermes" and g["legacy"] is False for g in body["grants"])
+    assert all(g["principal"] == "hermes" and "legacy" not in g for g in body["grants"])
     assert adm.get(f"{BASE}/principals/nobody").json() == {"detail": "Principal not found: nobody"}
     assert adm.get(f"{BASE}/principals/nobody").status_code == 404
 
@@ -204,15 +201,6 @@ def test_lockout_is_refused_for_the_last_admin(adm, policy_tokens):
     assert adm.get(f"{BASE}/principals").status_code == 200  # still in charge
 
 
-def test_lockout_check_allows_the_change_when_another_admin_exists_or_a_legacy_admin_is_configured(
-    make_client, policy_path, policy_tokens
-):
-    client = make_client(API_KEY=FULL_KEY, POLICY_FILE=policy_path)
-    matt = bearer(policy_tokens["matt"])
-    assert client.patch(f"{BASE}/principals/matt", json={"disabled": True}, headers=auth(FULL_KEY)).status_code == 200
-    assert client.get(f"{BASE}/principals", headers=matt).status_code == 401  # disabled, and the legacy key is still in
-
-
 def test_second_admin_makes_the_first_removable(adm):
     adm.post(f"{BASE}/principals", json={"name": "ipad", "kind": "human-device", "admin": True})
     token = adm.post(f"{BASE}/principals/ipad/tokens", json={}).json()["token"]
@@ -221,18 +209,16 @@ def test_second_admin_makes_the_first_removable(adm):
     assert adm.get(f"{BASE}/principals", headers=bearer(token)).status_code == 200
 
 
-def test_legacy_principals_cannot_be_changed_through_the_api(make_client, policy_path, policy_tokens):
-    client = make_client(API_KEY=FULL_KEY, POLICY_FILE=policy_path)
-    h = bearer(policy_tokens["matt"])
+def test_the_old_legacy_principals_and_grants_no_longer_exist(adm):
     for response in (
-        client.patch(f"{BASE}/principals/legacy-env", json={"disabled": True}, headers=h),
-        client.delete(f"{BASE}/principals/legacy-env", headers=h),
-        client.post(f"{BASE}/principals/legacy-env/tokens", json={}, headers=h),
-        client.post(f"{BASE}/grants", json={"principal": "legacy-env", "key": "x"}, headers=h),
-        client.delete(f"{BASE}/grants/legacy:legacy-env", headers=h),
+        adm.patch(f"{BASE}/principals/legacy-env", json={"disabled": True}),
+        adm.delete(f"{BASE}/principals/legacy-env"),
+        adm.post(f"{BASE}/principals/legacy-env/tokens", json={}),
+        adm.post(f"{BASE}/grants", json={"principal": "legacy-env", "key": "x"}),
+        adm.delete(f"{BASE}/grants/legacy:legacy-env"),
+        adm.get(f"{BASE}/grants", params={"principal": "legacy-env"}),
     ):
-        assert response.status_code == 400 and "legacy" in response.json()["detail"].lower()
-    assert client.get(f"{BASE}/grants", params={"principal": "legacy-env"}, headers=h).json()["grants"][0]["legacy"]
+        assert response.status_code == 404 and "not found" in response.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -338,13 +324,13 @@ def test_import_token_refuses_a_key_that_is_already_a_token(adm):
 def test_import_token_uses_the_servers_minimum_key_length_unless_the_request_lowers_it(
     make_client, policy_path, policy_tokens
 ):
-    client = make_client(API_KEY=None, POLICY_FILE=policy_path, ALLOW_WRITES=True, MIN_KEY_LENGTH=40)
+    client = make_client(POLICY_FILE=policy_path, ALLOW_WRITES=True, MIN_KEY_LENGTH=40)
     client.headers.update(bearer(policy_tokens["matt"]))
     url = f"{BASE}/principals/fireflyer/tokens/import"
     assert "shorter than 40" in client.post(url, json={"key": "k" * 39}).json()["detail"]
     assert client.post(url, json={"key": "k" * 40}).status_code == 201
     assert client.post(url, json={"key": "j" * 20, "min_length": 20}).status_code == 201
-    low = make_client(API_KEY=None, POLICY_FILE=policy_path, ALLOW_WRITES=True, MIN_KEY_LENGTH=8)
+    low = make_client(POLICY_FILE=policy_path, ALLOW_WRITES=True, MIN_KEY_LENGTH=8)
     low.headers.update(bearer(policy_tokens["matt"]))
     assert "shorter than 16" in low.post(url, json={"key": "h" * 12}).json()["detail"]  # never below 16
 
@@ -415,7 +401,7 @@ def test_list_grants_with_and_without_a_principal_filter(adm):
     mine = adm.get(f"{BASE}/grants", params={"principal": "SCRIBE"}).json()["grants"]
     assert len(mine) == 1 and mine[0]["key"] == "app-*" and mine[0]["actions"] == ["delete", "list", "read", "write"]
     assert set(mine[0]) == {
-        "id", "principal", "key", "tag", "actions", "expires", "description", "created", "expired", "legacy"
+        "id", "principal", "key", "tag", "actions", "expires", "description", "created", "expired"
     }  # fmt: skip
     assert adm.get(f"{BASE}/grants", params={"principal": "nobody"}).status_code == 404
 
@@ -428,7 +414,7 @@ def test_create_grant_defaults_and_takes_effect_at_once(adm, policy_tokens):
     grant = response.json()
     assert re.fullmatch(r"g_[0-9a-f]{8}", grant["id"]) and grant["actions"] == ["list", "read"]
     assert grant["key"] == "firefly.token" and grant["tag"] is None and grant["expired"] is False
-    assert grant["expires"] is None and grant["legacy"] is False and grant["principal"] == "lister"
+    assert grant["expires"] is None and "legacy" not in grant and grant["principal"] == "lister"
     assert adm.get("/api/v1/credentials/firefly.token", headers=h).status_code == 200  # no TTL wait
 
 
@@ -551,14 +537,14 @@ def test_access_log_endpoint_filters(adm, policy_tokens):
 
 
 def test_access_log_endpoint_without_a_file_is_503(make_client, policy_path, policy_tokens):
-    client = make_client(API_KEY=None, POLICY_FILE=policy_path)
+    client = make_client(POLICY_FILE=policy_path)
     response = client.get(f"{BASE}/access-log", headers=bearer(policy_tokens["matt"]))
     assert response.status_code == 503
     assert response.json() == {"detail": "No access log file configured (MATTSTASH_ACCESS_LOG_FILE)"}
 
 
 # ---------------------------------------------------------------------------
-# no policy file / read-only file
+# read-only file
 # ---------------------------------------------------------------------------
 
 MUTATIONS = [
@@ -573,19 +559,17 @@ MUTATIONS = [
 ]
 
 
-@pytest.mark.parametrize(("method", "path", "body"), MUTATIONS)
-def test_mutations_without_a_policy_file_are_503(client, method, path, body):
-    response = client.request(method, BASE + path, json=body, headers=auth(FULL_KEY))
-    assert response.status_code == 503 and response.json() == NO_FILE
-
-
-def test_reads_work_without_a_policy_file_and_show_the_legacy_principals(client):
+def test_the_default_principal_is_listed_with_its_grant_and_checked_like_any_other(client):
     principals = client.get(f"{BASE}/principals", headers=auth(FULL_KEY)).json()["principals"]
-    assert [p["name"] for p in principals] == ["legacy-env"]
-    assert client.get(f"{BASE}/grants", headers=auth(FULL_KEY)).json()["grants"][0]["id"] == "legacy:legacy-env"
-    assert client.post(
-        f"{BASE}/check", json={"principal": "legacy-env", "action": "delete", "name": "x"}, headers=auth(FULL_KEY)
-    ).json() == {"allowed": True, "reason": "legacy", "grant": "legacy:legacy-env"}
+    assert [(p["name"], p["kind"], p["admin"], len(p["tokens"])) for p in principals] == [
+        ("full", "human-device", True, 1)
+    ]
+    grants = client.get(f"{BASE}/grants", headers=auth(FULL_KEY)).json()["grants"]
+    assert [(g["principal"], g["key"]) for g in grants] == [("full", "*")] and grants[0]["id"].startswith("g_")
+    checked = client.post(
+        f"{BASE}/check", json={"principal": "full", "action": "delete", "name": "x"}, headers=auth(FULL_KEY)
+    )
+    assert checked.json() == {"allowed": True, "reason": "granted", "grant": grants[0]["id"]}
 
 
 @pytest.mark.parametrize(("method", "path", "body"), MUTATIONS[:1] + MUTATIONS[3:4] + MUTATIONS[6:7])
@@ -652,7 +636,7 @@ def test_a_mutation_is_not_turned_into_an_error_when_only_the_reload_fails(adm, 
     import app.routers.admin as admin_module
 
     def broken():
-        raise ValueError("legacy source broke")
+        raise ValueError("reload broke")
 
     monkeypatch.setattr(admin_module, "reload_key_policy_now", broken)
     caplog.set_level(logging.ERROR, logger="mattstash.api")

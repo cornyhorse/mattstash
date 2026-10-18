@@ -458,13 +458,6 @@ def test_client_admin_methods_reject_bad_shapes():
             call()
 
 
-def test_show_marks_legacy_principals(run: Runner, server: FakeAdminServer):
-    legacy = {"name": "legacy-env", "kind": "legacy", "admin": True, "legacy": True, "tokens": [], "grants": []}
-    server.forced = lambda _request: httpx.Response(200, json=legacy)
-    result = run(*ADMIN_ARGS, "principal", "show", "legacy-env")
-    assert result.code == 0 and "legacy:      yes" in result.out and "kind:        legacy" in result.out
-
-
 def test_json_output_never_contains_a_token_hash(run: Runner, server: FakeAdminServer):
     leaky = {"principals": [{"name": "x", "tokens": [{"id": "abc", "hash": "hmac-sha256:aa:bb"}]}]}
     server.forced = lambda _request: httpx.Response(200, json=leaky)

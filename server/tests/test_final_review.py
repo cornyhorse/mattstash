@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from mattstash.authz import load_policy
 
-from .conftest import FULL_KEY, auth
+from .conftest import auth
 
 BASE = "/api/v1/admin"
 
@@ -25,7 +25,7 @@ def log_path(tmp_path) -> str:
 @pytest.fixture
 def admin_client(make_client, policy_path, policy_tokens, log_path, data):
     os.makedirs(os.path.dirname(log_path))
-    client = make_client(API_KEY=None, POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
+    client = make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
     client.headers.update(bearer(policy_tokens["matt"]))
     return client
 
@@ -36,23 +36,6 @@ def records(path: str) -> list[dict]:
 
 
 # 1 --------------------------------------------------------------------------------------------------------------
-
-
-def test_a_scoped_v1_admin_key_does_not_waive_the_lockout_check(
-    make_client, policy_path, policy_tokens, key_policy_file
-):
-    client = make_client(API_KEY=None, POLICY_FILE=policy_path, API_KEYS_FILE=str(key_policy_file))
-    matt = policy_tokens["matt"]
-    response = client.delete(f"{BASE}/principals/matt/tokens/{matt.split('_')[1]}", headers=bearer(matt))
-    assert response.status_code == 400 and "no admin principal" in response.json()["detail"]
-    assert load_policy(policy_path).principal("matt").tokens  # nothing changed
-
-
-def test_an_unscoped_legacy_key_still_waives_the_lockout_check(make_client, policy_path, policy_tokens):
-    client = make_client(API_KEY=FULL_KEY, POLICY_FILE=policy_path)
-    matt = policy_tokens["matt"]
-    response = client.delete(f"{BASE}/principals/matt/tokens/{matt.split('_')[1]}", headers=bearer(matt))
-    assert response.status_code == 200
 
 
 # 2 --------------------------------------------------------------------------------------------------------------
@@ -131,7 +114,7 @@ def test_delete_of_one_version_records_the_version_in_the_access_line(
     make_client, policy_path, policy_tokens, log_path, data
 ):
     os.makedirs(os.path.dirname(log_path))
-    client = make_client(API_KEY=None, POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
+    client = make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
     scribe = bearer(policy_tokens["scribe"])
     client.delete("/api/v1/credentials/app-db?version=1", headers=scribe)
     client.delete("/api/v1/credentials/other?version=3", headers=scribe)  # denied: still names the version

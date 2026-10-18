@@ -112,14 +112,6 @@ def test_visible_filters_in_order() -> None:
     assert visible(policy, bot, "write", items, NOW) == []
 
 
-def test_legacy_principal_uses_synthetic_grants_and_reason() -> None:
-    legacy = Principal("legacy-env", "legacy", admin=True)
-    synthetic = Grant("legacy:legacy-env", "legacy-env", "*", None, frozenset({"list", "read", "write", "delete"}))
-    policy = Policy(grants=(synthetic,))
-    assert evaluate(policy, legacy, "delete", "x", now=NOW) == Decision(True, "legacy", "legacy:legacy-env")
-    assert admin_decision(legacy) == Decision(True, "legacy")
-
-
 def test_can_admin_and_admin_decision() -> None:
     human = Principal("m", "human-device", admin=True)
     assert can_admin(human) and admin_decision(human) == Decision(True, "granted")
@@ -139,6 +131,3 @@ def test_explain() -> None:
         policy, bot, "read", "app.x", now=NOW
     )
     assert explain(policy, bot, "read", "nope", now=NOW).startswith("denied: bot (agent) read 'nope': no-grant")
-    legacy = Principal("legacy-1", "legacy")
-    lpolicy = Policy(grants=(Grant("legacy:legacy-1", "legacy-1", "*", None, frozenset({"read"})),))
-    assert "(legacy key)" in explain(lpolicy, legacy, "read", "x", now=NOW)

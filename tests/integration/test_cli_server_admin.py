@@ -105,7 +105,6 @@ def test_principal_lifecycle(admin, cli, admin_server: AdminServer) -> None:
         "admin": False,
         "disabled": False,
         "created": listed["lifecycle"]["created"],
-        "legacy": False,
         "tokens": [],
     }
     assert listed["root-admin"]["admin"] is True and listed["root-admin"]["tokens"]
@@ -279,7 +278,7 @@ def test_grant_add_list_remove(admin, cli) -> None:
     assert grants[key_id]["key"] == "app.db-*" and grants[key_id]["tag"] is None
     assert grants[key_id]["actions"] == ["list", "read"] and grants[key_id]["description"] == "d"
     assert grants[tag_id]["tag"] == "ops" and grants[tag_id]["expires"].endswith("Z")
-    assert all(g["principal"] == "granted" and g["legacy"] is False and g["expired"] is False for g in grants.values())
+    assert all(g["principal"] == "granted" and g["expired"] is False for g in grants.values())
     assert key_id in ok(admin("grant", "list")) and key_id in ok(admin("principal", "show", "granted"))
 
     assert ADMIN_SERVER_SECRETS["app.db-password"] in ok(cli("get", "app.db-password", "--show-password", token=token))
@@ -546,7 +545,7 @@ def request(admin_server: AdminServer, method: str, path: str, **kwargs) -> http
 def test_wire_shapes_follow_the_contract(admin_server: AdminServer) -> None:
     created = request(admin_server, "POST", "principals", json={"name": "wire", "kind": "agent"})
     assert created.status_code == 201
-    assert set(created.json()) == {"name", "kind", "description", "admin", "disabled", "created", "legacy", "tokens"}
+    assert set(created.json()) == {"name", "kind", "description", "admin", "disabled", "created", "tokens"}
 
     issued = request(admin_server, "POST", "principals/wire/tokens", json={"expires": "30d", "description": "w"})
     assert issued.status_code == 201 and issued.headers["cache-control"] == "no-store"
@@ -565,7 +564,7 @@ def test_wire_shapes_follow_the_contract(admin_server: AdminServer) -> None:
     grant = request(admin_server, "POST", "grants", json={"principal": "wire", "key": "app.*"})
     assert grant.status_code == 201
     assert set(grant.json()) == {
-        "id", "principal", "key", "tag", "actions", "expires", "description", "created", "expired", "legacy",
+        "id", "principal", "key", "tag", "actions", "expires", "description", "created", "expired",
     }  # fmt: skip
     check = request(admin_server, "POST", "check", json={"principal": "wire", "action": "read", "name": "app.x"})
     assert check.json() == {"allowed": True, "reason": "granted", "grant": grant.json()["id"]}

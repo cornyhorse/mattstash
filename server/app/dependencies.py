@@ -10,7 +10,7 @@ from typing import Annotated, Any, Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from mattstash import MattStash
-from mattstash.authz import LEGACY_KIND, Decision, Policy, Principal, admin_decision, evaluate, is_valid_token_id
+from mattstash.authz import Policy, Principal, admin_decision, evaluate, is_valid_token_id
 from mattstash.authz.models import utcnow
 
 from .accesslog import STATE_CHANGING, commit, note
@@ -83,7 +83,6 @@ class Caller:
     principal: Principal
     policy: Policy
     token_id: Optional[str] = None
-    unscoped: bool = False  # authenticated by a legacy key that always had full access (env / plain-list key)
 
 
 async def authenticate_request(
@@ -107,7 +106,7 @@ async def authenticate_request(
         request.state.auth = result
     if result.principal is None or result.policy is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication failed")
-    return Caller(result.principal, result.policy, result.token_id, result.unscoped)
+    return Caller(result.principal, result.policy, result.token_id)
 
 
 def _forbidden() -> HTTPException:
@@ -180,18 +179,11 @@ def body_fields(route: str, body: dict[str, Any]) -> dict[str, Any]:
     return {"key": _text(body.get("principal"))}  # admin.check: the only other route in _BODY_LOGGED
 
 
-def require_admin(route: str, *, scoped_legacy_ok: bool = False) -> Callable[..., Caller]:
-    """Dependency factory for ``/admin/*``: the caller must be an enabled admin of a kind that may administer.
-
-    In v1 ``ops: ["admin"]`` meant only ``/admin/reload`` and ``/admin/invalidate-api-key-cache``. A legacy principal
-    that came from a v1 JSON policy therefore passes only where ``scoped_legacy_ok`` is set (those two routes); the
-    env key and plain-list keys always had full access and may use every admin endpoint.
-    """
+def require_admin(route: str) -> Callable[..., Caller]:
+    """Dependency factory for ``/admin/*``: the caller must be an enabled admin of a kind that may administer."""
 
     async def dependency(request: Request, caller: Annotated[Caller, Depends(authenticate_request)]) -> Caller:
         decision = admin_decision(caller.principal)
-        if decision.allowed and caller.principal.kind == LEGACY_KIND and not caller.unscoped and not scoped_legacy_ok:
-            decision = Decision(False, "legacy-scoped")
         fields: dict[str, Any] = {
             "key": request.path_params.get("name") or request.path_params.get("grant_id"),
             "target_token": None,

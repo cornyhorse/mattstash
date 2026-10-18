@@ -709,13 +709,6 @@ def test_lockout_is_refused(policy_path: Path, mutate: Any) -> None:
     assert policy_path.read_bytes() == before
 
 
-def test_lockout_is_allowed_with_a_legacy_admin(policy_path: Path) -> None:
-    bootstrap(policy_path)
-    with edit_policy(policy_path, now=NOW, legacy_admin_available=True) as editor:
-        editor.remove_principal("matt-mac")
-    assert load_policy(policy_path).principals == ()
-
-
 def test_lockout_is_allowed_when_another_admin_remains(policy_path: Path) -> None:
     bootstrap(policy_path)
     with edit_policy(policy_path, now=NOW) as editor:
@@ -733,9 +726,8 @@ def test_an_expired_only_token_does_not_count_as_a_usable_admin() -> None:
     assert not has_usable_admin(policy, NOW)
     assert has_usable_admin(policy, NOW - timedelta(seconds=1))
     with pytest.raises(PolicyError, match="would leave no admin"):
-        check_lockout(policy, NOW, False)
-    check_lockout(policy, NOW, True)
-    check_lockout(policy, NOW - timedelta(seconds=1), False)
+        check_lockout(policy, NOW)
+    check_lockout(policy, NOW - timedelta(seconds=1))
 
 
 def test_agents_never_count_as_admins() -> None:

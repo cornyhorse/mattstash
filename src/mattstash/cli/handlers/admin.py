@@ -43,10 +43,10 @@ from ...authz import (
     parse_duration_or_time,
     parse_token,
     read_records,
+    v1_admin_ids,
     validate_pattern,
     validate_tag,
 )
-from ...authz.legacy import v1_admin_ids
 from ...authz.models import utcnow
 from ...authz.store import MIN_IMPORT_KEY_LENGTH_FLOOR
 from ...utils.exceptions import ServerError
@@ -103,7 +103,6 @@ def _principal_out(principal: Principal, now: datetime) -> Data:
         "admin": principal.admin,
         "disabled": principal.disabled,
         "created": _ts(principal.created),
-        "legacy": False,
         "tokens": [_token_out(token, now) for token in principal.tokens],
     }
 
@@ -119,7 +118,6 @@ def _grant_out(grant: Grant, now: datetime) -> Data:
         "description": grant.description,
         "created": _ts(grant.created),
         "expired": grant.is_expired(now),
-        "legacy": False,
     }
 
 
@@ -745,8 +743,6 @@ class AdminHandler(BaseHandler):
             f"created:     {_clean(item.get('created'))}",
             f"description: {_clean(item.get('description'))}",
         ]
-        if item.get("legacy"):
-            lines.append("legacy:      yes (configured outside the policy file)")
         tokens = item.get("tokens") or []
         grants = item.get("grants") or []
         lines += ["", "tokens:", _indent(_token_table(tokens)) if tokens else "  (none)", "", "grants:"]

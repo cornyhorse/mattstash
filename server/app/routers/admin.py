@@ -18,7 +18,6 @@ from typing import Annotated, Any, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from mattstash.authz import (
-    LEGACY_KIND,
     Grant,
     PolicyEditor,
     PolicyError,
@@ -48,7 +47,7 @@ from ..models.requests import (
     UpdatePrincipalRequest,
 )
 from ..rate_limit import limiter
-from ..security.api_keys import AuthState, check_edit, get_auth_state, reload_key_policy_now
+from ..security.api_keys import AuthState, build_auth_state, get_auth_state, reload_key_policy_now
 
 logger = logging.getLogger("mattstash.api")
 router = APIRouter()
@@ -67,7 +66,7 @@ _NOT_ACTIVE = (
 # ---------------------------------------------------------------------------
 
 
-@router.post("/admin/reload", dependencies=[Depends(require_admin("admin.reload", scoped_legacy_ok=True))])
+@router.post("/admin/reload", dependencies=[Depends(require_admin("admin.reload"))])
 @limiter.limit("10/minute")
 def force_reload(request: Request) -> dict[str, str]:
     """
@@ -94,7 +93,7 @@ def force_reload(request: Request) -> dict[str, str]:
 
 @router.post(
     "/admin/invalidate-api-key-cache",
-    dependencies=[Depends(require_admin("admin.invalidate-api-key-cache", scoped_legacy_ok=True))],
+    dependencies=[Depends(require_admin("admin.invalidate-api-key-cache"))],
 )
 @limiter.limit("10/minute")
 def invalidate_keys(request: Request) -> dict[str, str | int]:
@@ -146,7 +145,6 @@ def _principal_out(principal: Principal, now: datetime) -> dict[str, Any]:
         "admin": principal.admin,
         "disabled": principal.disabled,
         "created": _time(principal.created),
-        "legacy": principal.kind == LEGACY_KIND,
         "tokens": [_token_out(token, now) for token in principal.tokens],
     }
 
@@ -162,7 +160,6 @@ def _grant_out(grant: Grant, now: datetime) -> dict[str, Any]:
         "description": grant.description,
         "created": _time(grant.created),
         "expired": grant.is_expired(now),
-        "legacy": grant.id.startswith("legacy:"),
     }
 
 
@@ -174,8 +171,8 @@ def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=printable(detail))
 
 
-def _legacy_refusal() -> HTTPException:
-    return _bad_request("Legacy keys are configured through MATTSTASH_API_KEY / MATTSTASH_API_KEYS_FILE, not here")
+def _conflict(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=printable(detail))
 
 
 def _token_id_or_404(token_id: str) -> None:
@@ -206,17 +203,16 @@ def _editing(request: Request, *, reduces: bool = False) -> Iterator[PolicyEdito
     answered ``409``: the caller must not believe the access is gone while the old policy still allows it. Any other
     change is answered normally but flagged (:func:`_reply`), since it does no harm that it is not active yet.
     """
-    if not config.POLICY_FILE:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No policy file configured (MATTSTASH_POLICY_FILE)"
-        )
-    state = get_auth_state()
+    assert config.POLICY_FILE, "the server does not start without MATTSTASH_POLICY_FILE"
     try:
-        with edit_policy(config.POLICY_FILE, legacy_admin_available=state.legacy_admin) as editor:
+        with edit_policy(config.POLICY_FILE) as editor:
             yield editor
-            # What the loader would refuse once the file is merged with the legacy keys (a name clash), checked
-            # before the editor saves: an admin edit must never produce a policy the server will not load.
-            check_edit(editor.policy, state)
+            # Check-then-save: build the state the server would run on from the EDITED policy, exactly as the loader
+            # does, before the editor saves. A change the server could not load is refused and nothing is written.
+            try:
+                build_auth_state(editor.policy, None)
+            except ValueError as exc:
+                raise _conflict(f"The change would leave a policy the server cannot load: {exc}") from None
     except PolicyError as exc:
         raise _bad_request(str(exc)) from None  # safe by construction: never a token or a hash
     except FileNotFoundError:
@@ -243,8 +239,8 @@ def _editing(request: Request, *, reduces: bool = False) -> Iterator[PolicyEdito
 
 
 def _activate() -> bool:
-    """Make the saved file the active policy now. False if that failed (e.g. a broken legacy source): the change IS
-    saved, and the caller decides how to tell the admin."""
+    """Make the saved file the active policy now. False if that failed (a race with another writer, an I/O error): the
+    change IS saved, and the caller decides how to tell the admin. The check before saving makes that rare."""
     try:
         reload_key_policy_now()
     except Exception as exc:
@@ -266,12 +262,10 @@ def _reply(
 
 
 def _file_principal(editor: PolicyEditor, name: str) -> Principal:
-    """The principal in the file as it is now on disk (404 if absent; legacy principals live outside the file)."""
+    """The principal in the file as it is now on disk (404 if absent)."""
     found = editor.policy.principal(name)
     if found is None:
-        if (current := get_auth_state().policy.principal(name)) is not None and current.kind == LEGACY_KIND:
-            raise _legacy_refusal()
-        raise _not_found("Principal", name)  # also a "legacy-..." name that does not exist
+        raise _not_found("Principal", name)
     return found
 
 
@@ -508,8 +502,6 @@ def create_grant(request: Request, body: CreateGrantRequest) -> JSONResponse:
 def remove_grant(request: Request, grant_id: str) -> JSONResponse:
     with _editing(request, reduces=True) as editor:
         if all(g.id != grant_id for g in editor.policy.grants):
-            if any(g.id == grant_id for g in get_auth_state().policy.grants):  # a legacy key's synthetic grant
-                raise _legacy_refusal()
             raise _not_found("Grant", grant_id)
         editor.remove_grant(grant_id)
     return _reply(request, {"detail": f"Grant removed: {grant_id}"})

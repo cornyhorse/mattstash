@@ -1,11 +1,9 @@
-"""The v1 key sources (``MATTSTASH_API_KEY``, a plain keys file, a v1 JSON key policy) expressed as principals.
+"""Reading a v1 JSON key policy, for ``mattstash admin migrate-keys`` (the only thing left of the v1 key sources).
 
-This is a copy of the parsing in ``server/app/security/api_keys.py`` that returns principals and synthetic grants
-instead of the v1 ``Principal``/``KeyPolicy``, so the server can evaluate legacy and v2 principals with one function
-(:func:`mattstash.authz.evaluate`). Validation rules and error messages are kept as they were; every error is a
-:class:`PolicyError`, which is a ``ValueError`` like before.
-
-Legacy principals live in memory only and are never written to a policy file. Keys are held as SHA-256 digests.
+The server no longer accepts ``MATTSTASH_API_KEY``, ``MATTSTASH_API_KEYS_FILE`` or a v1 key policy as credentials
+(``docs/upgrading-to-0.3.md``). What remains is the parser of the v1 JSON format and :func:`migrate_v1`, which turns
+its entries into principals and grants. Validation rules and error messages are kept as they were; every error is a
+:class:`PolicyError`.
 """
 
 import hashlib
@@ -18,23 +16,14 @@ from datetime import datetime
 from typing import Any, Optional
 
 from .errors import PolicyError
-from .models import KINDS, LEGACY_KIND, Grant, Policy, Principal, Token
+from .models import KINDS, Grant, Policy, Principal, Token
 from .store import validate_name, validate_policy
 from .tokens import generate_token
 
 VALID_OPS = frozenset({"read", "write", "delete", "admin"})
-_ALL_ACTIONS = frozenset({"list", "read", "write", "delete"})
 _ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}", re.ASCII)
 _PREFIX_RE = re.compile(r"[A-Za-z0-9_.-]{1,255}", re.ASCII)
 _SHA256_HEX_RE = re.compile(r"[0-9a-fA-F]{64}", re.ASCII)
-
-
-@dataclass(frozen=True)
-class LegacyKey:
-    """A legacy credential: the SHA-256 digest of the key and the principal that owns it."""
-
-    digest: bytes
-    principal: Principal
 
 
 @dataclass(frozen=True)
@@ -57,33 +46,8 @@ def _digest(key: str, where: str) -> bytes:
 def _check_length(key: str, where: str, min_length: int) -> None:
     if len(key) < min_length:
         raise PolicyError(
-            f"API key {where} is shorter than {min_length} characters; "
-            "generate one with `python -m app.keytool` or `openssl rand -base64 32`"
+            f"API key {where} is shorter than {min_length} characters; generate one with `openssl rand -base64 32`"
         )
-
-
-def _synthetic_grant(principal: str, pattern: str, actions: frozenset[str], suffix: str = "") -> Grant:
-    return Grant(
-        id=f"legacy:{principal}{suffix}",
-        principal=principal,
-        key=pattern,
-        tag=None,
-        actions=actions,
-        description="implicit grant of a legacy key",
-    )
-
-
-def _full_access(key: str, name: str, where: str) -> tuple[LegacyKey, tuple[Grant, ...]]:
-    """A legacy full-access key: admin, with the implicit grant ``*`` on every action. The name is positional
-    (``legacy-env``, ``legacy-1``...), never derived from the key."""
-    principal = Principal(name=name, kind=LEGACY_KIND, description="legacy full-access API key", admin=True)
-    return LegacyKey(_digest(key, where), principal), (_synthetic_grant(name, "*", _ALL_ACTIONS),)
-
-
-def legacy_from_env_key(key: str, min_length: int) -> tuple[LegacyKey, tuple[Grant, ...]]:
-    """``MATTSTASH_API_KEY``: principal ``legacy-env``, admin, grant ``*`` with every action."""
-    _check_length(key, "from MATTSTASH_API_KEY", min_length)
-    return _full_access(key, "legacy-env", "from MATTSTASH_API_KEY")
 
 
 def _actions_for_ops(ops: frozenset[str]) -> frozenset[str]:
@@ -189,52 +153,6 @@ def _first_content_character(text: str) -> str:
 def _strip_comments(text: str) -> str:
     """'#' comment lines are allowed in a JSON policy file too (they are not JSON, so drop them first)."""
     return "\n".join(line for line in text.splitlines() if not line.strip().startswith("#"))
-
-
-def check_duplicate_keys(keys: list[LegacyKey]) -> None:
-    """Raise if the same key (digest) appears twice. Call it on the combined list when several sources are used."""
-    digests = [k.digest for k in keys]
-    if len(set(digests)) != len(digests):
-        raise PolicyError("The same API key is configured more than once")
-
-
-def legacy_from_keys_file_text(text: str, min_length: int) -> tuple[list[LegacyKey], list[Grant], bool]:
-    """Parse a keys file: a plain list (one key per line) or a v1 JSON policy.
-
-    Returns the keys, their synthetic grants, and whether any key is a plain full-access key. That flag is what
-    ``MATTSTASH_REQUIRE_SCOPED_KEYS`` refuses, exactly as v1 did: a JSON key without prefixes counts as scoped
-    (its ``ops`` limit it), a plain-list key does not.
-    """
-    text = text.removeprefix("﻿")  # tolerate a BOM written by some editors
-    keys: list[LegacyKey] = []
-    grants: list[Grant] = []
-    if _first_content_character(text) in ("{", "["):
-        for entry in _parse_v1_json(_strip_comments(text), min_length):
-            principal = Principal(
-                name=entry.key_id,
-                kind=LEGACY_KIND,
-                description="legacy scoped API key",
-                admin="admin" in entry.ops,
-            )
-            keys.append(LegacyKey(entry.digest, principal))
-            for n, (pattern, actions) in enumerate(_entry_grants(entry), start=1):
-                suffix = "" if entry.prefixes is None else f":{n}"
-                grants.append(_synthetic_grant(entry.key_id, pattern, actions, suffix))
-        check_duplicate_keys(keys)
-        return keys, grants, False
-
-    for number, raw in enumerate(text.splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if re.search(r"\s", line):
-            raise PolicyError(f"API key on line {number} of the API keys file contains whitespace; one key per line")
-        _check_length(line, f"on line {number} of the API keys file", min_length)
-        key, key_grants = _full_access(line, f"legacy-{len(keys) + 1}", f"on line {number} of the API keys file")
-        keys.append(key)
-        grants.extend(key_grants)
-    check_duplicate_keys(keys)
-    return keys, grants, bool(keys)
 
 
 def v1_admin_ids(text: str, min_length: int, only: Iterable[str]) -> list[str]:

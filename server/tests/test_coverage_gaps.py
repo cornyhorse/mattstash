@@ -5,7 +5,6 @@ Everything here runs in-process (``uvicorn.run`` is mocked; no sockets are opene
 """
 
 import inspect
-import io
 import json
 import logging
 import os
@@ -157,42 +156,6 @@ def test_python_dash_m_app_runs_main(uvicorn_run, server_settings, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# python -m app.keytool
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "stdin",
-    [pytest.param("", id="empty"), pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf")],
-)
-def test_keytool_stdin_without_a_key_is_a_usage_error(monkeypatch, capsys, stdin):
-    from app.keytool import main
-
-    monkeypatch.setattr(sys, "stdin", io.StringIO(stdin))
-    with pytest.raises(SystemExit) as exit_info:
-        main(["--id", "ci", "--stdin"])
-
-    assert exit_info.value.code == 2  # argparse usage error
-    captured = capsys.readouterr()
-    assert "no key received on stdin" in captured.err
-    assert captured.out == ""  # no policy entry is printed for an empty key
-
-
-def test_python_dash_m_keytool_prints_the_policy_entry_and_exits_zero(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["keytool", "--id", "ci", "--ops", "read,write", "--prefix", "ci-"])
-    monkeypatch.delitem(sys.modules, "app.keytool", raising=False)  # see test_python_dash_m_app_runs_main
-
-    with pytest.raises(SystemExit) as exit_info:
-        runpy.run_module("app.keytool", run_name="__main__")
-
-    assert exit_info.value.code == 0
-    captured = capsys.readouterr()
-    entry = json.loads(captured.out)
-    assert entry["id"] == "ci" and entry["ops"] == ["read", "write"] and entry["prefixes"] == ["ci-"]
-    assert "API key (shown once" in captured.err
-
-
-# ---------------------------------------------------------------------------
 # authenticate_request without SecurityMiddleware (app/dependencies.py)
 # ---------------------------------------------------------------------------
 
@@ -214,7 +177,7 @@ def test_header_is_verified_by_the_dependency_when_no_middleware_ran(bare_client
     response = bare_client.get("/whoami", headers=H)
 
     assert response.status_code == 200
-    assert response.json() == {"id": "legacy-env", "on_request_state": "legacy-env"}
+    assert response.json() == {"id": "full", "on_request_state": "full"}
 
 
 @pytest.mark.parametrize("headers", [{}, {"X-API-Key": ""}, {"X-API-Key": "x" * 40}, {"X-API-Key": FULL_KEY + "x"}])

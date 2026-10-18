@@ -80,7 +80,7 @@ def test_principal_list_show_json_and_no_hashes(run: Runner, bootstrapped: Path)
     assert "matt" in table and "human-device" in table and "an agent" in table
     data = json.loads(run(*admin(bootstrapped, "principal", "list", "--json")).out)
     assert [p["name"] for p in data] == ["matt", "bot", "ansible"]
-    assert data[0]["legacy"] is False and len(data[0]["tokens"]) == 1
+    assert "legacy" not in data[0] and len(data[0]["tokens"]) == 1
     assert "hash" not in json.dumps(data) and "hmac-sha256" not in json.dumps(data)
     shown = json.loads(run(*admin(bootstrapped, "principal", "show", "bot", "--json")).out)
     assert shown["name"] == "bot" and shown["grants"] == []
@@ -320,7 +320,7 @@ def test_grant_add_list_remove(run: Runner, bootstrapped: Path):
     assert "key:firefly.*" in table and "tag:ops" in table and "list,read" in table and "finance" in table
     mine = json.loads(run(*admin(bootstrapped, "grant", "list", "--principal", "bot", "--json")).out)
     assert [g["id"] for g in mine] == [grant_id]
-    assert mine[0]["actions"] == ["list", "read"] and mine[0]["legacy"] is False and mine[0]["expired"] is False
+    assert mine[0]["actions"] == ["list", "read"] and "legacy" not in mine[0] and mine[0]["expired"] is False
     assert run(*admin(bootstrapped, "grant", "list", "--principal", "nobody")).code == 2
     removed = run(*admin(bootstrapped, "grant", "remove", grant_id))
     assert removed.code == 0 and grant_id in removed.out

@@ -2,8 +2,6 @@
 
 Default deny. A request is allowed when at least one unexpired grant of the (enabled) principal includes the action
 and matches the name or one of the entry's tags. There are no deny rules, so the order of grants never matters.
-Legacy principals are evaluated the same way: they come with synthetic grants (``legacy.py``), and only the reason
-differs, so audit logs can show which requests still use a v1 key.
 """
 
 from collections.abc import Iterable
@@ -11,10 +9,10 @@ from datetime import datetime
 from typing import Optional
 
 from .errors import PolicyError
-from .models import ACTIONS, LEGACY_KIND, TAG_ACTIONS, Decision, Grant, Policy, Principal, utcnow
+from .models import ACTIONS, TAG_ACTIONS, Decision, Grant, Policy, Principal, utcnow
 from .patterns import pattern_matches
 
-_ADMIN_KINDS = ("human-device", LEGACY_KIND)
+_ADMIN_KINDS = ("human-device",)
 
 
 def can_admin(principal: Principal) -> bool:
@@ -28,7 +26,7 @@ def admin_decision(principal: Principal) -> Decision:
         return Decision(False, "disabled")
     if not can_admin(principal):
         return Decision(False, "not-admin")
-    return Decision(True, "legacy" if principal.kind == LEGACY_KIND else "granted")
+    return Decision(True, "granted")
 
 
 def _decide(
@@ -46,7 +44,7 @@ def _decide(
         matched = grant.key is not None and pattern_matches(grant.key, name)
         matched = matched or (grant.tag is not None and grant.tag in tags)
         if matched:
-            return Decision(True, "legacy" if principal.kind == LEGACY_KIND else "granted", grant.id)
+            return Decision(True, "granted", grant.id)
     return Decision(False, "no-grant")
 
 
@@ -107,7 +105,5 @@ def explain(
     decision = evaluate(policy, principal, action, name, tags, now)
     subject = f"{principal.name} ({principal.kind}) {action} {name!r}"
     if decision.allowed:
-        return f"allowed: {subject} by grant {decision.grant_id}" + (
-            " (legacy key)" if decision.reason == "legacy" else ""
-        )
+        return f"allowed: {subject} by grant {decision.grant_id}"
     return f"denied: {subject}: {decision.reason}"

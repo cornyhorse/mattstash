@@ -4,6 +4,7 @@ import errno
 import json
 import logging
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -31,7 +32,7 @@ def log_path(tmp_path) -> str:
 @pytest.fixture
 def lc(make_client, policy_path, log_path, data):
     """Client for the policy file with a file sink."""
-    return make_client(API_KEY=None, POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
+    return make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
 
 
 def file_records(path: str) -> list[dict]:
@@ -151,7 +152,7 @@ def test_authentication_failures_are_logged_with_the_reason_and_no_principal(lc,
 
 
 def test_throttled_requests_are_logged(make_client, policy_path, policy_tokens, log_path, data):
-    client = make_client(API_KEY=None, POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, AUTH_FAIL_LIMIT=2)
+    client = make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, AUTH_FAIL_LIMIT=2)
     for _ in range(2):
         client.get("/api/v1/credentials", headers={"X-API-Key": "wrong"})
     blocked = client.get("/api/v1/credentials", headers=bearer(policy_tokens["hermes"]))  # even a valid token
@@ -163,7 +164,7 @@ def test_throttled_requests_are_logged(make_client, policy_path, policy_tokens, 
 
 
 def test_the_rate_limiter_429_is_logged_with_the_principal(make_client, policy_path, policy_tokens, log_path, data):
-    client = make_client(API_KEY=None, POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, RATE_LIMIT="2/minute")
+    client = make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, RATE_LIMIT="2/minute")
     h = bearer(policy_tokens["runner"])
     codes = [client.get("/api/v1/credentials", headers=h).status_code for _ in range(3)]
     assert codes == [200, 200, 429]
@@ -268,7 +269,7 @@ def test_a_crash_is_logged_from_finally_with_status_500(make_client, log_path, d
         response = client.get("/api/v1/boom", headers=auth(FULL_KEY))
     assert response.status_code == 500
     record = last(log_path)
-    assert (record["principal"], record["status"]) == ("legacy-env", 500)
+    assert (record["principal"], record["status"]) == ("full", 500)
     assert "internal-secret-detail" not in Path(log_path).read_text()
 
 
@@ -316,39 +317,38 @@ def test_the_error_logged_when_the_sink_fails_has_no_secrets(lc, monkeypatch, ca
 
 
 # ---------------------------------------------------------------------------
-# legacy keys are marked
+# imported and migrated keys
 # ---------------------------------------------------------------------------
 
 
-def test_legacy_requests_carry_a_deprecation_header_and_kind_legacy(make_client, log_path, data):
+def test_imported_key_requests_log_the_token_id_and_carry_no_deprecation_header(make_client, log_path, data):
+    """The default principal's key was imported (``sha256:`` scheme). It is logged like any token: by principal, kind,
+    token id and grant. Nothing marks the response any more (the ``Deprecation`` header went with the legacy keys)."""
     client = make_client(ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
     ok = client.get("/api/v1/credentials/other", headers=auth(FULL_KEY))
     missing = client.get("/api/v1/credentials/zzz", headers=auth(FULL_KEY))
-    created = client.post("/api/v1/credentials/legacy-new", json={"value": "v"}, headers=auth(FULL_KEY))
+    created = client.post("/api/v1/credentials/some-new", json={"value": "v"}, headers=auth(FULL_KEY))
     for response in (ok, missing, created):
-        assert response.headers["deprecation"] == "true"
-    unauthenticated = client.get("/api/v1/credentials/other", headers=auth("wrong-key"))
-    assert "deprecation" not in unauthenticated.headers
+        assert "deprecation" not in response.headers and response.headers["x-content-type-options"] == "nosniff"
     records = file_records(log_path)
-    assert [r["kind"] for r in records[:3]] == ["legacy"] * 3
-    assert all(r["principal"] == "legacy-env" and "token" not in r for r in records[:3])
-    assert records[0]["grant"] == "legacy:legacy-env"
+    assert [r["kind"] for r in records[:3]] == ["human-device"] * 3
+    assert all(r["principal"] == "full" and re.fullmatch(r"[a-z2-7]{12}", r["token"]) for r in records[:3])
+    assert records[0]["grant"].startswith("g_")
+    assert FULL_KEY not in Path(log_path).read_text()
 
 
 def test_token_requests_have_no_deprecation_header(lc, policy_tokens):
     assert "deprecation" not in lc.get("/api/v1/credentials", headers=bearer(policy_tokens["hermes"])).headers
 
 
-def test_migrated_v1_keys_are_not_legacy_kind_but_report_their_token(
-    make_client, tmp_path, key_policy_file, log_path, data
-):
+def test_migrated_v1_keys_report_their_token(make_client, tmp_path, key_policy_file, log_path, data):
     from mattstash.authz import edit_policy
 
     from .conftest import APP_KEY
 
     with edit_policy(tmp_path / "migrated.json", create=True) as ed:
         ed.import_v1(key_policy_file.read_text(), 32, "human-device")
-    client = make_client(API_KEY=None, POLICY_FILE=str(tmp_path / "migrated.json"), ACCESS_LOG_FILE=log_path)
+    client = make_client(POLICY_FILE=str(tmp_path / "migrated.json"), ACCESS_LOG_FILE=log_path)
     response = client.get("/api/v1/credentials/app-db", headers=auth(APP_KEY))
     record = last(log_path)
     assert (record["principal"], record["kind"], record["decision"]) == ("app", "human-device", "allowed")
@@ -403,7 +403,6 @@ def test_rotation_keeps_the_newest_backups_and_everything_stays_0600(make_client
 
 def test_the_admin_endpoint_reads_across_rotated_files(make_client, policy_path, policy_tokens, log_path, data):
     client = make_client(
-        API_KEY=None,
         POLICY_FILE=policy_path,
         ACCESS_LOG_FILE=log_path,
         ACCESS_LOG_MAX_BYTES=1024,
@@ -424,7 +423,7 @@ def test_lines_also_go_to_stdout_in_every_mode(make_client, db_path, caplog):
     client.get("/api/v1/credentials", headers=auth(FULL_KEY))
     client.get("/api/v1/credentials", headers=auth("wrong"))
     lines = [json.loads(r.getMessage()) for r in caplog.records if r.name == "mattstash.access"]
-    assert [(line["principal"], line["status"]) for line in lines] == [("legacy-env", 200), ("-", 401)]
+    assert [(line["principal"], line["status"]) for line in lines] == [("full", 200), ("-", 401)]
 
 
 def test_a_log_file_that_cannot_be_opened_stops_startup(configure, tmp_path):

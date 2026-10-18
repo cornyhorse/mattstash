@@ -49,7 +49,7 @@ def _cheap_kdf(_cheap_blank_database: str) -> Generator[None, None, None]:
 
 DB_PASSWORD = "test-db-password-123"
 # Keys are >= 32 chars (the enforced minimum); each has a distinct role in the policy below.
-FULL_KEY = "full-access-legacy-key-" + "a" * 20
+FULL_KEY = "full-access-test-key---" + "a" * 20
 READ_KEY = "read-only-scoped-key--" + "b" * 20
 APP_KEY = "app-prefix-scoped-key--" + "c" * 20
 WRITE_KEY = "writer-scoped-key------" + "d" * 20
@@ -109,20 +109,6 @@ def temp_password_file() -> Generator[Path, None, None]:
     """Create a temporary password file."""
     with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
         f.write("test_password_123")
-        temp_path = Path(f.name)
-    yield temp_path
-    temp_path.unlink(missing_ok=True)
-
-
-@pytest.fixture
-def temp_api_keys_file() -> Generator[Path, None, None]:
-    """Create a temporary legacy API keys file."""
-    with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-        f.write("# API Keys\n")
-        f.write("test-key-1\n")
-        f.write("test-key-2\n")
-        f.write("# Another comment\n")
-        f.write("test-key-3\n")
         temp_path = Path(f.name)
     yield temp_path
     temp_path.unlink(missing_ok=True)
@@ -225,8 +211,25 @@ def key_policy_file(tmp_path) -> Path:
     return path
 
 
+def write_default_policy(path: Path) -> str:
+    """The policy the ``client`` fixtures run on: principal ``full`` (human-device admin, ``*`` on every action) whose
+    token is ``FULL_KEY``, imported as a plain key (the ``sha256:`` scheme), so ``auth()`` works as it always did."""
+    from mattstash.authz import edit_policy
+
+    with edit_policy(path, create=True) as ed:
+        ed.add_principal("full", "human-device", "default test principal", admin=True)
+        ed.add_grant("full", key="*", actions=["list", "read", "write", "delete"])
+        ed.import_token("full", FULL_KEY)
+    return str(path)
+
+
 @pytest.fixture
-def configure(monkeypatch, db_path):
+def default_policy(tmp_path) -> str:
+    return write_default_policy(tmp_path / "default-policy.json")
+
+
+@pytest.fixture
+def configure(monkeypatch, db_path, default_policy):
     """Set server configuration for a test (class attributes are read at request time)."""
     from app.config import Config
 
@@ -235,8 +238,7 @@ def configure(monkeypatch, db_path):
             "DB_PATH": str(db_path),
             "KDBX_PASSWORD": DB_PASSWORD,
             "KDBX_PASSWORD_FILE": None,
-            "API_KEY": FULL_KEY,
-            "API_KEYS_FILE": None,
+            "POLICY_FILE": default_policy,
             "DB_POLL_INTERVAL": 0,
         }
         defaults.update(overrides)
@@ -267,13 +269,13 @@ def make_client(configure) -> Generator[Callable[..., TestClient], None, None]:
 
 @pytest.fixture
 def client(make_client) -> TestClient:
-    """Default: one legacy full-access key, read-only mode."""
+    """Default: the ``full`` principal (``FULL_KEY``), read-only mode."""
     return make_client()
 
 
 @pytest.fixture
 def rw_client(make_client) -> TestClient:
-    """Default key, writes enabled."""
+    """Default principal, writes enabled."""
     return make_client(ALLOW_WRITES=True)
 
 

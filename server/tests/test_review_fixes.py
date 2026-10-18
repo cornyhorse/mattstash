@@ -8,11 +8,12 @@ from pathlib import Path
 
 import pytest
 from mattstash import MattStash
-from mattstash.authz import edit_policy, load_policy
+from mattstash.authz import Policy, edit_policy, load_policy
 from starlette.testclient import TestClient
 
 from app import accesslog
 from app.main import create_app
+from app.security import api_keys
 
 from .conftest import DB_PASSWORD, FULL_KEY, auth
 
@@ -44,7 +45,7 @@ def log_path(tmp_path) -> str:
 @pytest.fixture
 def lc(make_client, policy_path, policy_tokens, log_path, data):
     """Client acting as ``matt`` (admin) against the policy file; writes on; a file sink."""
-    client = make_client(API_KEY=None, POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
+    client = make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path, ALLOW_WRITES=True)
     client.headers.update(bearer(policy_tokens["matt"]))
     return client
 
@@ -55,17 +56,20 @@ def lc(make_client, policy_path, policy_tokens, log_path, data):
 
 
 @pytest.fixture
-def broken(make_client, policy_path, policy_tokens, tmp_path, data):
-    """Client whose legacy key source becomes unreadable AFTER startup, so every reload fails but the server keeps
-    serving the previous policy. ``matt`` (policy file) administers; a spare admin and a grant exist to remove."""
+def broken(make_client, policy_path, policy_tokens, data, monkeypatch):
+    """Client whose policy file cannot be loaded AFTER startup (an I/O error, a race with another writer), so every
+    reload fails but the server keeps serving the previous policy. ``matt`` administers; a spare admin and a grant
+    exist to remove. The check before saving still passes (it needs no I/O): only the reload afterwards fails."""
     with edit_policy(policy_path) as ed:
         ed.add_principal("deputy", "human-device", admin=True)
         ed.issue_token("deputy")
-    keys = tmp_path / "keys.txt"
-    keys.write_text("k" * 40 + "\n")
-    client = make_client(API_KEY=None, API_KEYS_FILE=str(keys), POLICY_FILE=policy_path, ALLOW_WRITES=True)
+    client = make_client(POLICY_FILE=policy_path, ALLOW_WRITES=True)
     client.headers.update(bearer(policy_tokens["matt"]))
-    keys.write_text("{this is not valid")
+
+    def unreadable():
+        raise OSError("input/output error")
+
+    monkeypatch.setattr(api_keys, "load_auth_state", unreadable)
     return client
 
 
@@ -133,21 +137,68 @@ def test_a_mixed_patch_that_reduces_access_is_409(broken, policy_path):
 # ---------------------------------------------------------------------------
 
 
-def test_a_principal_named_like_a_legacy_key_is_refused_and_nothing_is_saved(
-    make_client, key_policy_file, policy_path, policy_tokens
+CANNOT_LOAD = "The change would leave a policy the server cannot load: "
+
+CHANGES = [
+    ("POST", "/principals", {"name": "fresh", "kind": "agent"}),
+    ("PATCH", "/principals/hermes", {"description": "renamed"}),
+    ("DELETE", "/principals/hermes", None),
+    ("POST", "/principals/lister/tokens", {}),
+    ("DELETE", "/principals/hermes/tokens/{hermes}", None),
+    ("POST", "/principals/hermes/tokens/{hermes}/rotate", {}),
+    ("POST", "/principals/lister/tokens/import", {"key": "i" * 40}),
+    ("POST", "/grants", {"principal": "lister", "key": "extra-*"}),
+    ("DELETE", "/grants/{grant}", None),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "body"), CHANGES, ids=[f"{m} {p}" for m, p, _ in CHANGES])
+def test_a_change_the_server_could_not_load_is_refused_before_anything_is_saved(
+    lc, monkeypatch, policy_path, policy_tokens, method, path, body
 ):
-    client = make_client(API_KEY=FULL_KEY, API_KEYS_FILE=str(key_policy_file), POLICY_FILE=policy_path)
-    admin = bearer(policy_tokens["matt"])
-    before = Path(policy_path).read_bytes()
-    for name, v1_id in (("reader", "reader"), ("Reader", "reader"), ("APP", "app"), ("Ops", "ops")):
-        response = client.post(f"{BASE}/principals", json={"name": name, "kind": "agent"}, headers=admin)
-        assert response.status_code == 400, name  # case-insensitive, like the loader
-        assert response.json() == {
-            "detail": f"the principal name {v1_id!r} is used more than once across the key sources"
-        }
-    assert Path(policy_path).read_bytes() == before
-    # the server still loads, and a non-clashing name is fine
-    assert client.post(f"{BASE}/principals", json={"name": "fresh", "kind": "agent"}, headers=admin).status_code == 201
+    """Check-then-save: the merged state is built from the EDITED policy inside the edit, before the editor saves."""
+    import app.routers.admin as admin_module
+
+    seen = []
+
+    def refuse(policy, signature):
+        seen.append(policy)
+        raise ValueError("no usable credential (test)")
+
+    monkeypatch.setattr(admin_module, "build_auth_state", refuse)
+    before_bytes, before = Path(policy_path).read_bytes(), load_policy(policy_path)
+    path = path.format(hermes=token_id(policy_tokens["hermes"]), grant=grant_of(policy_path, "hermes"))
+    response = lc.request(method, BASE + path, json=body)
+    assert response.status_code == 409
+    assert response.json() == {"detail": CANNOT_LOAD + "no usable credential (test)"}
+    assert Path(policy_path).read_bytes() == before_bytes  # nothing saved: not even the revision moved
+    assert load_policy(policy_path).revision == before.revision
+    assert len(seen) == 1 and seen[0] != before  # the check saw the policy the change would have produced
+    assert "mst_" not in response.text  # a token that was never saved is never shown
+    assert lc.get(f"{BASE}/principals").status_code == 200  # the running policy is untouched too
+
+
+def test_a_healthy_change_passes_the_check_and_is_saved(lc, monkeypatch, policy_path):
+    import app.routers.admin as admin_module
+
+    seen = []
+    real = admin_module.build_auth_state
+    monkeypatch.setattr(admin_module, "build_auth_state", lambda p, s: seen.append(p) or real(p, s))
+    response = lc.post(f"{BASE}/principals", json={"name": "fresh", "kind": "agent"})
+    assert response.status_code == 201 and "warning" not in response.json()
+    assert seen and seen[0].principal("fresh") is not None
+    assert load_policy(policy_path).principal("fresh") is not None
+
+
+def test_the_check_runs_the_loaders_own_rules(lc, policy_path):
+    """No request can ask for a policy without a usable credential: the library's lockout rule stops the obvious
+    ways first (400), and what is left is the loader's own refusal (409), which `build_auth_state` raises."""
+    from app.security.api_keys import build_auth_state
+
+    edited = load_policy(policy_path)
+    with pytest.raises(ValueError, match="no usable credential"):
+        build_auth_state(Policy(), None)
+    assert build_auth_state(edited, None).credential_count >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +286,7 @@ def test_each_request_is_exactly_one_line_and_write_lines_have_no_status(lc, log
 def test_requests_rejected_before_a_decision_keep_their_status_and_have_no_decision(
     make_client, policy_path, policy_tokens, log_path, data
 ):
-    ro = make_client(API_KEY=None, POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path)  # read-only server
+    ro = make_client(POLICY_FILE=policy_path, ACCESS_LOG_FILE=log_path)  # read-only server
     scribe = bearer(policy_tokens["scribe"])
     ro.post("/api/v1/credentials/app-new", json={"value": "v"}, headers=scribe)  # 405
     ro.post("/api/v1/credentials/bad name!", json={"value": "v"}, headers=scribe)  # read-only is checked first: 405
@@ -377,29 +428,6 @@ def test_a_grant_that_has_already_expired_is_refused(lc, policy_path, expires):
     assert lc.post(f"{BASE}/grants", json={"principal": "hermes", "key": "x", "expires": "1d"}).status_code == 201
 
 
-def test_legacy_names_that_do_not_exist_are_404_and_existing_ones_stay_400(make_client, policy_path, policy_tokens):
-    client = make_client(API_KEY=FULL_KEY, POLICY_FILE=policy_path)
-    admin = bearer(policy_tokens["matt"])
-    for method, path, body in (
-        ("PATCH", "/principals/legacy-nope", {"disabled": True}),
-        ("DELETE", "/principals/legacy-nope", None),
-        ("POST", "/principals/legacy-nope/tokens", {}),
-        ("DELETE", "/grants/legacy:legacy-nope", None),
-    ):
-        response = client.request(method, BASE + path, json=body, headers=admin)
-        assert response.status_code == 404, path
-    assert client.delete(f"{BASE}/principals/legacy-nope", headers=admin).json() == {
-        "detail": "Principal not found: legacy-nope"
-    }
-    for method, path, body in (
-        ("PATCH", "/principals/legacy-env", {"disabled": True}),
-        ("DELETE", "/principals/legacy-env", None),
-        ("DELETE", "/grants/legacy:legacy-env", None),
-    ):
-        response = client.request(method, BASE + path, json=body, headers=admin)
-        assert response.status_code == 400 and "Legacy keys are configured" in response.json()["detail"], path
-
-
 def test_empty_query_values_are_treated_as_absent(lc, log_path, policy_tokens):
     lc.get("/api/v1/credentials", headers=bearer(policy_tokens["hermes"]))  # something to find in the log
     plain = lc.get(f"{BASE}/access-log").json()
@@ -494,7 +522,7 @@ def test_a_client_that_goes_away_is_logged_without_a_made_up_status(make_client,
     assert sent == []  # nothing was answered
     (line,) = records(log_path)
     assert line["error"] == "client-disconnected" and "status" not in line
-    assert line["principal"] == "legacy-env"
+    assert line["principal"] == "full"
 
 
 def test_the_log_file_is_closed_when_startup_fails_after_opening_it(configure, log_path, db_path):
@@ -506,7 +534,7 @@ def test_the_log_file_is_closed_when_startup_fails_after_opening_it(configure, l
 
 
 # ---------------------------------------------------------------------------
-# v1 keys without `read` (a deliberate behaviour change: 200-empty / 404, no longer 403)
+# migrated v1 keys without `read` (200-empty / 404, as they have been since principals and grants)
 # ---------------------------------------------------------------------------
 
 
@@ -518,9 +546,9 @@ def no_read_client(make_client, tmp_path, data):
             {"id": "adminonly", "key_sha256": hashlib.sha256(b"a" * 40).hexdigest(), "ops": ["admin"]},
         ]
     }
-    path = tmp_path / "keys.json"
-    path.write_text(json.dumps(keys))
-    return make_client(API_KEY=None, API_KEYS_FILE=str(path), ALLOW_WRITES=True)
+    with edit_policy(tmp_path / "migrated.json", create=True) as ed:
+        ed.import_v1(json.dumps(keys), 32, "human-device")  # no prefixes: the write-only key needs '*'
+    return make_client(POLICY_FILE=str(tmp_path / "migrated.json"), ALLOW_WRITES=True)
 
 
 @pytest.mark.parametrize("key", ["w" * 40, "a" * 40])

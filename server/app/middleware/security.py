@@ -9,7 +9,7 @@ For every HTTP request it:
 2. refuses clients that already have too many failed authentications (``429``) before looking at the key;
 3. enforces the request-body limit on the bytes actually received -- ``Content-Length`` is checked up front and
    the stream is counted, so chunked uploads cannot bypass the limit or be buffered unbounded;
-4. adds security headers to every response (and ``Deprecation: true`` when a legacy key authenticated it);
+4. adds security headers to every response;
 5. writes the structured access-log line (app/accesslog.py) for every non-public request that the route has not
    already logged at its authorization decision (state-changing requests do that, before any effect): at
    ``http.response.start``, i.e. before any byte of the response is sent. If the log file refuses the line the
@@ -26,7 +26,6 @@ import time
 from collections.abc import MutableMapping
 from typing import Any, Awaitable, Callable, Optional
 
-from mattstash.authz import LEGACY_KIND
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
@@ -103,7 +102,7 @@ class SecurityMiddleware:
         bucket = client_bucket(scope)
         method, path = printable(scope["method"]), _masked(printable(scope["path"]))
         logged = scope["path"] not in public_paths()  # probes and docs are not access-logged
-        status: dict[str, Any] = {"code": 500, "principal": "-", "legacy": False, "replaced": False}
+        status: dict[str, Any] = {"code": 500, "principal": "-", "replaced": False}
         access = accesslog.access_state(scope)
         disconnected = False
 
@@ -123,10 +122,10 @@ class SecurityMiddleware:
                             (b"content-length", str(len(body)).encode()),
                         ],
                     }
-                    await send(self._with_security_headers(message, False))
+                    await send(self._with_security_headers(message))
                     await send({"type": "http.response.body", "body": body})
                     return
-                message = self._with_security_headers(message, status["legacy"])
+                message = self._with_security_headers(message)
             await send(message)
 
         async def reply(content: dict[str, str], code: int, headers: Optional[dict[str, str]] = None) -> None:
@@ -158,7 +157,6 @@ class SecurityMiddleware:
                     await reply({"detail": "Authentication failed"}, 401)
                     return
                 status["principal"] = result.principal.name
-                status["legacy"] = result.principal.kind == LEGACY_KIND
                 access.update(principal=result.principal.name, kind=result.principal.kind, token=result.token_id)
                 scope["state"]["auth"] = result
 
@@ -211,13 +209,10 @@ class SecurityMiddleware:
             )
 
     @staticmethod
-    def _with_security_headers(message: Message, legacy: bool) -> Message:
+    def _with_security_headers(message: Message) -> Message:
         present = {k.lower() for k, _ in message.get("headers", [])}
         headers = list(message.get("headers", []))
-        extra = dict(SECURITY_HEADERS)
-        if legacy:
-            extra["Deprecation"] = "true"  # find every caller still on a legacy key before they are switched off
-        for name, value in extra.items():
+        for name, value in SECURITY_HEADERS.items():
             if name.lower().encode() not in present:
                 headers.append((name.lower().encode(), value.encode()))
         return {**message, "headers": headers}

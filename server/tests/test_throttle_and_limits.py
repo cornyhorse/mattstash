@@ -131,14 +131,13 @@ def test_valid_key_does_not_reset_the_failure_counter(make_client, monkeypatch):
     assert 429 in codes
 
 
-def test_forbidden_is_not_a_failed_authentication(make_client, monkeypatch, key_policy_file):
+def test_forbidden_is_not_a_failed_authentication(make_client, monkeypatch, policy_path, policy_tokens):
     monkeypatch.setattr(Config, "AUTH_FAIL_LIMIT", 2)
-    from .conftest import READ_KEY
-
-    client = make_client(API_KEY=None, API_KEYS_FILE=str(key_policy_file), ALLOW_WRITES=True)
+    client = make_client(POLICY_FILE=policy_path, ALLOW_WRITES=True)
+    reader = auth(policy_tokens["hermes"])  # no write grant
     for _ in range(6):
-        assert client.post("/api/v1/credentials/x", json={"value": "v"}, headers=auth(READ_KEY)).status_code == 403
-    assert client.get("/api/v1/credentials", headers=auth(READ_KEY)).status_code == 200
+        assert client.post("/api/v1/credentials/x", json={"value": "v"}, headers=reader).status_code == 403
+    assert client.get("/api/v1/credentials", headers=reader).status_code == 200
 
 
 def test_throttle_is_per_client_address_behind_trusted_proxies(make_client, monkeypatch):

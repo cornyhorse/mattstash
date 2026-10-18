@@ -72,7 +72,7 @@ def validate_name(name: object) -> None:
         raise PolicyError("principal name must match [A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
     if name.casefold().startswith(RESERVED_PREFIX):
         raise PolicyError(
-            f"principal name {name!r} is reserved: names starting with '{RESERVED_PREFIX}' are for legacy keys"
+            f"principal name {name!r} is reserved: names starting with '{RESERVED_PREFIX}' cannot be used"
         )
 
 
@@ -489,9 +489,9 @@ def admin_expiry_warning(policy: Policy, now: datetime, horizon: timedelta = tim
     )
 
 
-def check_lockout(policy: Policy, now: datetime, legacy_admin_available: bool) -> None:
-    """Refuse a policy that nobody could administer, unless a legacy admin key (outside the file) still can."""
-    if legacy_admin_available or has_usable_admin(policy, now):
+def check_lockout(policy: Policy, now: datetime) -> None:
+    """Refuse a policy that nobody could administer."""
+    if has_usable_admin(policy, now):
         return
     raise PolicyError(
         "this change would leave no admin principal with a valid token, so nobody could manage the policy; "
@@ -499,8 +499,8 @@ def check_lockout(policy: Policy, now: datetime, legacy_admin_available: bool) -
     )
 
 
-def check_lockout_change(before: Policy, after: Policy, now: datetime, legacy_admin_available: bool) -> None:
-    """Refuse a change that locks the admins out now or within the hour. A legacy admin key waives both rules.
+def check_lockout_change(before: Policy, after: Policy, now: datetime) -> None:
+    """Refuse a change that locks the admins out now or within the hour.
 
     1. If ``before`` had an enabled admin with a valid token, ``after`` must still have one (:func:`check_lockout`).
     2. If ``before`` had an admin token that never expires or outlasts ``now + LOCKOUT_HORIZON`` (one hour), then
@@ -508,11 +508,10 @@ def check_lockout_change(before: Policy, after: Policy, now: datetime, legacy_ad
        the only admin token with ``--grace 1h`` to a replacement that expires in a minute is such a change.
 
     A policy that was already within the hour of lockout is not blocked from changing: it is how you repair it.
+    :func:`admin_expiry_warning` is the early, two-week warning.
     """
-    if legacy_admin_available:
-        return
     if has_usable_admin(before, now):
-        check_lockout(after, now, legacy_admin_available)
+        check_lockout(after, now)
     horizon = now + LOCKOUT_HORIZON
     if _outlasts(before, now, horizon) and not _outlasts(after, now, horizon):
         raise PolicyError(
@@ -734,7 +733,6 @@ def edit_policy(
     path: PathLike,
     *,
     now: Optional[datetime] = None,
-    legacy_admin_available: bool = False,
     create: bool = False,
 ) -> Iterator[PolicyEditor]:
     """Edit the policy file under an exclusive lock: re-read from disk, yield an editor, validate and save.
@@ -742,7 +740,7 @@ def edit_policy(
     On a clean exit the new document is validated by a round trip through the parser, checked for lockout, given
     ``revision + 1`` and saved atomically. If the body raises, nothing is saved.
 
-    The lockout check (:func:`check_lockout_change`; waived by ``legacy_admin_available``) refuses a change that
+    The lockout check (:func:`check_lockout_change`) refuses a change that
     leaves no enabled admin with an unexpired token, and one that leaves only admin tokens expiring within the
     hour when the policy before had a token that lasts longer. It applies only when the policy *before* the edit
     had such an admin. That is what makes bootstrapping work: on an empty file you add an admin principal, then
@@ -767,7 +765,7 @@ def edit_policy(
         after = replace(editor.policy, revision=before.revision + 1)
         text = dump_policy(after)
         parse_policy(text)
-        check_lockout_change(before, after, moment, legacy_admin_available)
+        check_lockout_change(before, after, moment)
         _write_atomic(target, text)
 
 

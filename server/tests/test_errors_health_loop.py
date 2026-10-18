@@ -1,7 +1,6 @@
 """Error mapping (H-4c), health vs readiness (H-6a), event-loop responsiveness (M-2) and the key tool."""
 
 import asyncio
-import json
 import logging
 import time
 
@@ -15,7 +14,7 @@ from mattstash.utils.exceptions import (
     InvalidCredentialError,
 )
 
-from .conftest import FULL_KEY, auth
+from .conftest import auth
 
 H = auth()
 
@@ -146,63 +145,3 @@ async def test_slow_writes_do_not_block_health_probes(configure, monkeypatch):
         assert not write.done(), "the write should still be in flight while we probe"
         assert max(latencies) < 0.3, f"health probe stalled for {max(latencies):.2f}s"
         assert (await write).status_code == 201
-
-
-# ---------------------------------------------------------------------------
-# key tool
-# ---------------------------------------------------------------------------
-
-
-def test_keytool_generates_a_strong_key_and_hashed_entry(capsys):
-    from mattstash.authz import legacy_from_keys_file_text
-
-    from app.keytool import main
-
-    assert main(["--id", "billing", "--ops", "read,write", "--prefix", "billing-", "--prefix", "shared-"]) == 0
-    captured = capsys.readouterr()
-    key = captured.err.split("give it to the client): ")[1].strip()
-    entry = json.loads(captured.out)
-
-    assert len(key) >= 32 and key not in captured.out  # the key is never in the policy output
-    assert (
-        entry["id"] == "billing" and entry["ops"] == ["read", "write"] and entry["prefixes"] == ["billing-", "shared-"]
-    )
-    # the generated entry is valid policy: the library turns it into a principal with prefix grants
-    keys, grants, _ = legacy_from_keys_file_text(json.dumps({"keys": [entry]}), 32)
-    assert [g.key for g in grants] == ["billing-*", "shared-*"] and keys[0].principal.name == "billing"
-
-
-def test_keytool_hashes_an_existing_key_from_stdin(monkeypatch, capsys):
-    import hashlib
-    import io
-
-    from app.keytool import main
-
-    monkeypatch.setattr("sys.stdin", io.StringIO(FULL_KEY + "\n"))
-    assert main(["--id", "ci", "--stdin"]) == 0
-    entry = json.loads(capsys.readouterr().out)
-    assert entry["key_sha256"] == hashlib.sha256(FULL_KEY.encode()).hexdigest() and entry["ops"] == ["read"]
-
-
-def test_keytool_rejects_bad_ops(capsys):
-    from app.keytool import main
-
-    with pytest.raises(SystemExit):
-        main(["--id", "x", "--ops", "read,root"])
-    with pytest.raises(SystemExit):
-        main(["--id", "x", "--ops", ""])
-
-
-def test_keytool_output_works_end_to_end(make_client, tmp_path, seed, capsys):
-    from app.keytool import main
-
-    seed(app__db={"value": "v"})
-    assert main(["--id", "app", "--ops", "read", "--prefix", "app-"]) == 0
-    out = capsys.readouterr()
-    key = out.err.split("give it to the client): ")[1].strip()
-    policy = tmp_path / "generated.json"
-    policy.write_text(json.dumps({"keys": [json.loads(out.out)]}))
-
-    client = make_client(API_KEY=None, API_KEYS_FILE=str(policy))
-    assert client.get("/api/v1/credentials/app-db", headers=auth(key)).status_code == 200
-    assert client.get("/api/v1/credentials/zzz", headers=auth(key)).status_code == 404

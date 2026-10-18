@@ -10,8 +10,6 @@ from datetime import UTC, datetime
 from typing import Optional
 
 KINDS = ("human-device", "agent", "runner")
-#: Never stored in a policy file. Only the in-memory principals built from the v1 key sources (``legacy.py``).
-LEGACY_KIND = "legacy"
 ACTIONS = ("list", "read", "write", "delete")
 #: Tag grants may not write: whoever can write an entry can retag it, so a tag-based write grant would let a
 #: principal widen its own reach (design section 4.3).
@@ -90,15 +88,14 @@ class Policy:
     def grants_for(self, name: str) -> tuple[Grant, ...]:
         """The grants whose ``principal`` is exactly ``name``.
 
-        Exact on purpose: the legacy (v1) key ids are not required to be unique without regard to case, and two
-        principals must never share each other's grants.
+        Exact on purpose: two principals must never share each other's grants.
         """
         return tuple(grant for grant in self.grants if grant.principal == name)
 
 
 @dataclass(frozen=True)
 class Decision:
-    """The outcome of an authorisation check. ``reason`` is one of ``granted``, ``legacy``, ``no-grant``,
+    """The outcome of an authorisation check. ``reason`` is one of ``granted``, ``no-grant``,
     ``disabled`` or ``not-admin``; ``grant_id`` names the grant that allowed the request."""
 
     allowed: bool

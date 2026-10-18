@@ -8,14 +8,8 @@ One implementation of "may this principal do this?" shared by the server, the CL
 from .accesslog import format_record, now_iso, read_records
 from .errors import PolicyError
 from .evaluate import admin_decision, can_admin, evaluate, explain, visible
-from .legacy import (
-    LegacyKey,
-    check_duplicate_keys,
-    legacy_from_env_key,
-    legacy_from_keys_file_text,
-    migrate_v1,
-)
-from .models import ACTIONS, KINDS, LEGACY_KIND, Decision, Grant, Policy, Principal, Token
+from .legacy import migrate_v1, v1_admin_ids
+from .models import ACTIONS, KINDS, Decision, Grant, Policy, Principal, Token
 from .patterns import pattern_matches, validate_pattern, validate_tag
 from .store import (
     PolicyEditor,
@@ -49,10 +43,8 @@ __all__ = [
     "ACTIONS",
     "DUMMY_HASH",
     "KINDS",
-    "LEGACY_KIND",
     "Decision",
     "Grant",
-    "LegacyKey",
     "Policy",
     "PolicyEditor",
     "PolicyError",
@@ -61,7 +53,6 @@ __all__ = [
     "admin_decision",
     "admin_expiry_warning",
     "can_admin",
-    "check_duplicate_keys",
     "check_lockout",
     "check_lockout_change",
     "dump_policy",
@@ -75,8 +66,6 @@ __all__ = [
     "hash_token",
     "is_legacy_hash",
     "is_valid_token_id",
-    "legacy_from_env_key",
-    "legacy_from_keys_file_text",
     "load_policy",
     "migrate_v1",
     "now_iso",
@@ -91,6 +80,7 @@ __all__ = [
     "validate_pattern",
     "validate_policy",
     "validate_tag",
+    "v1_admin_ids",
     "validate_token_hash",
     "verify_token_hash",
     "visible",

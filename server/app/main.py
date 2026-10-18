@@ -20,7 +20,7 @@ from .logging_setup import configure_logging
 from .middleware.security import SecurityMiddleware
 from .rate_limit import limiter, rate_limit_exceeded_handler
 from .routers import admin, credentials, db_url, health
-from .security.api_keys import get_auth_state
+from .security.api_keys import check_removed_settings, get_auth_state, warn_sha256_tokens
 
 logger = logging.getLogger("mattstash.api")
 
@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI):
 
     # Validate configuration (do not log paths, keys or raw errors)
     try:
+        check_removed_settings()  # the removed key settings are an error, never silently ignored
         config.get_kdbx_password()
         state = get_auth_state(force=True)
         config.validate_tls()
@@ -84,19 +85,7 @@ async def lifespan(app: FastAPI):
         raise
 
     try:
-        for source in state.legacy_sources:
-            logger.warning(
-                "Deprecated: legacy API key(s) from %s are configured. They keep working (responses carry "
-                "'Deprecation: true'), but move to principals and tokens: docs/design/principals-and-grants.md, "
-                "`mattstash admin migrate-keys`",
-                source,
-            )
-        if state.sha256_tokens:
-            logger.warning(
-                "Deprecated: %d token(s) in the policy file use the unsalted 'sha256:' hash (migrated v1 keys); "
-                "re-issue them with `mattstash admin token rotate` to get salted tokens",
-                state.sha256_tokens,
-            )
+        warn_sha256_tokens(state)
         _check_sidecar()
 
         # Open the database now so a wrong password / missing file fails the deployment visibly,
