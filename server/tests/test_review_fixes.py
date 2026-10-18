@@ -83,13 +83,12 @@ def test_a_healthy_mutation_has_no_warning(lc):
     "request_for",
     [
         lambda t, p: ("DELETE", f"/principals/hermes/tokens/{token_id(t['hermes'])}", None),
-        lambda t, p: ("POST", f"/principals/hermes/tokens/{token_id(t['hermes'])}/rotate", {}),
         lambda t, p: ("PATCH", "/principals/hermes", {"disabled": True}),
         lambda t, p: ("DELETE", "/principals/hermes", None),
         lambda t, p: ("PATCH", "/principals/deputy", {"admin": False}),
         lambda t, p: ("DELETE", f"/grants/{grant_of(p, 'hermes')}", None),
     ],
-    ids=["revoke", "rotate", "disable", "remove-principal", "admin-false", "remove-grant"],
+    ids=["revoke", "disable", "remove-principal", "admin-false", "remove-grant"],
 )
 def test_a_security_reducing_change_that_cannot_be_activated_is_409(broken, policy_path, policy_tokens, request_for):
     method, path, body = request_for(policy_tokens, policy_path)
@@ -109,15 +108,17 @@ def test_a_security_reducing_change_that_cannot_be_activated_is_409(broken, poli
         ("PATCH", "/principals/off", {"disabled": False}, 200),
         ("PATCH", "/principals/hermes", {"description": "renamed"}, 200),
         ("POST", "/principals/lister/tokens", {}, 201),
+        ("POST", "/principals/hermes/tokens/{hermes}/rotate", {}, 201),
         ("POST", "/grants", {"principal": "lister", "key": "extra-*"}, 201),
     ],
 )
-def test_other_changes_that_cannot_be_activated_succeed_with_a_warning(broken, method, path, body, code):
+def test_other_changes_that_cannot_be_activated_succeed_with_a_warning(broken, policy_tokens, method, path, body, code):
+    path = path.format(hermes=token_id(policy_tokens["hermes"]))
     response = broken.request(method, BASE + path, json=body)
     assert response.status_code == code
     assert response.json()["warning"] == NOT_ACTIVE
     assert response.headers["x-policy-active"] == "false"
-    if path.endswith("/tokens"):  # the token is shown once and must not be lost with the warning
+    if path.endswith(("/tokens", "/rotate")):  # the token is shown once and must not be lost with the warning
         assert response.json()["token"].startswith("mst_")
         assert response.headers["cache-control"] == "no-store"
 

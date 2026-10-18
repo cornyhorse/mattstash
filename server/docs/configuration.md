@@ -205,13 +205,13 @@ for `GET /admin/access-log`, when `MATTSTASH_ACCESS_LOG_FILE` is not set).
 
 **A change that is saved but cannot be activated.** After every change the server reloads its key sources. If that
 reload fails (a broken legacy keys file, say) the change is already in the policy file but the previous policy is still
-in force. Changes that take access away (revoking or rotating a token, disabling or removing a principal, `admin:
+in force. Changes that take access away (revoking a token, disabling or removing a principal, `admin:
 false`, removing a grant) then answer `409 {"detail": "Saved to the policy file but NOT active: the server could not
 reload its key sources (see the server log). The previous policy is still in force."}`, so nobody believes a token is
-revoked while it still works; fix the source and call `POST /admin/invalidate-api-key-cache`. Note that a rotation answered
-`409` has already retired the old token (with no grace) and its replacement was not shown: issue a new token. Other
-changes (adding a principal or grant, issuing a token, enabling, a description) answer normally, with a `"warning"` of
-the same text in the body and the header `X-Policy-Active: false`; an issued token is still in the response.
+revoked while it still works; fix the source and call `POST /admin/invalidate-api-key-cache`. Other
+changes (adding a principal or grant, issuing or rotating a token, enabling, a description) answer normally, with a `"warning"` of
+the same text in the body and the header `X-Policy-Active: false`; an issued or rotated token is still in the response (a rotation is not refused, because its new token is shown only
+once; the old token keeps working until the reload succeeds).
 
 The CLI wraps these routes: see [`mattstash admin`](../../docs/cli-reference.md#admin---principals-tokens-grants-and-the-access-log).
 

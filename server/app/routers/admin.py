@@ -191,7 +191,7 @@ def _principal_or_404(state: AuthState, name: str) -> Principal:
 def _editing(request: Request, *, reduces: bool = False) -> Iterator[PolicyEditor]:
     """Edit the policy file and reload the active policy on success; map the library's failures to HTTP errors.
 
-    ``reduces`` marks a change that takes access away (revoking or rotating a token, disabling or removing a
+    ``reduces`` marks a change that takes access away (revoking a token, disabling or removing a
     principal, dropping the admin flag, removing a grant). If the saved file cannot be activated, such a change is
     answered ``409``: the caller must not believe the access is gone while the old policy still allows it. Any other
     change is answered normally but flagged (:func:`_reply`), since it does no harm that it is not active yet.
@@ -416,7 +416,9 @@ def rotate_token(
     token_id: str,
     body: Annotated[RotateTokenRequest, Body(default_factory=RotateTokenRequest)],
 ) -> JSONResponse:
-    with _editing(request, reduces=True) as editor:
+    # Not ``reduces``: the new token is shown only in this answer, so a 409 would lose it. A rotation that is saved but
+    # not active is answered 201 with the warning instead; the old token then keeps working until the reload succeeds.
+    with _editing(request) as editor:
         principal = _file_principal(editor, name)
         if all(t.id != token_id for t in principal.tokens):
             raise _not_found("Token", token_id)
