@@ -24,7 +24,7 @@ import weakref
 from types import TracebackType
 from typing import ClassVar, Optional
 
-from .exceptions import DatabaseLockError
+from .exceptions import DatabaseLockError, DatabaseLockTimeoutError
 from .fileops import match_owner
 
 if sys.platform == "win32":  # pragma: no cover - exercised on Windows only
@@ -175,7 +175,7 @@ class FileLock:
                         # e.g. ENOLCK on a network filesystem without locking: waiting will not help
                         raise DatabaseLockError(f"Cannot lock {self.path}: {exc.strerror or exc}") from exc
                     if time.monotonic() >= deadline:
-                        raise DatabaseLockError(
+                        raise DatabaseLockTimeoutError(
                             f"Timed out after {shown:.0f}s waiting for another MattStash process to release {self.path}"
                         ) from exc
                     with contextlib.suppress(Exception):  # OSError, NotImplementedError, TypeError (Windows)
@@ -190,7 +190,7 @@ class FileLock:
                 os.close(fd)
                 fd = -1  # closed: the error path below must not close this number again (it may be reused)
                 if time.monotonic() >= deadline:
-                    raise DatabaseLockError(
+                    raise DatabaseLockTimeoutError(
                         f"Timed out after {shown:.0f}s: the lock file {self.path} kept being replaced while waiting"
                     )
                 fd = self._open()

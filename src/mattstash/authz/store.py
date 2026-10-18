@@ -612,6 +612,10 @@ class PolicyEditor:
         description: str = "",
     ) -> Grant:
         owner = self._principal(principal)
+        if expires is not None:
+            _check_aware(expires, "grant expiry")
+            if expires <= self.now:
+                raise PolicyError("a new grant's expiry must be in the future")
         used = {grant.id for grant in self._policy.grants}
         while True:
             grant_id = f"g_{secrets.token_hex(4)}"

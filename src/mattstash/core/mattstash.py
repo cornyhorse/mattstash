@@ -41,6 +41,7 @@ from ..utils.exceptions import (
     DatabaseAccessError,
     DatabaseExistsError,
     DatabaseLockError,
+    DatabaseLockTimeoutError,
     DatabaseNotFoundError,
     InvalidCredentialError,
     MattStashError,
@@ -337,7 +338,7 @@ class MattStash:
             # Report the real problem (and don't litter a lock file) before locking anything.
             raise DatabaseNotFoundError(self._not_found_message())
         if not self._write_mutex.acquire(timeout=self._lock_timeout):
-            raise DatabaseLockError(
+            raise DatabaseLockTimeoutError(
                 f"Timed out after {self._lock_timeout:.0f}s waiting for another writer in this process"
             )
         try:
@@ -355,7 +356,7 @@ class MattStash:
                 # file the path resolves to now, otherwise two writers could write one database under two locks.
                 self._file_lock.release()
                 if time.monotonic() >= deadline:
-                    raise DatabaseLockError(
+                    raise DatabaseLockTimeoutError(
                         f"Timed out after {self._lock_timeout:.0f}s: the database path kept changing while waiting"
                     )
             try:
@@ -452,6 +453,19 @@ class MattStash:
         validate_lookup_title(title)
         with self._read() as manager:
             return manager.list_versions(title)
+
+    def tags_of(self, title: str) -> Optional[List[str]]:
+        """The tags of the latest version of ``title`` (``[]`` if untagged), or None if there is no such entry.
+
+        Cheaper than ``list()`` (no pass over every entry's fields), and unlike ``get()`` it also answers for a
+        password-only entry, for which ``get()`` returns a bare dict without tags.
+        """
+        validate_lookup_title(title)
+        with self._read() as manager:
+            resolved = manager.resolve_entry(title)
+            if resolved is None:
+                return None
+            return list(resolved[0].tags or [])
 
     def delete(self, title: str, version: Optional[int] = None) -> bool:
         """

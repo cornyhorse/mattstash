@@ -4,8 +4,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+
+from mattstash.utils.exceptions import InvalidCredentialError
 
 # Import from installed package or src layout
 try:
@@ -482,3 +485,33 @@ def test_cli_db_url_unmasked_flag(temp_db: Path, as_module: bool):
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert "postgresql+psycopg://user:pw@localhost:5432/testdb" in proc.stdout
+
+
+def test_tags_of_reads_the_latest_version_without_listing(temp_db: Path):
+    ms = MattStash(path=str(temp_db))
+    ms.put("plain", value="v")  # a password-only entry: get() returns a bare dict without tags
+    ms.put("shared-note", password="p", tags=["shared"])  # tagged, but still a simple secret on get()
+    ms.put("retag", value="v1")
+    ms.put("retag", password="v2", tags=["a", "b"])  # the latest version decides
+    ms.put("demoted", password="v1", tags=["shared"])
+    ms.put("demoted", password="v2", tags=["other"])
+
+    assert ms.tags_of("plain") == []
+    assert ms.tags_of("shared-note") == ["shared"]
+    assert sorted(ms.tags_of("retag") or []) == ["a", "b"]
+    assert ms.tags_of("demoted") == ["other"]
+    assert ms.tags_of("missing") is None
+    with pytest.raises(InvalidCredentialError):
+        ms.tags_of("")  # an invalid title is refused like get() does
+    with patch.object(MattStash, "list", side_effect=AssertionError("must not list the vault")):
+        assert ms.tags_of("retag") is not None
+
+
+def test_tags_of_ignores_entries_in_the_recycle_bin(temp_db: Path):
+    ms = MattStash(path=str(temp_db))
+    ms.put("trashed", password="p", tags=["shared"])
+    kp = PyKeePass(str(temp_db), password=ms.password)
+    entry = next(e for e in kp.entries if (e.title or "").startswith("trashed"))
+    kp.trash_entry(entry)
+    kp.save()
+    assert ms.tags_of("trashed") is None

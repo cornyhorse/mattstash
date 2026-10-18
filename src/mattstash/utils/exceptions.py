@@ -61,6 +61,11 @@ class DatabaseLockError(MattStashError):
     pass
 
 
+class DatabaseLockTimeoutError(DatabaseLockError):
+    """The lock is held by someone else and the wait ran out (retry later), as opposed to a lock that cannot be
+    taken at all (a read-only or unsupported filesystem), which is a plain :class:`DatabaseLockError`."""
+
+
 class RotationIncompleteError(MattStashError):
     """``rotate_password`` failed *after* the database was re-keyed.
 

@@ -31,6 +31,7 @@ from mattstash.utils import filelock
 from mattstash.utils.exceptions import (
     DatabaseAccessError,
     DatabaseLockError,
+    DatabaseLockTimeoutError,
     DatabaseNotFoundError,
     InvalidCredentialError,
     MattStashError,
@@ -196,7 +197,7 @@ def test_a_writer_gives_up_when_the_path_keeps_changing_and_its_time_is_up(tmp_p
             current.symlink_to("v2")  # retargeted while the (old) lock was being taken
 
     with patch.object(FileLock, "acquire", acquire_then_flip):
-        with pytest.raises(DatabaseLockError, match="kept changing"):
+        with pytest.raises(DatabaseLockTimeoutError, match="kept changing"):
             stash.put("late", value="x")
 
     for name in ("v1", "v2"):
@@ -526,7 +527,7 @@ def test_acquire_times_out_when_the_lock_file_is_replaced_and_there_is_no_time_l
 
     lock = FileLock(str(path), timeout=0)
     with patch.object(filelock, "_try_lock", side_effect=lock_then_delete_the_file):
-        with pytest.raises(DatabaseLockError, match="kept being replaced"):
+        with pytest.raises(DatabaseLockTimeoutError, match="kept being replaced"):
             lock.acquire()
 
     assert not lock.held and lock._fd is None
@@ -552,7 +553,7 @@ def test_a_forked_childs_copy_is_closed_without_unlocking_the_parents_lock(tmp_p
         lock._forget_after_fork()
 
         assert not lock.held and lock._fd is None
-        with pytest.raises(DatabaseLockError, match="Timed out"):
+        with pytest.raises(DatabaseLockTimeoutError, match=r"Timed out"):
             other.acquire()  # an explicit unlock would have released the parent's lock too
     finally:
         os.close(inherited)

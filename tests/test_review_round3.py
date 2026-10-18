@@ -30,6 +30,7 @@ from mattstash.utils.exceptions import (
     DatabaseAccessError,
     DatabaseExistsError,
     DatabaseLockError,
+    DatabaseLockTimeoutError,
     MattStashError,
     RekeyVerifyError,
     ServerError,
@@ -264,7 +265,7 @@ def test_r10_lock_timeout_message_names_the_whole_budget(tmp_path: Path):
     db = make_db(tmp_path / "t.kdbx", sidecar=False)
     stash = MattStash(str(db), password=OLD, lock_timeout=1)
     with FileLock(str(db) + ".lock", timeout=5):
-        with pytest.raises(DatabaseLockError, match=r"Timed out after 1s"):
+        with pytest.raises(DatabaseLockTimeoutError, match=r"Timed out after 1s"):
             stash.put("x", value="1")
 
 

@@ -23,6 +23,7 @@ from mattstash.utils.exceptions import (
     DatabaseAccessError,
     DatabaseExistsError,
     DatabaseLockError,
+    DatabaseLockTimeoutError,
     DatabaseNotFoundError,
     MattStashError,
 )
@@ -293,7 +294,7 @@ def test_19_real_contention_is_still_retried_until_the_timeout(tmp_path: Path, m
         raise OSError(code, "busy")
 
     monkeypatch.setattr(filelock, "_try_lock", busy)
-    with pytest.raises(DatabaseLockError, match="Timed out"):
+    with pytest.raises(DatabaseLockTimeoutError, match=r"Timed out"):
         FileLock(str(tmp_path / "x.lock"), timeout=0.2, poll_interval=0.01).acquire()
 
 

@@ -125,6 +125,19 @@ def test_new_tokens_must_expire_in_the_future(tmp_path: Path, expires: datetime)
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("expires", [NOW, NOW - timedelta(days=1)])
+def test_new_grants_must_expire_in_the_future(tmp_path: Path, expires: datetime) -> None:
+    path = tmp_path / "policy.json"
+    bootstrap(path)
+    before = path.read_bytes()
+    with pytest.raises(PolicyError, match="grant's expiry must be in the future"):
+        with edit_policy(path, now=NOW) as editor:
+            editor.add_grant("matt-mac", key="a", expires=expires)
+    assert path.read_bytes() == before
+    with edit_policy(path, now=NOW) as editor:  # one second ahead is fine
+        editor.add_grant("matt-mac", key="a", expires=NOW + timedelta(seconds=1))
+
+
 def test_naive_expiry_is_a_policy_error(tmp_path: Path) -> None:
     path = tmp_path / "policy.json"
     bootstrap(path)
