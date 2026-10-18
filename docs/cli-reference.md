@@ -68,7 +68,9 @@ from stdin is one line typed without echo; use a pipe or `--value-file` for a mu
 | `KDBX_PASSWORD_FILE` | File holding the database password (Docker/Kubernetes secrets) |
 | `MATTSTASH_SERVER_URL` | Server URL (enables server mode) |
 | `MATTSTASH_API_KEY` | Server API key |
-| `MATTSTASH_API_KEY_FILE` | File holding the server API key |
+| `MATTSTASH_API_KEY_FILE` | File holding the server API key (or a principal's token) |
+| `MATTSTASH_POLICY_FILE` | `admin`, local mode: the policy file to edit (see [`admin`](#admin---principals-tokens-grants-and-the-access-log)) |
+| `MATTSTASH_ACCESS_LOG_FILE` | `admin log`, local mode: the access log file to read |
 | `MATTSTASH_ALLOW_INSECURE_HTTP` | `1`/`true`/`yes` silences the warning about sending the API key over plain `http://` |
 | `MATTSTASH_ENABLE_CACHE`, `MATTSTASH_CACHE_TTL` | Connection caching (see [caching](caching.md)) |
 | `MATTSTASH_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR`, `CRITICAL`; error messages are always written to stderr, whatever the level |
@@ -89,6 +91,7 @@ password options.
 | `env`, `exec` | yes | yes (custom property fields are not available) |
 | `prune`, `backup`, `rotate-password` | yes | no: exits 1 with "not supported in server mode" |
 | `setup`, `s3-test`, `config` | always local | |
+| `admin` | policy file (`--policy-file`); `admin log` reads the log file | yes (needs an admin token) |
 
 Server-mode notes:
 
@@ -580,6 +583,131 @@ Needs PyYAML (`pip install "mattstash[config]"`). See [configuration.md](configu
 ### `server` - Server Quick Start
 
 `mattstash server` prints how to run the API server (a separate Docker image, not a CLI subcommand).
+
+### `admin` - Principals, Tokens, Grants and the Access Log
+
+```bash
+mattstash admin principal list [--json]
+mattstash admin principal add NAME --kind {human-device,agent,runner} [--description TEXT] [--admin]
+mattstash admin principal show NAME [--json]
+mattstash admin principal disable NAME
+mattstash admin principal enable NAME
+mattstash admin principal remove NAME [--yes]
+
+mattstash admin token issue PRINCIPAL [--expires WHEN] [--description TEXT] [--output-file PATH]
+mattstash admin token list PRINCIPAL [--json]
+mattstash admin token revoke PRINCIPAL TOKEN_ID
+mattstash admin token rotate PRINCIPAL TOKEN_ID [--grace DURATION] [--expires WHEN] [--description TEXT] [--output-file PATH]
+
+mattstash admin grant list [--principal NAME] [--json]
+mattstash admin grant add PRINCIPAL (--key PATTERN | --tag TAG) [--actions LIST] [--expires WHEN] [--description TEXT]
+mattstash admin grant remove GRANT_ID
+
+mattstash admin check PRINCIPAL {list,read,write,delete} NAME [--tag TAG ...]
+mattstash admin log [--principal NAME] [--decision {allowed,denied}] [--since WHEN] [--limit N] [--json] [--log-file PATH]
+mattstash admin migrate-keys --from KEYS_JSON [--min-length N] [--policy-file PATH]
+```
+
+Principals are the named identities that present tokens (a Mac, an AI agent, a runner). A **token** is a longer API
+key, `mst_<id>_<secret>`. A **grant** says what a principal may do: `list`, `read`, `write`, `delete` on a name
+pattern (`firefly.*`, or `*` for every name) or on a KeePass entry tag. Access is denied unless a grant allows it. The
+design is in [design/principals-and-grants.md](design/principals-and-grants.md); the server side is in
+[configuration.md](configuration.md#server-access-control) and [server/docs/configuration.md](../server/docs/configuration.md#principals-tokens-and-grants).
+
+**Two modes**, with the same commands:
+
+- **Server mode** (`--server-url` or `MATTSTASH_SERVER_URL`, with an admin token from `--api-key-file`,
+  `MATTSTASH_API_KEY_FILE`, `--api-key` or `MATTSTASH_API_KEY`): calls the server's admin API. The token must belong
+  to an admin principal, which is a `human-device` principal in practice. Use this for day-to-day changes.
+- **Local mode** (`--policy-file PATH` or `MATTSTASH_POLICY_FILE`): edits the policy file directly. This is how you
+  create the first admin, and it is for offline repair. The file's permissions are the access control. Local mode
+  does not open a KeePass database. `admin log` reads the access log from `--log-file` or `MATTSTASH_ACCESS_LOG_FILE`.
+
+If both a server URL and `--policy-file` are given, the server is used and a warning says so. `migrate-keys` is local
+mode only. The global options (`--server-url`, `--api-key-file`, `--policy-file`, `--verbose`) can also follow the
+subcommand.
+
+**Options**
+
+| Option | Meaning |
+|--------|---------|
+| `--kind` | `human-device` (a Mac; the only kind that may be an admin), `agent` (an AI agent or MCP server) or `runner` (a CI or Ansible host) |
+| `--admin` | The principal may change principals, tokens and grants, and read the access log. Only `human-device` may be an admin; the grants still decide what it can read. |
+| `--yes` | `principal remove` without asking. Without it, removal needs an interactive terminal. |
+| `--expires WHEN` | `90d`, `24h`, `2w`, a date (`2027-01-01`) or a full RFC 3339 time. Tokens and grants. |
+| `--output-file PATH` | Write the token to this new file (mode 0600) instead of stdout. An existing file is never overwritten. |
+| `--grace DURATION` | `token rotate`: keep the old token valid this long. Default: revoke it now. |
+| `--key PATTERN` | `firefly.*` (prefix), `firefly` (exactly this name) or `*` (every name). A `*` on an agent prints a warning. |
+| `--tag TAG` | A KeePass entry tag. Tag grants allow `list` and `read` only. |
+| `--actions LIST` | Comma-separated subset of `list,read,write,delete`. Default `list,read`. |
+| `--principal NAME` | `grant list`, `log`: only this principal. |
+| `--since WHEN` | `log`: only records newer than `WHEN`. `24h` and `7d` mean that long ago; a date also works. |
+| `--limit N` | `log`: at most `N` records, 1 to 1000, newest last. Default 100. |
+| `--decision` | `log`: `allowed` or `denied`. |
+| `--json` | Print JSON. For `log`, one JSON record per line. |
+| `--from KEYS_JSON` | `migrate-keys`: the v1 JSON key policy to convert. |
+| `--min-length N` | `migrate-keys`: shortest key to accept. Default 32, the server's minimum. |
+
+**Output.** `token issue` and `token rotate` print only the token on stdout, once, and nothing else on stdout. The token
+id, its expiry and any old-token notice go to stderr. The token is never stored or shown again, so store it at once.
+`grant add` prints the grant id. `check` prints `allowed (grant g_…)` or `denied (<reason>)`. Denial reasons include
+`no-grant`, `not-admin`, `unknown-token`, `bad-token`, `expired-token`, `disabled` and `no-token`.
+
+**Exit codes:** `0` success (for `check`, allowed), `1` other failures and a denied `check`, `2` not found (principal,
+token or grant).
+
+**Changes that are refused** (exit 1, nothing changed) include removing, disabling or expiring the last admin with a
+valid token, and giving `--admin` to anything but a `human-device` principal. In local mode the lockout rule always
+applies, because the CLI cannot see the server's legacy keys: while a legacy admin key is the only admin, make the
+change in server mode.
+
+**Client mode is unchanged.** A principal's token is a longer API key: `--api-key-file` or `MATTSTASH_API_KEY_FILE`
+works for `get`, `list`, `keys`, `put`, `delete`, `versions`, `db-url`, `env` and `exec` exactly as before. Under a
+partial grant, `list` shows entries the principal may only list with `-` in place of username and URL, and `get` on
+a name it may not read reports "not found", exactly as for a missing name.
+
+**Examples**
+
+```bash
+# Bootstrap the first admin on the policy file (local mode); the token goes to a new 0600 file
+mattstash admin principal add matt-mac --kind human-device --admin --policy-file /srv/mattstash/config/policy.json
+mattstash admin token issue matt-mac --policy-file /srv/mattstash/config/policy.json --output-file ~/.config/mattstash/admin.key
+
+# Server mode from now on
+export MATTSTASH_SERVER_URL=https://mattstash.example.com
+export MATTSTASH_API_KEY_FILE=~/.config/mattstash/admin.key
+mattstash admin principal list
+
+# An agent that reads firefly.* (names and values), nothing else, with a 90-day token
+mattstash admin principal add firefly-agent --kind agent --description "Firefly III (MCP)"
+mattstash admin grant add firefly-agent --key 'firefly.*' --actions list,read
+mattstash admin token issue firefly-agent --expires 90d --output-file ./firefly-agent.key
+
+# Why is it allowed or refused?
+mattstash admin check firefly-agent read firefly.token       # allowed (grant g_…), exit 0
+mattstash admin check firefly-agent write firefly.token      # denied (no-grant), exit 1
+
+# Rotate: a new token now, the old one valid for 24 hours
+mattstash admin token rotate firefly-agent <token id> --grace 24h --expires 90d --output-file ./firefly-agent.key
+
+# Disable a principal (all its tokens are rejected, its grants are kept), or revoke one token
+mattstash admin principal disable firefly-agent
+mattstash admin token revoke firefly-agent <token id>
+
+# Recent denials, as JSON lines
+mattstash admin log --decision denied --since 24h --json
+```
+
+`admin log` reads the access log file and its rotated backups (`MATTSTASH_ACCESS_LOG_FILE` on the server, or
+`--log-file` locally). Lines the server wrote only to stdout are not in any file, so this command cannot show them. A
+record holds the time, principal, kind, token id, action, route, key name or filter,
+decision, allowing grant or denial reason, client address and HTTP status. It never holds a token, a secret value,
+a username, a URL or a note.
+
+**Converting a v1 key policy:** `migrate-keys` keeps each old key working (stored as `sha256:<hex>`) and makes each key
+a principal named after its `id`: `human-device` if the key had `admin`, `agent` otherwise. Those principals are not
+of kind `legacy`, so watch their calls by principal name. Issue new tokens later to move callers to the salted format.
+See the migration guide in [the design](design/principals-and-grants.md#12-migration-guide).
 
 ## Exit Codes
 

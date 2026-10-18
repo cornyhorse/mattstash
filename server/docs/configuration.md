@@ -10,6 +10,7 @@ volume holding the `.kdbx`.
 - [Starting the server](#starting-the-server)
 - [Read-only by default](#read-only-by-default)
 - [API keys and scopes](#api-keys-and-scopes)
+- [Principals, tokens and grants](#principals-tokens-and-grants)
 - [Throttling, limits and proxies](#throttling-limits-and-proxies)
 - [Health and readiness](#health-and-readiness)
 - [Errors](#errors)
@@ -23,11 +24,12 @@ volume holding the `.kdbx`.
 |----------|---------|---------|
 | `MATTSTASH_DB_PATH` | `/data/mattstash.kdbx` | The KeePass database. **Must already exist**; the server never creates one (`mattstash setup`). |
 | `KDBX_PASSWORD` / `KDBX_PASSWORD_FILE` | - | Database master password (one is required). The sidecar file is *not* read by the server. |
-| `MATTSTASH_API_KEY` | - | A single *legacy* (full-access) key. |
-| `MATTSTASH_API_KEYS_FILE` | - | Legacy key list **or** a JSON key policy (see below). |
-| `MATTSTASH_POLICY_FILE` | - | JSON policy of principals, tokens and grants (see `docs/design/principals-and-grants.md`). Changes are picked up on the next request; the admin API edits it. |
-| `MATTSTASH_ACCESS_LOG_FILE` | - | Also write the JSON access log to this file (mode 0600, rotated). If a line cannot be written the request is refused with `503`. It always goes to stdout too. |
-| `MATTSTASH_ACCESS_LOG_MAX_BYTES` / `MATTSTASH_ACCESS_LOG_BACKUPS` | `10485760` / `10` | Rotation size (1 KiB-1 GiB) and number of kept files (1-100). |
+| `MATTSTASH_API_KEY` | - | A single *legacy* (full-access) key. **Deprecated:** use a principal and token ([below](#principals-tokens-and-grants)). |
+| `MATTSTASH_API_KEYS_FILE` | - | Legacy key list **or** a v1 JSON key policy. **Deprecated**, see below. |
+| `MATTSTASH_POLICY_FILE` | - | JSON policy of principals, tokens and grants. Required by the admin API (`503` without it). Keep it off the data volume and mount it writable. |
+| `MATTSTASH_ACCESS_LOG_FILE` | - | Also write the access log (JSON lines) to this file, created `0600`. Unset: stdout only. A failed write refuses the request with `503`. |
+| `MATTSTASH_ACCESS_LOG_MAX_BYTES` | `10485760` | Rotate the access log file at this size (10 MiB; 1 KiB-1 GiB). |
+| `MATTSTASH_ACCESS_LOG_BACKUPS` | `10` | Rotated access log files to keep (1-100). |
 | `MATTSTASH_MIN_KEY_LENGTH` | `32` | Minimum length of plaintext keys (8-256). Startup fails on weaker keys. |
 | `MATTSTASH_REQUIRE_SCOPED_KEYS` | `false` | Refuse to start if any legacy full-access key is configured. |
 | `MATTSTASH_ALLOW_WRITES` | `false` | Enable `POST`/`DELETE`. Otherwise they return `405`. |
@@ -77,9 +79,11 @@ With writes enabled:
 legacy key can read, write, delete and administer. They keep working so upgrades are non-breaking, but a warning is
 logged at startup; set `MATTSTASH_REQUIRE_SCOPED_KEYS=true` once you have migrated.
 
-### Scoped keys (recommended)
+### Scoped keys (v1 JSON policy, deprecated)
 
-Point `MATTSTASH_API_KEYS_FILE` at a JSON file:
+Deprecated in favour of [principals, tokens and grants](#principals-tokens-and-grants). The file still loads, each key
+becomes a principal of kind `legacy`, and `mattstash admin migrate-keys --from <file> --policy-file <path>` converts it
+into the policy file. Point `MATTSTASH_API_KEYS_FILE` at a JSON file:
 
 ```json
 {
@@ -124,6 +128,83 @@ The endpoint reloads **immediately** and tells you whether it worked: `200 {"sta
 "keys": N}`, or `409` if the file could not be loaded (bad edit, unreadable). On `409` the **previous keys are still
 active** - a key you meant to revoke may still work - so treat anything but `200` as "not revoked yet". Without the
 endpoint, a failed periodic reload keeps the previous policy serving, logs the error, and retries every few seconds.
+
+## Principals, tokens and grants
+
+Every client is a **principal**: a named identity with one or more **tokens**. A token is sent in `X-API-Key` like an
+old key, so existing clients need no change. Access is **default-deny**: a principal can do only what one of its
+**grants** allows. There are no deny rules, so the order of grants does not matter.
+
+- **Principal kinds:** `human-device` (a Mac), `agent` (an AI agent or MCP server), `runner` (CI, the Ansible host).
+  Only a `human-device` principal may be an **admin**, and admin does not imply access to secrets.
+- **Tokens** are `mst_<id>_<secret>`. The id is public (12 lowercase base32 characters) and is what the access log and
+  revocation use. The secret is 256 random bits, stored only as a salted HMAC-SHA256. Expired, disabled, revoked and
+  unknown tokens all answer the same `401`.
+- **Grants** name a `key` pattern or a `tag` (a KeePass entry tag), a set of `actions` (`list`, `read`, `write`,
+  `delete`; default `list,read`) and optionally `expires`. Patterns: `firefly` is exactly that name, `firefly.*` is
+  every name starting with `firefly.` (so not `firefly-mcp`), and `*` is every name. Tag grants allow only `list` and
+  `read`, because anyone who can write an entry can change its tags.
+- The policy file is described in [Server Access Control](../../docs/configuration.md#server-access-control) (schema,
+  permissions, writes and lockout protection). The design is in [design/principals-and-grants.md](../../docs/design/principals-and-grants.md).
+
+### What each route needs
+
+Paths are relative to `/api/v1`. An ungranted read is answered exactly as for a missing name, so a client cannot tell
+"not granted" from "does not exist". Writes and admin calls answer `403` instead.
+
+| Route | Needs | When denied |
+|-------|-------|-------------|
+| `GET /credentials` | `list` on each entry | Entries without `list` are left out; the request is still `200`. |
+| Fields of a listed entry (username, URL, notes, value) | `read` | The entry carries only `name` and `version`; the other fields are `null`, the password is `*****`. |
+| `GET /search?q=&tag=` | `list` on each result | Filtered per entry. Matches names (case-insensitive substring) and tags only; never notes or values; returns names and tags only. |
+| `GET /credentials/{name}`, `GET /credentials/{name}/versions` | `read` | `404 Credential not found: <name>`, as for a missing name. |
+| `GET /db-url/{name}` | `read` | `404 Credential not found or unsuitable: <name>`. |
+| `POST /credentials/{name}` | `write` | `403 Insufficient permissions`, before the database is touched. |
+| `DELETE /credentials/{name}` | `delete` | `403`, as above. |
+| `/admin/*` | an admin principal | `403 Insufficient permissions`. |
+
+`list` and `read` are independent: a principal with only `read` on `firefly.*` can fetch `firefly.token` by name but does
+not see it in `GET /credentials`.
+
+### Admin API
+
+Admin routes need an admin token. Mutations are limited to 30 requests per minute, reads to 60. After each successful
+change the server reloads its policy at once.
+
+| Method and path | Purpose |
+|-----------------|---------|
+| `GET /admin/principals` | List principals, with their tokens (never hashes). Legacy principals appear with `"legacy": true`. |
+| `POST /admin/principals` | Create: `{"name", "kind", "description"?, "admin"?}` → `201`. |
+| `GET /admin/principals/{name}` | One principal, with its grants. |
+| `PATCH /admin/principals/{name}` | Change `disabled`, `admin` or `description`. |
+| `DELETE /admin/principals/{name}` | Remove the principal with its tokens and grants: `{"detail", "grants_removed"}`. |
+| `GET /admin/principals/{name}/tokens` | List tokens (ids and expiry, never secrets). |
+| `POST /admin/principals/{name}/tokens` | Issue: `{"expires"?, "description"?}` → `201` with `"token"`, shown once. The response is `Cache-Control: no-store`. |
+| `DELETE /admin/principals/{name}/tokens/{token_id}` | Revoke a token now. |
+| `POST /admin/principals/{name}/tokens/{token_id}/rotate` | Issue a replacement and retire the old one: `{"grace"?, "expires"?, "description"?}` → `201` with `"token"` and `old_token_expires`. |
+| `GET /admin/grants?principal=` | List grants. |
+| `POST /admin/grants` | Create: `{"principal", "key" or "tag", "actions"?, "expires"?, "description"?}` → `201`. |
+| `DELETE /admin/grants/{grant_id}` | Remove a grant. |
+| `POST /admin/check` | Explain a decision: `{"principal", "action", "name", "tags"?}` → `{"allowed", "reason", "grant"}`. |
+| `GET /admin/access-log?principal=&decision=&since=&limit=` | Read the access log: `decision` is `allowed` or `denied`, `since` a duration (`24h`) or a time, `limit` 1 to 1000 (default 100). Returns `{"records", "count"}`. |
+| `POST /admin/reload`, `POST /admin/invalidate-api-key-cache` | Reload the policy and legacy keys now (unchanged; now needs an admin principal). |
+
+Errors from the admin API: `400` with the validation message (never a token or a hash), `404` with
+`Principal not found: <name>`, `Token not found: <id>` or `Grant not found: <id>`, `409` when the policy file is
+read-only (edit it, then call `POST /admin/invalidate-api-key-cache`), `503` when `MATTSTASH_POLICY_FILE` is not set (or,
+for `GET /admin/access-log`, when `MATTSTASH_ACCESS_LOG_FILE` is not set).
+
+The CLI wraps these routes: see [`mattstash admin`](../../docs/cli-reference.md#admin---principals-tokens-grants-and-the-access-log).
+
+### Legacy keys and migration
+
+`MATTSTASH_API_KEY`, a plain `MATTSTASH_API_KEYS_FILE` and the v1 JSON key policy still work. Each legacy source is a
+principal of kind `legacy` (`legacy-env`, `legacy-1`, ...; a v1 key is named after its `id`), so nothing breaks on
+upgrade. They are deprecated: the server logs a startup warning per source, answers requests authenticated by a legacy
+key with `Deprecation: true`, and records `"kind":"legacy"` in the access log. Find the callers there, move them to a
+principal token, then remove the key. A v1 JSON policy is converted with `mattstash admin migrate-keys --from <file>
+--policy-file <path>`; the converted keys keep working, with their digests stored as `sha256:<hex>`. Plain sources are
+planned for removal (proposed for 0.4). The step-by-step migration is in [section 12 of the design](../../docs/design/principals-and-grants.md#12-migration-guide).
 
 ## Throttling, limits and proxies
 
@@ -186,6 +267,9 @@ No authentication is required. Use `/health` for liveness probes and Docker `HEA
 
 The server writes to **stderr** with a timestamp (uvicorn's own anonymous access log is turned off):
 
+- **Access log** (`MATTSTASH_ACCESS_LOG_FILE`, described in [Principals, tokens and grants](#principals-tokens-and-grants)):
+  one JSON object per request, with the principal, kind, token id, action, key, decision, grant and status. It is written
+  to stdout by default and, when the file variable is set, to that file too.
 - **Access log** (`mattstash.api`, level from `MATTSTASH_LOG_LEVEL`, default `info`):
   `METHOD /path -> status (duration) client=<ip> key=<id>`. No query string.
 - **Audit log** (`mattstash.audit`, **always INFO**, not affected by `MATTSTASH_LOG_LEVEL`): one line per

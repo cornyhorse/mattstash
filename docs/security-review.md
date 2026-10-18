@@ -2,7 +2,7 @@
 
 Review date: 2026-10-07 · Reviewed version: 0.1.19 (`a4751d4`) · Branch: `claude/security-hardening`
 
-**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · three independent reviews acted on ✅ (4e, 4h, 4i) · 100% line coverage ✅
+**Progress:** Phase 1 (library) ✅ · Phase 2 (server) ✅ · Phase 3 (deploy/CI) ✅ (see 4d for what is unvalidated) · Phase 4 (CLI/ops features) ✅ · three independent reviews acted on ✅ (4e, 4h, 4i) · 100% line coverage ✅ · principals, grants and access log (H-3 follow-up, 4k): design ✅, library ✅, CLI and server not yet on this branch
 
 Target use cases: (1) CLI on machines you log into, (2) API service in a docker-compose stack,
 (3) secrets service inside a k8s cluster, plus other library/CLI uses.
@@ -60,6 +60,10 @@ Retracted during review: *"pykeepass writes the DB non-atomically"* — false. p
   - [x] Tests: lockout after N failures, window reset, short-key startup failure, proxy-hop parsing.
 
 ### H-3 No authorisation model; no key identity in logs — Read (+ confirmed by behaviour)
+> **Extended, 2026-10-18:** the v1 key policy below is superseded by principals, default-deny grants and a structured
+> access log (section 4k; [design](design/principals-and-grants.md)). The `[x]` items record the v1 work and are kept as
+> history. The v1 file still loads (deprecated) and converts with `mattstash admin migrate-keys`.
+
 - **Evidence:** `get_api_keys()` returns a flat set; any valid key can read/write/delete everything and call
   `/admin/*`. Logs contain only client IP, so actions cannot be attributed.
 - **Plan (Q2):**
@@ -396,6 +400,32 @@ by `tests/test_release_script.py`), runs CI on it, then publishes to PyPI, creat
 Nothing is committed or pushed to `main` by the workflow, so the race cannot happen. The runbook an agent follows when
 the maintainer asks for a release is `.claude/skills/release/SKILL.md`, with a pointer in `CLAUDE.md`. PyPI and GHCR
 credentials stay in GitHub; agents never hold them.
+
+---
+
+## 4k. Principals, grants and the access log (H-3 follow-up)
+
+Design: [design/principals-and-grants.md](design/principals-and-grants.md). It replaces the v1 scoped key policy of H-3
+with named principals and tokens, default-deny grants, and a structured access log. Every existing key keeps working
+(section 7 of the design), deprecated.
+
+| ID | Finding | Status |
+|----|---------|--------|
+| H-3a | Keys identify no one; any key can be an admin; `list` and `read` are one permission; a raw prefix `firefly` also matches `firefly-mcp`; no expiry or rotation | Design ✅. Library ✅ (`mattstash.authz`: principals, `mst_` tokens with salted HMAC, grants with `*`/prefix patterns, default-deny evaluation, policy store with lockout protection, tests). CLI (`mattstash admin`) and server routes: not yet on this branch. |
+| H-3b | Audit is a free-text log line, so "what did an agent read?" cannot be answered | Design ✅. Library ✅ (escaping record formatter; reader across rotated files). Server writes, rotation, the admin log API and `admin log`: not yet on this branch. |
+| H-3c | Admin rights could be given to any key | Design ✅: admin is a `human-device` property, checked at load and at each admin request. Library ✅. |
+| H-3d | No migration path off the v1 key policy | Library ✅ (`migrate_v1` keeps each digest as `sha256:<hex>`). `migrate-keys` CLI: not yet on this branch. |
+
+Known gaps to close before this is marked done:
+
+- The design (section 7) says a migrated v1 key becomes a `legacy` principal. The library creates a `human-device`
+  (admin keys) or `agent` principal instead, so migrated callers do not appear as `"kind":"legacy"` in the access
+  log. The docs describe the library's behaviour; the design text needs to be reconciled.
+- Local-mode CLI edits always apply the lockout rule, because the CLI cannot see the server's legacy admin keys.
+
+Decisions still open (design section 11): runners as admins; tag-based writes; an opt-out from fail-closed logging;
+the legacy removal timeline; whether `*` grants for agents are forbidden; whether list-only entries show username and
+URL; names with `/` over HTTP.
 
 ---
 

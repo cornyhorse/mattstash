@@ -198,6 +198,110 @@ For information about deploying and configuring the MattStash server, see:
 - [Server README](../server/README.md) - Deployment and API documentation
 - [Server Quick Start](../server/QUICKSTART.md) - Getting started guide
 
+## Server Access Control
+
+The server decides who may read or change what. Each client is a **principal** with one or more **tokens**; a
+principal may do only what a **grant** allows. Principals, tokens and grants are kept in a policy file, and every
+request is written to an access log. The design is in [design/principals-and-grants.md](design/principals-and-grants.md);
+the migration steps for an existing deployment are in its section 12. The full route table and the admin API are in
+[server/docs/configuration.md](../server/docs/configuration.md#principals-tokens-and-grants).
+
+### Environment variables
+
+All four are optional.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `MATTSTASH_POLICY_FILE` | - | The policy file (JSON). The admin API needs it and answers `503` without it. Keep it off the data volume. |
+| `MATTSTASH_ACCESS_LOG_FILE` | - | Also write the access log to this file, created with mode `0600`. Unset: the log goes to stdout only. |
+| `MATTSTASH_ACCESS_LOG_MAX_BYTES` | `10485760` (10 MiB) | Rotate the access log file at this size. |
+| `MATTSTASH_ACCESS_LOG_BACKUPS` | `10` | Rotated access log files to keep. |
+
+```bash
+MATTSTASH_POLICY_FILE=/config/policy.json
+MATTSTASH_ACCESS_LOG_FILE=/logs/access.jsonl        # a volume that persists and is not the data volume
+MATTSTASH_ACCESS_LOG_MAX_BYTES=10485760
+MATTSTASH_ACCESS_LOG_BACKUPS=10
+```
+
+### The policy file
+
+```json
+{"version": 2, "revision": 17, "principals": [ ... ], "grants": [ ... ]}
+```
+
+- **`revision`** goes up by one on every change. **Unknown fields are a load error**, and so is any `version` other than
+  `2`, so a policy written for a newer release never loads silently with a restriction ignored.
+- **Principals** have a `name` (`[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`, unique ignoring case), a `kind` (`human-device`, `agent`
+  or `runner`), a `description`, `admin`, `disabled`, `created`, and `tokens`. Each token has an `id`, a salted hash
+  (`hmac-sha256:<salt>:<digest>`), `expires` and a `description`. The plaintext token is never stored.
+- **Grants** have an `id` (`g_` plus 8 hex digits), a `principal`, exactly one of `key` (a name pattern) or `tag` (a
+  KeePass entry tag), `actions` (from `list`, `read`, `write`, `delete`; tag grants allow only `list` and `read`),
+  optional `expires`, `description` and `created`.
+- Only a `human-device` principal may be an admin. Admin is a property of the principal, not a grant action.
+- The file is separate from every vault. The server reads it at startup and picks up changes on the next request.
+  Files mattstash writes are mode `0600`; keep the file readable by the server user only.
+- **Writing:** admin API changes and the CLI's local mode take a lock, re-read the file, validate the whole new document
+  and replace it atomically. The server reloads at once after each successful change. If the file is not writable (a
+  read-only ConfigMap or Secret), every change answers `409`: edit the source, then call
+  `POST /api/v1/admin/invalidate-api-key-cache`.
+- **Lockout protection:** a change that would leave no enabled admin with a valid token is refused, unless a legacy
+  admin key is configured on the server. Local mode always applies this rule, because the CLI cannot see the server's
+  legacy keys.
+
+### The access log
+
+One JSON object per line, for every authenticated request, every failed authentication and every admin request:
+
+```json
+{"ts":"2026-10-18T12:03:44.120Z","principal":"hermes-finance","kind":"agent","token":"k7m2q7xw4h3a",
+ "action":"read","route":"get","key":"firefly.token","decision":"allowed","grant":"g_3fd9a1c2",
+ "client":"100.101.7.3","status":200}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `ts` | Time, RFC 3339 UTC |
+| `principal`, `kind` | Who, and the principal's kind (`legacy` for a legacy key) |
+| `token` | The token id (the public part, never the secret) |
+| `action`, `route` | What was asked, and the route |
+| `key` | The credential name, or the filter (`prefix`, `q`, `tag`) for list and search |
+| `decision` | `allowed` or `denied` |
+| `grant` | The grant that allowed the request |
+| `reason` | On denials: `no-grant`, `not-admin`, `unknown-token`, `bad-token`, `expired-token`, `disabled` or `no-token` |
+| `count` | For list and search, the number of entries returned |
+| `client`, `status` | The client address and the HTTP status |
+
+It never contains a token or any part of its secret, a secret value, a username, a URL, a note, a request body or a query
+string beyond the filter fields. Every string is escaped to printable ASCII and capped at 256 characters, so a client cannot
+forge lines. Health probes are not logged.
+
+- **Where it goes:** stdout by default (`docker logs`, Kubernetes log collection). With `MATTSTASH_ACCESS_LOG_FILE`
+  it is also written to that file.
+- **Rotation:** at `MATTSTASH_ACCESS_LOG_MAX_BYTES`, keeping `MATTSTASH_ACCESS_LOG_BACKUPS` files. No logrotate is needed.
+- **Fail closed:** if a line cannot be written to the file (full disk, permissions), the request is answered `503` and
+  an error is logged. An unlogged read is treated as worse than an outage. Stdout-only logging cannot fail this way.
+- **Reading it:** `mattstash admin log`, in server or local mode (see the [CLI reference](cli-reference.md#admin---principals-tokens-grants-and-the-access-log)).
+
+### Legacy keys and deprecation
+
+`MATTSTASH_API_KEY`, a plain `MATTSTASH_API_KEYS_FILE` and the v1 JSON key policy keep working, so an upgrade breaks
+nothing. They are **deprecated**:
+
+- Each legacy source becomes a principal: `legacy-env` for `MATTSTASH_API_KEY`, `legacy-1`, `legacy-2`, ... for a plain
+  key file, and for a v1 JSON policy one principal per key, named after its `id`. Legacy principals have kind `legacy`.
+  `MATTSTASH_API_KEY` and a plain key file are full access (every action on every name). A v1 prefix `p` becomes the
+  pattern `p*`, which keeps its old meaning. `ops: read` becomes `list,read`, and `admin` becomes the admin flag.
+- The server logs a deprecation warning at startup for each legacy source, answers requests authenticated by a legacy key
+  with `Deprecation: true`, and records `"kind":"legacy"` in the access log. Use the log to find every caller before
+  you remove a key.
+- Nothing is removed in this release. The plain sources are planned for removal (proposed for 0.4).
+- `MATTSTASH_REQUIRE_SCOPED_KEYS=true` still refuses to start if an unscoped legacy key is configured.
+- To convert a v1 JSON key policy into the policy file, run `mattstash admin migrate-keys --from keys.json --policy-file <path>`.
+  It keeps each key working (its digest is stored as `sha256:<hex>`). Each key becomes a `human-device` principal if it
+  had `admin`, or an `agent` principal otherwise, so watch its callers by principal name. Issue new tokens to move callers
+  to the salted scheme. Both sources can be configured at once while you migrate.
+
 ## Versioning Configuration
 
 ### Version Padding

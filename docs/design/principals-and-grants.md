@@ -400,3 +400,125 @@ access log. Role definitions (allowed Unix principals, TTL, extensions) live in 
    fields can be sensitive.
 7. **Names with `/` over HTTP.** They're allowed in titles and in grant patterns, but the server's URL rules
    still reject them. Making the server accept them (`{name:path}` plus care with `/versions`) is a separate change.
+
+## 12. Migration guide
+
+Both examples use the commands in §8. Set these once (the host path is where the server's policy file lives):
+
+```bash
+export MATTSTASH_SERVER_URL=https://mattstash.example.com
+export POLICY=/srv/mattstash/config/policy.json   # host path; the server sees it as MATTSTASH_POLICY_FILE
+```
+
+Keep the policy file on its own volume, not the data volume, and mount it **read-write**: a read-only file makes
+every admin change answer `409`. For example, mount `/srv/mattstash/config` at `/config` and set
+`MATTSTASH_POLICY_FILE=/config/policy.json`. Each server restart picks up the new variables.
+
+### (a) A deployment with one existing `MATTSTASH_API_KEY` (hermes)
+
+Today the server runs with `MATTSTASH_API_KEY=<hermes key>` and hermes sends it as `X-API-Key`. Nothing in this
+plan breaks it. Until you remove it, the key is principal `legacy-env` (kind `legacy`, admin, every action on every
+name), and each request it makes is logged with `"kind":"legacy"` and answered with `Deprecation: true`.
+
+1. **Create the policy file and the first admin, in local mode.** This needs no running server; it writes the
+   file on the host:
+
+   ```bash
+   mattstash admin principal add matt-mac --kind human-device --admin --policy-file "$POLICY"
+   mattstash admin token issue matt-mac --policy-file "$POLICY" --output-file "$HOME/.config/mattstash/admin.key"
+   ```
+
+   Without `--output-file` the token goes to stdout. With it, the token is written only to that file, mode 0600,
+   and an existing file is never overwritten. Restart the server with `MATTSTASH_POLICY_FILE` set. Then point the
+   CLI at the server with the admin token:
+
+   ```bash
+   export MATTSTASH_API_KEY_FILE="$HOME/.config/mattstash/admin.key"
+   ```
+
+2. **Watch the legacy caller before changing anything.** These commands run in server mode, with the admin token:
+
+   ```bash
+   mattstash admin log --principal legacy-env --since 7d            # what the legacy key does
+   mattstash admin log --since 7d --limit 1000 --json | grep '"kind":"legacy"'   # every legacy caller
+   ```
+
+   The second command finds every legacy caller, whatever its name (`legacy-env`, or `legacy-1`, `legacy-2`, ... for
+   the other legacy sources), so use it to check that nothing else still depends on a legacy key.
+
+3. **Create hermes with the access it has today.** The legacy key can do everything, so start with the same grant
+   and narrow it when the log shows what hermes really uses. The CLI warns when `*` is granted to an agent:
+
+   ```bash
+   mattstash admin principal add hermes --kind agent --description "Hermes (MCP)"
+   mattstash admin grant add hermes --key '*' --actions list,read,write,delete --description "temporary: same as the old MATTSTASH_API_KEY"
+   ```
+
+4. **Issue hermes its token and swap the key.** `--output-file` creates a new 0600 file:
+
+   ```bash
+   mattstash admin token issue hermes --description "replaces MATTSTASH_API_KEY" --output-file ./hermes.key
+   ```
+
+   Move the file to hermes's secret store, point hermes at it with `MATTSTASH_API_KEY_FILE=<path>` instead of
+   `MATTSTASH_API_KEY`, restart hermes, and delete `./hermes.key`. While both keys work there is no downtime. Confirm
+   with `mattstash admin log --principal hermes --since 1h`: the records show `"kind":"agent"` and `allowed`.
+
+5. **Narrow hermes's grant** to what the log shows, then remove the broad one:
+
+   ```bash
+   mattstash admin grant list --principal hermes
+   mattstash admin grant add hermes --key 'firefly.*' --actions list,read     # example pattern
+   mattstash admin grant remove <id of the * grant>
+   ```
+
+6. **Remove the legacy key.** When the `"kind":"legacy"` query in step 2 has stayed empty for long enough, remove
+   `MATTSTASH_API_KEY` (and `MATTSTASH_API_KEYS_FILE`, if used) from the server's environment and restart the server.
+   Removing it can't lock you out: `matt-mac` is an enabled admin with a valid token, and the policy rules refuse any
+   change that would leave no such admin.
+
+### (b) Adding an agent with read-only access to `firefly.*`
+
+```bash
+mattstash admin principal add firefly-agent --kind agent --description "Firefly III (MCP)"
+mattstash admin grant add firefly-agent --key 'firefly.*' --actions list,read --description "Firefly III tokens"
+mattstash admin token issue firefly-agent --expires 90d --description "firefly MCP" --output-file ./firefly-agent.key
+```
+
+Check the grant before handing the token over. `admin check` exits 0 when allowed and 1 when denied:
+
+```bash
+mattstash admin check firefly-agent read firefly.token       # allowed (grant g_…), exit 0
+mattstash admin check firefly-agent write firefly.token      # denied (no-grant), exit 1
+mattstash admin check firefly-agent read cloudflare.token    # denied (no-grant), exit 1
+```
+
+Move `firefly-agent.key` to the agent's secret store and delete `./firefly-agent.key`. The agent uses the token exactly
+like an old API key:
+
+```bash
+mattstash --server-url "$MATTSTASH_SERVER_URL" --api-key-file /run/secrets/firefly-agent.key list
+mattstash --server-url "$MATTSTASH_SERVER_URL" --api-key-file /run/secrets/firefly-agent.key get firefly.token
+mattstash --server-url "$MATTSTASH_SERVER_URL" --api-key-file /run/secrets/firefly-agent.key get cloudflare.token   # exit 2: as for a missing name
+mattstash --server-url "$MATTSTASH_SERVER_URL" --api-key-file /run/secrets/firefly-agent.key delete firefly.token   # exit 1: no delete grant
+```
+
+`list` shows only `firefly.*` names. A denied read answers exactly like a missing name, so the agent cannot tell
+them apart. To stop access later: `mattstash admin token revoke firefly-agent <token id>`, or
+`mattstash admin principal disable firefly-agent` to reject all of its tokens and keep its grants.
+
+### Converting a v1 JSON key policy
+
+If `MATTSTASH_API_KEYS_FILE` holds a v1 JSON policy, convert it with:
+
+```bash
+mattstash admin migrate-keys --from /srv/secrets/keys.json --policy-file "$POLICY"
+```
+
+This runs in local mode only. It prints the name of each new principal and stores each key's digest as `sha256:<hex>`,
+so every existing caller keeps its key. Each key becomes a principal named after its `id`: a key with `admin` in its
+`ops` becomes a `human-device` admin, any other key an `agent`. `ops: read` becomes `list,read`, `write` and `delete`
+stay as they are, and each prefix `p` becomes the pattern `p*`. A migrated principal is not of kind `legacy`, so its
+calls do not show as `"kind":"legacy"` in the access log: watch them by principal name (`admin log --principal <id>`)
+instead. Issue the principal a new token with `token issue` and move its callers to it; new tokens use the salted
+`mst_` format. Remove the v1 file once no caller uses it.
