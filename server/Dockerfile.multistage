@@ -27,6 +27,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 RUN python -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 
+# pip trusts its own vendored certifi, so pip itself must be >= 26.2.2 (emSign ECC Root CA - G3 distrust, 2026-10).
+# (The builder's venv has its own pip, and the venv is what ends up in the final image.)
+RUN pip install --no-cache-dir --disable-pip-version-check --upgrade "pip>=26.2.2"
+
 WORKDIR /build
 
 # Third-party dependencies: hash-pinned lockfile, wheels only (so no compiler is needed and
@@ -64,6 +68,10 @@ RUN groupadd --gid 1000 mattstash \
             --shell /usr/sbin/nologin mattstash \
  && mkdir /data \
  && chown mattstash:mattstash /data
+
+# pip trusts its own vendored certifi, so pip itself must be >= 26.2.2 (emSign ECC Root CA - G3 distrust, 2026-10).
+# (The base image's own pip is not the venv's, but it is in the final image too.)
+RUN python -m pip install --no-cache-dir --disable-pip-version-check --upgrade "pip>=26.2.2"
 
 # Root-owned and read-only to the runtime user: it cannot modify its own code or packages.
 COPY --from=builder /opt/venv /opt/venv

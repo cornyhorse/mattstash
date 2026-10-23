@@ -33,6 +33,9 @@ RUN groupadd --gid 1000 mattstash \
 
 WORKDIR /build
 
+# pip trusts its own vendored certifi, so pip itself must be >= 26.2.2 (emSign ECC Root CA - G3 distrust, 2026-10).
+RUN python -m pip install --no-cache-dir --disable-pip-version-check --upgrade "pip>=26.2.2"
+
 # 1) Third-party dependencies: hash-pinned lockfile, wheels only. pip refuses any file whose
 #    hash is not listed, so a tampered or substituted package fails the build.
 #    (Regenerate the lock with the command in its header when requirements.in changes.)
