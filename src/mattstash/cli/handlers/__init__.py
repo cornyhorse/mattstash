@@ -4,6 +4,7 @@ mattstash.cli.handlers
 Command handlers for the CLI interface.
 """
 
+from .admin import AdminHandler
 from .backup import BackupHandler
 from .base import BaseHandler
 from .config import ConfigHandler
@@ -20,6 +21,7 @@ from .setup import SetupHandler
 from .versions import VersionsHandler
 
 __all__ = [
+    "AdminHandler",
     "BackupHandler",
     "BaseHandler",
     "ConfigHandler",

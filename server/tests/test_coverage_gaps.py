@@ -5,7 +5,6 @@ Everything here runs in-process (``uvicorn.run`` is mocked; no sockets are opene
 """
 
 import inspect
-import io
 import json
 import logging
 import os
@@ -23,10 +22,9 @@ from starlette.responses import Response
 from uvicorn.importer import import_from_string
 
 from app.config import Config
-from app.dependencies import authenticate_request
+from app.dependencies import Caller, authenticate_request
 from app.main import create_app
 from app.rate_limit import rate_limit_exceeded_handler
-from app.security.api_keys import Principal
 
 from .conftest import FULL_KEY, auth
 
@@ -47,8 +45,10 @@ def uvicorn_run(monkeypatch) -> MagicMock:
 
 
 @pytest.fixture
-def server_settings(monkeypatch):
+def server_settings(monkeypatch, configure):
     """Set the server options ``main()`` reads (``Config`` captures its environment at import time)."""
+
+    configure()  # the entry point pre-flights the policy file, so a usable one must be configured
 
     def _set(**overrides) -> None:
         settings = {"HOST": "0.0.0.0", "PORT": 8000, "LOG_LEVEL": "info", "TLS_CERT_FILE": None, "TLS_KEY_FILE": None}
@@ -158,42 +158,6 @@ def test_python_dash_m_app_runs_main(uvicorn_run, server_settings, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# python -m app.keytool
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "stdin",
-    [pytest.param("", id="empty"), pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf")],
-)
-def test_keytool_stdin_without_a_key_is_a_usage_error(monkeypatch, capsys, stdin):
-    from app.keytool import main
-
-    monkeypatch.setattr(sys, "stdin", io.StringIO(stdin))
-    with pytest.raises(SystemExit) as exit_info:
-        main(["--id", "ci", "--stdin"])
-
-    assert exit_info.value.code == 2  # argparse usage error
-    captured = capsys.readouterr()
-    assert "no key received on stdin" in captured.err
-    assert captured.out == ""  # no policy entry is printed for an empty key
-
-
-def test_python_dash_m_keytool_prints_the_policy_entry_and_exits_zero(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["keytool", "--id", "ci", "--ops", "read,write", "--prefix", "ci-"])
-    monkeypatch.delitem(sys.modules, "app.keytool", raising=False)  # see test_python_dash_m_app_runs_main
-
-    with pytest.raises(SystemExit) as exit_info:
-        runpy.run_module("app.keytool", run_name="__main__")
-
-    assert exit_info.value.code == 0
-    captured = capsys.readouterr()
-    entry = json.loads(captured.out)
-    assert entry["id"] == "ci" and entry["ops"] == ["read", "write"] and entry["prefixes"] == ["ci-"]
-    assert "API key (shown once" in captured.err
-
-
-# ---------------------------------------------------------------------------
 # authenticate_request without SecurityMiddleware (app/dependencies.py)
 # ---------------------------------------------------------------------------
 
@@ -205,10 +169,8 @@ def bare_client(configure) -> TestClient:
     bare = FastAPI()
 
     @bare.get("/whoami")
-    async def whoami(
-        request: Request, principal: Annotated[Principal, Depends(authenticate_request)]
-    ) -> dict[str, str]:
-        return {"id": principal.id, "on_request_state": request.state.principal.id}
+    async def whoami(request: Request, caller: Annotated[Caller, Depends(authenticate_request)]) -> dict[str, str]:
+        return {"id": caller.principal.name, "on_request_state": request.state.auth.principal.name}
 
     return TestClient(bare)
 
@@ -217,7 +179,7 @@ def test_header_is_verified_by_the_dependency_when_no_middleware_ran(bare_client
     response = bare_client.get("/whoami", headers=H)
 
     assert response.status_code == 200
-    assert response.json() == {"id": "legacy-env", "on_request_state": "legacy-env"}
+    assert response.json() == {"id": "full", "on_request_state": "full"}
 
 
 @pytest.mark.parametrize("headers", [{}, {"X-API-Key": ""}, {"X-API-Key": "x" * 40}, {"X-API-Key": FULL_KEY + "x"}])
@@ -231,7 +193,7 @@ def test_missing_empty_or_wrong_key_is_401_without_the_middleware(bare_client, h
 def test_unusable_key_store_is_503_not_401_without_the_middleware(bare_client, monkeypatch, caplog):
     import app.dependencies as dependencies
 
-    def broken_store(key: str):
+    def broken_store(key):
         raise OSError("/etc/secret-keys.json: disk error")
 
     monkeypatch.setattr(dependencies, "authenticate", broken_store)
@@ -387,7 +349,7 @@ def test_db_url_value_error_from_the_builder_is_a_generic_400(rw_client, monkeyp
 
 
 # ---------------------------------------------------------------------------
-# titles with "/" (allowed by the library since PR #16) are not addressable through the API
+# titles with "/" are not addressable unless MATTSTASH_ALLOW_SLASH_NAMES is on (see test_slash_names.py)
 # ---------------------------------------------------------------------------
 
 

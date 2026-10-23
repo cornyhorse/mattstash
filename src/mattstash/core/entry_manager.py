@@ -239,7 +239,7 @@ class EntryManager:
             InvalidCredentialError: If inputs are invalid
         """
         # Validate inputs
-        validate_credential_title(title)
+        validate_credential_title(title, allow_slash=kwargs.get("allow_slash"))
 
         value = kwargs.get("value")
         username = kwargs.get("username")

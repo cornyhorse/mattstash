@@ -5,13 +5,21 @@ MATTSTASH_TLS_KEY_FILE (both or neither). Prefer terminating TLS at a reverse pr
 use this when clients talk to the container directly.
 """
 
+import sys
+
 import uvicorn
 
 from .config import config
 from .logging_setup import uvicorn_level
+from .security.api_keys import check_removed_settings, load_auth_state
 
 
 def main() -> None:
+    try:
+        check_removed_settings()
+        load_auth_state()  # the policy file: missing, unreadable, invalid or without a usable credential
+    except (ValueError, FileNotFoundError) as exc:  # PolicyError is a ValueError; a message and exit 1, no traceback
+        sys.exit(f"mattstash-server: {exc}")
     tls = config.validate_tls()
     uvicorn.run(
         "app.main:app",

@@ -6,14 +6,14 @@ Kubernetes cluster, so they can fetch secrets without having direct access to th
 ## Overview
 
 The server wraps a KeePass database (`.kdbx`) in a small REST API. It is designed for private networks: other
-containers or pods query it for credentials, authenticating with an API key.
+containers or pods query it for credentials, authenticating with a token that belongs to a principal.
 
 **Key features**
 
 - **Read-only by default.** The database is mounted read-only and writes are off; `POST`/`DELETE` answer `405`.
   Writing is an explicit opt-in (`MATTSTASH_ALLOW_WRITES=true`) with its own deployment files.
-- **API-key authentication** on every credential endpoint. Keys must be at least 32 characters. Per-key scopes are
-  available (see [docs/configuration.md](docs/configuration.md)).
+- **Token authentication** on every credential endpoint. Each client presents a token of its own principal, and a
+  grant decides what it may touch (see [Principals, tokens and grants](#principals-tokens-and-grants)).
 - **Optional in-app TLS**, and TLS-terminating proxy/ingress examples. Plain HTTP is the default listener; see
   [TLS](#tls).
 - **Container-native**: Docker Compose and Kubernetes examples, liveness and readiness endpoints, non-root user,
@@ -51,10 +51,7 @@ file and a temporary file next to the database.
 
 ```bash
 cd server
-mkdir -p data secrets
-
-# API key: at least 32 characters (the server refuses to start with weaker ones)
-(umask 077; openssl rand -base64 32 > secrets/api_keys.txt)
+mkdir -p data secrets policy tokens
 
 # KeePass master password, kept in a file OUTSIDE the data directory
 (umask 077; openssl rand -base64 32 > secrets/kdbx_password.txt)
@@ -64,10 +61,22 @@ mattstash --db data/mattstash.kdbx setup --password-file secrets/kdbx_password.t
 
 # ... or copy an existing database instead of running setup:
 #   cp /path/to/your/database.kdbx data/mattstash.kdbx   (and put its password in secrets/kdbx_password.txt)
+
+# Who may use the server: a policy file with principals, the HASHES of their tokens, and grants. The server does
+# not start without one. An admin principal manages the policy; each client gets its own principal and token.
+mattstash admin --policy-file policy/policy.json principal add admin --kind human-device --admin
+mattstash admin --policy-file policy/policy.json token issue admin --output-file tokens/admin.token
+mattstash admin --policy-file policy/policy.json principal add myapp --kind agent --description "my application"
+mattstash admin --policy-file policy/policy.json grant add myapp --key 'myapp.*' --actions list,read
+mattstash admin --policy-file policy/policy.json token issue myapp --output-file tokens/myapp.token
 ```
 
+Upgrading from 0.2, where `MATTSTASH_API_KEY` / `MATTSTASH_API_KEYS_FILE` held the keys? Those settings were removed:
+the server refuses to start while one is set. [docs/upgrading-to-0.3.md](../docs/upgrading-to-0.3.md) moves your
+clients over without downtime (`mattstash admin token import`).
+
 Add credentials with the CLI (`mattstash --db data/mattstash.kdbx put ...`) before starting the read-only server.
-`./start.sh` automates the secrets and startup steps (it generates a strong API key if there is none).
+`./start.sh` automates the policy and startup steps (it creates an `admin` principal and its token if there is no policy file).
 
 ### 2. Start
 
@@ -95,9 +104,9 @@ curl http://127.0.0.1:8000/health
 # Readiness: 200 only once the database has been opened, otherwise 503
 curl http://127.0.0.1:8000/ready
 
-# Get a credential (requires an API key)
-curl -H "X-API-Key: $(head -n1 secrets/api_keys.txt)" \
-  http://127.0.0.1:8000/api/v1/credentials/my-secret
+# Get a credential (requires a token whose principal has a grant on the name)
+curl -H "X-API-Key: $(cat tokens/myapp.token)" \
+  http://127.0.0.1:8000/api/v1/credentials/myapp.db-password
 ```
 
 ## API Documentation
@@ -117,7 +126,8 @@ GET /ready         GET /api/ready
 ```
 
 No authentication. `/health` is **liveness**: it answers `200` as long as the process runs and never touches the
-database. `/ready` is **readiness**: `200` only if the database was opened successfully, `503` otherwise. Use
+database. `/ready` is **readiness**: `200` only if the database was opened successfully and the access-log file (when
+`MATTSTASH_ACCESS_LOG_FILE` is set) can be written, `503` otherwise (with a fixed body that names no path). Use
 `/health` for Docker/Compose health checks and Kubernetes liveness, `/ready` for Kubernetes readiness. Both paths of
 each pair behave identically (`/api/...` exists so a single ingress prefix can expose it).
 
@@ -216,7 +226,7 @@ These endpoints exist but are **disabled unless `MATTSTASH_ALLOW_WRITES=true`**;
 
 ## Configuration
 
-The full reference (API key policy file format, rate limiting, read-only mode details) is in
+The full reference (policy file, rate limiting, read-only mode details) is in
 [docs/configuration.md](docs/configuration.md). The common settings:
 
 ### Environment Variables
@@ -226,8 +236,7 @@ The full reference (API key policy file format, rate limiting, read-only mode de
 | `MATTSTASH_DB_PATH` | Path to the KeePass database (must already exist) | `/data/mattstash.kdbx` | Yes |
 | `KDBX_PASSWORD_FILE` | Path to a file containing the master password (preferred) | - | Yes* |
 | `KDBX_PASSWORD` | Master password (discouraged: visible in `docker inspect`) | - | Yes* |
-| `MATTSTASH_API_KEYS_FILE` | File with API keys: a plain list, or a JSON policy file | - | Yes** |
-| `MATTSTASH_API_KEY` | A single API key | - | Yes** |
+| `MATTSTASH_POLICY_FILE` | The policy file: principals, token hashes, grants (see below) | - | Yes** |
 | `MATTSTASH_ALLOW_WRITES` | `true` enables POST/DELETE; anything else keeps the server read-only | `false` | No |
 | `MATTSTASH_HOST` | Server bind address | `0.0.0.0` | No |
 | `MATTSTASH_PORT` | Server port | `8000` | No |
@@ -241,31 +250,26 @@ The full reference (API key policy file format, rate limiting, read-only mode de
 | `MATTSTASH_DISABLE_DOCS` | Do not serve the Swagger/ReDoc/OpenAPI pages | off | No |
 
 \* Either `KDBX_PASSWORD_FILE` or `KDBX_PASSWORD` is required.  
-\** Either `MATTSTASH_API_KEYS_FILE` or `MATTSTASH_API_KEY` is required.
+\** Required. `MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE` and `MATTSTASH_REQUIRE_SCOPED_KEYS` no longer exist: the
+server refuses to start while any of them is set ([docs/upgrading-to-0.3.md](../docs/upgrading-to-0.3.md)).
 
 The server **never creates a database**: if `MATTSTASH_DB_PATH` does not exist it reports an error. Create it with
 `mattstash setup`.
 
-### API keys
+### Principals, tokens and grants
 
-Every API key must be **at least 32 characters** and the server refuses to start with a weaker one. Generate keys
-with:
+Access is decided by a **policy file**: named principals (a `human-device`, an `agent`, a `runner`), the hashes of
+their tokens, and **grants** (which names each may list, read, write or delete). A request is allowed only if a grant
+says so. Create and change the policy with `mattstash admin ...`, either directly on the file (`--policy-file`, which
+is also how the first admin is created) or through the server's admin API (`--server-url` with an admin token). Give
+every client its own principal and token so one can be revoked or rotated without touching the others, and only the
+grants it needs: a `*` grant (every secret) is for `human-device` principals only and is refused for agents and
+runners. Tokens look like `mst_<id>_<secret>`; the policy file holds only salted hashes. The format and the CLI are
+described in [docs/configuration.md](docs/configuration.md) and
+[docs/design/principals-and-grants.md](../docs/design/principals-and-grants.md).
 
-```bash
-openssl rand -base64 32
-```
-
-Never use sample keys, never reuse a key across environments, and issue one key per client so a single client can be
-revoked. In its simplest form the keys file has one key per line (lines starting with `#` are ignored):
-
-```
-# One key per client; generated with: openssl rand -base64 32
-kC1m...43 characters of base64...
-q8Zt...43 characters of base64...
-```
-
-A JSON policy file can scope each key to operations and name prefixes instead; the format is described in
-[docs/configuration.md](docs/configuration.md). Plain-text key lines keep full access.
+Mount the policy file's **directory** into the container (a replaced single file would keep showing the old content),
+read-only unless the admin API should be able to change it.
 
 ### Master password
 
@@ -305,22 +309,23 @@ whenever traffic crosses hosts.
 
 **Don't:**
 - Expose the server on `0.0.0.0` / the internet without TLS.
-- Share one API key between all clients.
-- Put API keys in `docker-compose.yml` or in version control.
+- Share one token between all clients.
+- Put tokens in `docker-compose.yml` or in version control.
 
 ### Secrets management
 
 **Do:**
-- Keep the master password and API keys in files with restricted permissions (`0400`/`0600`), outside the repository
-  and outside the data volume. Use Compose `secrets:` (see `docker-compose.prod.yml`) or Kubernetes Secrets.
+- Keep the master password and the policy file in files with restricted permissions (`0400`/`0600`), outside the
+  repository and outside the data volume. Use Compose `secrets:` / a read-only directory mount (see
+  `docker-compose.prod.yml`) or Kubernetes Secrets.
 - Get Kubernetes secrets into the cluster without committing them: `kubectl create secret ... --from-file`, Sealed
   Secrets, SOPS, or External Secrets Operator / Secrets Store CSI (see `k8s/secret.example.yaml`).
-- Rotate API keys regularly; mount the data directory read-only unless you run write mode.
+- Rotate tokens regularly (`mattstash admin token rotate`); mount the data directory read-only unless you run write mode.
 
 **Don't:**
 - Commit secrets, databases, `.mattstash.txt` sidecars, `*.kdbx.lock` or `*.bak-*` files (they are git-ignored).
-- Log passwords or API keys.
-- Share API keys across environments.
+- Log passwords or tokens.
+- Share tokens across environments.
 
 ### Supply chain
 
@@ -374,7 +379,8 @@ pip install -r server/requirements.txt -r server/requirements-dev.txt
 # Point the server at an existing database (create one with `mattstash setup`)
 export MATTSTASH_DB_PATH=/path/to/database.kdbx
 export KDBX_PASSWORD_FILE=/path/to/password.txt
-export MATTSTASH_API_KEY="$(openssl rand -base64 32)"
+# A policy file with a principal and a token (see "Principals, tokens and grants" above)
+export MATTSTASH_POLICY_FILE=/path/to/policy.json
 
 cd server
 python -m app          # honours MATTSTASH_HOST / MATTSTASH_PORT / MATTSTASH_LOG_LEVEL / TLS settings
@@ -412,19 +418,19 @@ server/
 ├── start.sh                      # Quick start helper (docker compose)
 ├── app/                          # FastAPI application (start with `python -m app`)
 ├── tests/                        # Server test suite
-├── docs/configuration.md         # Configuration reference (API key policy, rate limiting, read-only mode)
+├── docs/configuration.md         # Configuration reference (policy file, rate limiting, read-only mode)
 ├── k8s/                          # Kubernetes manifests and guide
 │   ├── README.md
 │   ├── namespace.yaml  serviceaccount.yaml  configmap.yaml  secret.example.yaml
 │   ├── deployment.yaml  service.yaml  pdb.yaml  networkpolicy.yaml  ingress.yaml
 │   └── writable/                 # pvc.yaml, setup-job.yaml, deployment.yaml
 ├── data/                         # KeePass database location (git-ignored)
-└── secrets/                      # Master password and API keys (git-ignored)
+└── secrets/, policy/, tokens/    # Master password; policy file; tokens for clients (git-ignored)
 ```
 
 ## Client Examples
 
-Keep the API key in an environment variable or a secret, never in the source.
+Keep the token in an environment variable or a secret, never in the source.
 
 ### Python
 
@@ -478,7 +484,7 @@ curl -H "X-API-Key: $MATTSTASH_API_KEY" "$API_URL/db-url/db-prod?driver=psycopg&
 
 ```bash
 export MATTSTASH_SERVER_URL=http://mattstash-api:8000
-export MATTSTASH_API_KEY=...            # a key of at least 32 characters
+export MATTSTASH_API_KEY=...            # the token issued for this client (the client's variable keeps its name)
 export MATTSTASH_ALLOW_INSECURE_HTTP=1  # plain http on a private network; silences the CLI's warning
 mattstash get db-prod
 ```
@@ -491,7 +497,7 @@ services:
     image: myapp:latest
     environment:
       MATTSTASH_SERVER_URL: http://mattstash-api:8000
-      MATTSTASH_API_KEY: ${MY_APP_API_KEY:?set MY_APP_API_KEY}
+      MATTSTASH_API_KEY: ${MY_APP_TOKEN:?set MY_APP_TOKEN}   # the token issued for this client
       MATTSTASH_ALLOW_INSECURE_HTTP: "1"
     networks:
       - backend
@@ -505,13 +511,13 @@ services:
     environment:
       MATTSTASH_DB_PATH: /data/mattstash.kdbx
       KDBX_PASSWORD_FILE: /run/secrets/kdbx_password
-      MATTSTASH_API_KEYS_FILE: /run/secrets/mattstash_api_keys
+      MATTSTASH_POLICY_FILE: /policy/policy.json
       MATTSTASH_ALLOW_WRITES: "false"
     volumes:
       - ./data:/data:ro
+      - ./policy:/policy:ro          # the directory that holds policy.json
     secrets:
       - kdbx_password
-      - mattstash_api_keys
     networks:
       - backend
 
@@ -522,8 +528,6 @@ networks:
 secrets:
   kdbx_password:
     file: ./secrets/kdbx_password.txt
-  mattstash_api_keys:
-    file: ./secrets/api_keys.txt
 ```
 
 ## Troubleshooting
@@ -533,19 +537,24 @@ secrets:
 **Service won't start:**
 - `KDBX_PASSWORD_FILE` / `KDBX_PASSWORD` must be set and correct, and the database must exist at
   `MATTSTASH_DB_PATH` (the server never creates one; run `mattstash setup`).
-- At least one API key must be configured, and every key must be at least 32 characters.
+- `MATTSTASH_POLICY_FILE` must point at a policy file with at least one enabled principal holding an unexpired token,
+  and none of `MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE` or `MATTSTASH_REQUIRE_SCOPED_KEYS` may be set (removed
+  in 0.3; the log names the one that is). See [docs/upgrading-to-0.3.md](../docs/upgrading-to-0.3.md).
 - Check file permissions on the mounted data and secrets: the container user (uid/gid `1000` by default) must be able
   to read them. In write mode it must be able to write the data **directory**.
 
-**`/ready` returns 503:** the database could not be opened: wrong master password, missing or corrupt file, or an
-unreadable password file. The logs say which; they never contain the password.
+**`/ready` returns 503:** the database could not be opened (wrong master password, missing or corrupt file, or an
+unreadable password file), or the access-log file cannot be written (full disk, permissions; see
+`MATTSTASH_ACCESS_LOG_FAIL_OPEN` in [docs/configuration.md](docs/configuration.md)). The logs say which; they never
+contain the password.
 
 **`405` on POST/DELETE:** the server is in read-only mode (the default). See
 [Read-only and writable mode](#read-only-and-writable-mode).
 
 **Authentication errors:**
-- Verify the API key and that the `X-API-Key` header is sent.
-- Make sure the key has no trailing whitespace. Repeated failures from one address are throttled.
+- Verify the token and that the `X-API-Key` header is sent. `mattstash admin log --principal NAME` shows the reason
+  for each refusal (`unknown-token`, `expired-token`, `disabled`, `no-grant`, ...).
+- Make sure the token has no trailing whitespace. Repeated failures from one address are throttled.
 
 **Credential not found:**
 - Verify the credential exists in the KeePass database and check the spelling (names are case-sensitive).

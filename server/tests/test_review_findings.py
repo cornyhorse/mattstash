@@ -23,10 +23,9 @@ from app.config import Config
 from app.logging_setup import configure_logging
 from app.logsafe import printable
 from app.security import api_keys
-from app.security.api_keys import load_key_policy
 from app.security.throttle import FailureTracker
 
-from .conftest import ADMIN_KEY, APP_KEY, DB_PASSWORD, FULL_KEY, READ_KEY, auth
+from .conftest import APP_KEY, DB_PASSWORD, FULL_KEY, READ_KEY, auth, import_plain_key
 
 H = auth()
 SERVER_DIR = Path(__file__).resolve().parent.parent
@@ -43,21 +42,37 @@ def free_port() -> int:
 # ---------------------------------------------------------------------------
 
 
-def test_real_server_process_writes_audit_and_access_logs_with_key_ids(db_path, tmp_path):
-    """`caplog` attaches a root handler, which hid that nothing configured these loggers in a real process."""
-    from app.keytool import build_entry
+def _json_lines(output: str) -> list[dict]:
+    lines = []
+    for line in output.splitlines():
+        if line.startswith("{"):
+            lines.append(json.loads(line))
+    return lines
 
-    keys = tmp_path / "keys.json"
-    keys.write_text(json.dumps({"keys": [build_entry("auditor", FULL_KEY, ["read"], [])]}))
+
+def _auditor_policy(tmp_path) -> str:
+    """A policy whose only principal, ``auditor``, may list and read ``some-*`` with the (imported) key ``FULL_KEY``."""
+    from mattstash.authz import edit_policy
+
+    with edit_policy(tmp_path / "policy.json", create=True) as ed:
+        ed.add_principal("auditor", "agent")
+        ed.add_grant("auditor", key="some-*", actions=["list", "read"])
+        import_plain_key(ed, "auditor", FULL_KEY)
+    return str(tmp_path / "policy.json")
+
+
+def test_real_server_process_writes_the_structured_access_log_to_stdout(db_path, tmp_path):
+    """`caplog` attaches a root handler, which hid that nothing configured these loggers in a real process."""
+    policy = _auditor_policy(tmp_path)
     port = free_port()
     env = {
         **os.environ,
         "MATTSTASH_DB_PATH": str(db_path),
         "KDBX_PASSWORD": DB_PASSWORD,
-        "MATTSTASH_API_KEYS_FILE": str(keys),
+        "MATTSTASH_POLICY_FILE": policy,
         "MATTSTASH_PORT": str(port),
         "MATTSTASH_HOST": "127.0.0.1",
-        "MATTSTASH_LOG_LEVEL": "warning",  # the audit trail must not depend on the operational log level
+        "MATTSTASH_LOG_LEVEL": "warning",  # the access log must not depend on the operational log level
     }
     proc = subprocess.Popen(
         [sys.executable, "-m", "app"],
@@ -82,22 +97,31 @@ def test_real_server_process_writes_audit_and_access_logs_with_key_ids(db_path, 
         proc.terminate()
         output = proc.communicate(timeout=20)[0]
 
-    audit_lines = [line for line in output.splitlines() if " mattstash.audit " in line]
+    records = _json_lines(output)
     assert any(
-        "audit key=auditor" in line and "action=get" in line and "name=some-secret" in line and "reveal=True" in line
-        for line in audit_lines
+        r["principal"] == "auditor"
+        and r["kind"] == "agent"
+        and r["action"] == "read"
+        and r["key"] == "some-secret"
+        and r["decision"] == "allowed"
+        and r["status"] == 404
+        and r["client"] == "127.0.0.1"
+        for r in records
     ), output
-    # (access log lines are operational: with LOG_LEVEL=warning they are correctly absent, the audit trail is not)
+    assert any(r["principal"] == "-" and r["reason"] == "bad-token" and r["status"] == 401 for r in records), output
+    assert not any(r.get("key") == "/health" for r in records)  # probes are not logged
+    assert "uses the unsalted 'sha256:' scheme" in output  # the startup warning, one per imported/migrated token
     assert FULL_KEY not in output and "definitely-not-a-valid-key" not in output
 
 
 def test_real_server_access_log_has_client_status_and_key_id(db_path, tmp_path):
+    policy = _auditor_policy(tmp_path)
     port = free_port()
     env = {
         **os.environ,
         "MATTSTASH_DB_PATH": str(db_path),
         "KDBX_PASSWORD": DB_PASSWORD,
-        "MATTSTASH_API_KEY": FULL_KEY,
+        "MATTSTASH_POLICY_FILE": policy,
         "MATTSTASH_PORT": str(port),
         "MATTSTASH_HOST": "127.0.0.1",
         "MATTSTASH_LOG_LEVEL": "info",
@@ -126,25 +150,32 @@ def test_real_server_access_log_has_client_status_and_key_id(db_path, tmp_path):
         output = proc.communicate(timeout=20)[0]
 
     access = [line for line in output.splitlines() if " mattstash.api GET /api/v1/credentials " in line]
-    assert any("-> 200" in line and "client=127.0.0.1" in line and "key=legacy-env" in line for line in access), output
+    assert any("-> 200" in line and "client=127.0.0.1" in line and "key=auditor" in line for line in access), output
     assert any("-> 401" in line and "key=-" in line for line in access), output
     assert not any("HTTP/1.1" in line for line in output.splitlines() if "uvicorn" in line.lower()), (
         "uvicorn's anonymous access log should be off (ours has the key id)"
     )
 
 
-def test_configure_logging_is_idempotent_and_audit_is_always_info(monkeypatch):
+def test_configure_logging_is_idempotent_and_the_access_log_is_always_info(monkeypatch):
     monkeypatch.setattr(Config, "LOG_LEVEL", "error")
-    for name in ("mattstash.api", "mattstash.audit"):
+    for name in ("mattstash.api", "mattstash.access"):
         logging.getLogger(name).handlers.clear()
     configure_logging()
     configure_logging()
-    api, audit = logging.getLogger("mattstash.api"), logging.getLogger("mattstash.audit")
-    assert len(api.handlers) == 1 and len(audit.handlers) == 1
-    assert api.level == logging.ERROR and audit.level == logging.INFO  # audit ignores MATTSTASH_LOG_LEVEL
+    api, access = logging.getLogger("mattstash.api"), logging.getLogger("mattstash.access")
+    assert len(api.handlers) == 1 and len(access.handlers) == 1
+    assert api.level == logging.ERROR and access.level == logging.INFO  # the access log ignores MATTSTASH_LOG_LEVEL
     monkeypatch.setattr(Config, "LOG_LEVEL", "nonsense")
     configure_logging()
     assert api.level == logging.INFO  # unknown level falls back to info
+
+
+def test_access_log_handler_writes_to_the_current_stdout_with_the_bare_message(monkeypatch, capsys):
+    logging.getLogger("mattstash.access").handlers.clear()
+    configure_logging()
+    logging.getLogger("mattstash.access").info('{"x":1}')
+    assert capsys.readouterr().out == '{"x":1}\n'  # stdout as swapped in by capsys, no timestamp/level prefix
 
 
 # ---------------------------------------------------------------------------
@@ -295,45 +326,32 @@ def test_tracker_eviction_does_not_scan_and_evicts_least_recently_active():
 # ---------------------------------------------------------------------------
 
 
-def test_invalidate_works_on_a_freshly_booted_host(monkeypatch, tmp_path):
+def test_invalidate_works_on_a_freshly_booted_host(monkeypatch, default_policy):
     """time.monotonic() counts from boot; a stale marker of 0.0 meant 'loaded just now' on a young host."""
-    keys = tmp_path / "keys"
-    keys.write_text("o" * 40 + "\n")
-    monkeypatch.setattr(Config, "API_KEYS_FILE", str(keys))
+    from mattstash.authz import edit_policy
+
+    monkeypatch.setattr(Config, "POLICY_FILE", default_policy)
     monkeypatch.setattr(api_keys.time, "monotonic", lambda: 100.0)  # host booted 100 s ago
-    assert api_keys.verify_api_key("o" * 40)
-    keys.write_text("n" * 40 + "\n")
+    assert api_keys.verify_api_key(FULL_KEY)
+    with edit_policy(default_policy) as ed:
+        import_plain_key(ed, "full", "n" * 40)
+        ed.revoke_token("full", ed.policy.principal("full").tokens[0].id)
     api_keys.invalidate_api_key_cache()
-    assert not api_keys.verify_api_key("o" * 40) and api_keys.verify_api_key("n" * 40)
+    assert not api_keys.verify_api_key(FULL_KEY) and api_keys.verify_api_key("n" * 40)
 
 
-def test_admin_invalidate_reports_failure_when_the_new_policy_cannot_load(make_client, tmp_path):
-    keys = tmp_path / "keys.json"
-    keys.write_text(json.dumps({"keys": [{"id": "ops", "key": ADMIN_KEY, "ops": ["admin"]}]}))
-    client = make_client(API_KEY=None, API_KEYS_FILE=str(keys))
-    admin = auth(ADMIN_KEY)
+def test_admin_invalidate_reports_failure_when_the_new_policy_cannot_load(make_client, default_policy):
+    client = make_client()
+    admin = auth(FULL_KEY)
 
     ok = client.post("/api/v1/admin/invalidate-api-key-cache", headers=admin)
     assert ok.status_code == 200 and ok.json() == {"status": "api_key_cache_invalidated", "keys": 1}
 
-    keys.write_text("{ this is not valid json")  # a botched edit while trying to revoke a key
+    with open(default_policy, "w") as handle:
+        handle.write("{ this is not valid json")  # a botched edit while trying to revoke a key
     failed = client.post("/api/v1/admin/invalidate-api-key-cache", headers=admin)
     assert failed.status_code == 409 and "previous keys are still active" in failed.json()["detail"]
-    assert client.get("/api/v1/credentials", headers=admin).status_code == 403  # old policy still serves (admin only)
-
-
-def test_reload_key_policy_now_replaces_the_policy_atomically(monkeypatch, tmp_path):
-    keys = tmp_path / "keys"
-    keys.write_text("o" * 40 + "\n")
-    monkeypatch.setattr(Config, "API_KEYS_FILE", str(keys))
-    assert api_keys.verify_api_key("o" * 40)
-    keys.write_text("")
-    with pytest.raises(ValueError):
-        api_keys.reload_key_policy_now()
-    assert api_keys.verify_api_key("o" * 40)  # a failed reload changes nothing
-    keys.write_text("n" * 40 + "\n")
-    assert len(api_keys.reload_key_policy_now()) == 1
-    assert api_keys.verify_api_key("n" * 40) and not api_keys.verify_api_key("o" * 40)
+    assert client.get("/api/v1/credentials", headers=admin).status_code == 200  # the old policy still serves
 
 
 # ---------------------------------------------------------------------------
@@ -343,14 +361,16 @@ def test_reload_key_policy_now_replaces_the_policy_atomically(monkeypatch, tmp_p
 
 def test_untrusted_path_cannot_forge_log_records(client, caplog):
     caplog.set_level(logging.INFO)
-    forged = "/x%0A2026-10-07 12:00:00 INFO mattstash.audit audit key=admin action=delete name=prod-db-password"
+    forged = "/x%0A2026-10-07 12:00:00 INFO mattstash.access " + "%7B%22principal%22:%22admin%22%7D"
     client.get(forged, headers=H)
     client.get(forged)  # unauthenticated too
     for record in caplog.records:
         message = record.getMessage()
         assert "\n" not in message and "\r" not in message, message
     assert any("\\x0a" in r.getMessage() for r in caplog.records)  # escaped, still visible to an operator
-    assert not any(r.name == "mattstash.audit" and "name=prod-db-password" in r.getMessage() for r in caplog.records)
+    # the path never reaches the access log at all, so it cannot be used to inject a record
+    access = [r.getMessage() for r in caplog.records if r.name == "mattstash.access"]
+    assert access and all("admin" not in line and "2026-10-07" not in line for line in access)
 
 
 @pytest.mark.parametrize(
@@ -372,70 +392,20 @@ def test_printable(raw, expected):
 # ---------------------------------------------------------------------------
 
 
-def test_comment_plus_minified_json_is_a_policy_not_a_legacy_key(monkeypatch, tmp_path):
-    """The whole JSON text used to be accepted as ONE legacy full-access key (fail open)."""
-    from app.keytool import build_entry
-
-    text = "# generated for billing\n" + json.dumps({"keys": [build_entry("billing", READ_KEY, ["read"], ["bill-"])]})
-    path = tmp_path / "keys"
-    path.write_text(text)
-    monkeypatch.setattr(Config, "API_KEYS_FILE", str(path))
-    policy = load_key_policy()
-    assert policy.authenticate(text) is None  # the file's own text is not a credential
-    assert policy.authenticate(READ_KEY).id == "billing" and policy.legacy_count == 0
-
-
-def test_utf8_bom_is_tolerated(monkeypatch, tmp_path):
-    path = tmp_path / "keys"
-    path.write_bytes(b"\xef\xbb\xbf" + b"b" * 40 + b"\n" + b"c" * 40 + b"\n")
-    monkeypatch.setattr(Config, "API_KEYS_FILE", str(path))
-    policy = load_key_policy()
-    assert policy.authenticate("b" * 40) and policy.authenticate("c" * 40)  # the first key used to carry the BOM
-
-    path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"keys": [{"id": "a", "key": APP_KEY}]}).encode())
-    assert load_key_policy().authenticate(APP_KEY).id == "a"
-
-
-def test_whitespace_inside_a_legacy_key_line_is_rejected(monkeypatch, tmp_path):
-    path = tmp_path / "keys"
-    path.write_text("k" * 40 + " trailing words\n")
-    monkeypatch.setattr(Config, "API_KEYS_FILE", str(path))
-    with pytest.raises(ValueError, match=r"line 1.*whitespace"):
-        load_key_policy()
-
-
-def test_duplicate_json_fields_are_rejected_not_last_wins(monkeypatch, tmp_path):
-    entry = '{"id": "a", "key": "' + APP_KEY + '", "ops": ["read"], "ops": ["admin"]}'
-    path = tmp_path / "keys.json"
-    path.write_text('{"keys": [' + entry + "]}")
-    monkeypatch.setattr(Config, "API_KEYS_FILE", str(path))
-    with pytest.raises(ValueError, match="duplicate field 'ops'"):
-        load_key_policy()
-
-
-def test_legacy_principal_ids_are_positional_and_do_not_leak_a_key_hash(monkeypatch, tmp_path):
-    import hashlib
-
-    path = tmp_path / "keys"
-    path.write_text("a" * 40 + "\n" + "b" * 40 + "\n")
-    monkeypatch.setattr(Config, "API_KEY", FULL_KEY)
-    monkeypatch.setattr(Config, "API_KEYS_FILE", str(path))
-    policy = load_key_policy()
-    ids = [policy.authenticate(k).id for k in (FULL_KEY, "a" * 40, "b" * 40)]
-    assert ids == ["legacy-env", "legacy-1", "legacy-2"]
-    keys = (FULL_KEY, "a" * 40, "b" * 40)
-    assert not any(hashlib.sha256(k.encode()).hexdigest()[:8] in i for k, i in zip(keys, ids, strict=True))
-
-
 # ---------------------------------------------------------------------------
 # #12 db-url 404s, #13 422 bodies, #14 denied audit, #17 rate limit validation
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def scoped(make_client, key_policy_file, seed):
+def scoped(make_client, key_policy_file, seed, tmp_path):
+    """A server on the v1 key policy of ``key_policy_file`` converted by ``migrate-keys`` (reader, app, writer, ops)."""
+    from mattstash.authz import edit_policy
+
     seed(app__db={"username": "u", "password": "p", "url": "h:5432"}, app__token={"value": "t"}, other={"value": "x"})
-    return make_client(API_KEY=None, API_KEYS_FILE=str(key_policy_file), ALLOW_WRITES=True)
+    with edit_policy(tmp_path / "migrated.json", create=True) as ed:
+        ed.import_v1(key_policy_file.read_text(), 32, "human-device")
+    return make_client(POLICY_FILE=str(tmp_path / "migrated.json"), ALLOW_WRITES=True)
 
 
 def test_db_url_out_of_scope_matches_every_in_scope_miss(scoped):
@@ -461,18 +431,18 @@ def test_validation_errors_do_not_echo_submitted_secrets(rw_client):
         assert detail and all(set(item) == {"loc", "msg", "type"} for item in detail)
 
 
-def test_denied_requests_are_audited_with_key_id_and_name(scoped, caplog):
+def test_denied_requests_are_in_the_access_log_with_principal_and_name(scoped, caplog):
     caplog.set_level(logging.INFO)
     scoped.get("/api/v1/credentials/other", headers=auth(APP_KEY))  # read outside prefix
     scoped.post("/api/v1/credentials/other", json={"value": "v"}, headers=auth(APP_KEY))  # write outside prefix
     scoped.delete("/api/v1/credentials/other", headers=auth(APP_KEY))  # delete outside prefix
     scoped.post("/api/v1/credentials/app-x", json={"value": "v"}, headers=auth(READ_KEY))  # op not allowed
-    lines = [
-        r.getMessage() for r in caplog.records if r.name == "mattstash.audit" and "action=denied" in r.getMessage()
-    ]
-    assert sum("key=app " in line and "name=other" in line for line in lines) == 3
-    assert any("key=reader " in line and "op=write" in line for line in lines)
-    assert not any(APP_KEY in line or READ_KEY in line for line in lines)
+    lines = [json.loads(r.getMessage()) for r in caplog.records if r.name == "mattstash.access"]
+    denied = [line for line in lines if line["decision"] == "denied"]
+    assert sum(line["principal"] == "app" and line["key"] == "other" for line in denied) == 3
+    assert any(line["principal"] == "reader" and line["action"] == "write" for line in denied)
+    assert all(line["reason"] == "no-grant" for line in denied)
+    assert not any(APP_KEY in r.getMessage() or READ_KEY in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize("bad", ["bogus", "100", "5/fortnight", ""])

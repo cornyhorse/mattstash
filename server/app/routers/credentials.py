@@ -8,18 +8,23 @@ event loop, so health probes and other requests stay responsive while a write is
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from mattstash import MattStash
+from mattstash.authz import visible
+from mattstash.authz.models import utcnow
 from mattstash.models.credential import Credential
 
-from ..audit import audit
+from ..accesslog import note
+from ..config import config
 from ..dependencies import (
+    Caller,
     DeleteAccess,
     MattStashDep,
     ReadAccess,
     WriteAccess,
     WritesEnabled,
     WriteSlot,
-    ensure_name_in_scope,
+    authorize_name,
 )
 from ..errors import translate_errors
 from ..models.requests import CreateCredentialRequest
@@ -27,10 +32,18 @@ from ..models.responses import (
     CreateCredentialResponse,
     CredentialListResponse,
     CredentialResponse,
+    SearchResponse,
+    SearchResult,
     VersionListResponse,
 )
 from ..rate_limit import limiter, read_limit
-from ..validation import is_valid_name, require_valid_name, require_valid_prefix
+from ..validation import (
+    MAX_NAME_LENGTH,
+    is_valid_name,
+    require_slash_names_enabled,
+    require_valid_name,
+    require_valid_prefix,
+)
 
 logger = logging.getLogger("mattstash.api")
 router = APIRouter()
@@ -86,13 +99,50 @@ def _normalize_credential(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/credentials/{name}", response_model=CredentialResponse)
+# Declared before the {name:namepath} routes: /credentials/a/versions is the versions of "a", not a credential.
+def _versions(request: Request, name: str, mattstash: MattStash, caller: Caller) -> VersionListResponse:
+    require_valid_name(name)
+    authorize_name(request, caller, "read", "versions", name, mattstash=mattstash)
+    with translate_errors("versions"):
+        versions = mattstash.list_versions(name)
+
+    if not versions:
+        raise _not_found(name)
+
+    return VersionListResponse(
+        name=name,
+        versions=versions,
+        latest=versions[-1],  # Last version is the latest
+    )
+
+
+@router.get("/credentials/{name}/versions", response_model=VersionListResponse)
+@limiter.limit(read_limit)
+def list_versions(
+    request: Request,
+    name: str,
+    mattstash: MattStashDep,
+    caller: ReadAccess,
+) -> VersionListResponse:
+    """
+    List all versions of a credential whose name has no ``/``.
+
+    - **name**: Credential name
+    """
+    return _versions(request, name, mattstash, caller)
+
+
+@router.get(
+    "/credentials/{name:namepath}",
+    response_model=CredentialResponse,
+    dependencies=[Depends(require_slash_names_enabled)],
+)
 @limiter.limit(read_limit)
 def get_credential(
     request: Request,
     name: str,
     mattstash: MattStashDep,
-    principal: ReadAccess,
+    caller: ReadAccess,
     version: int | None = Query(None, ge=0, description="Specific version to retrieve"),
     show_password: bool = Query(False, description="Show actual password instead of masking"),
 ) -> Response:
@@ -104,14 +154,16 @@ def get_credential(
     - **show_password**: Whether to show the actual password (default: masked)
     """
     require_valid_name(name)
-    ensure_name_in_scope(principal, name, hide=True, request=request, op="read")
-    audit(request, "get", name, reveal=show_password, version=version)
+    authorize_name(request, caller, "read", "get", name, mattstash=mattstash)
+    note(request, version=version)
     with translate_errors("get"):
         credential = mattstash.get(name, show_password=True, version=version)
 
     if credential is None:
         raise _not_found(name)
 
+    if show_password:
+        note(request, reveal=True)  # the value is in the response (a miss above reveals nothing)
     response_data = _normalize_credential(name, credential, show_password)
     return Response(
         content=response_data.model_dump_json(),
@@ -126,15 +178,18 @@ def list_credentials(
     request: Request,
     response: Response,
     mattstash: MattStashDep,
-    principal: ReadAccess,
+    caller: ReadAccess,
     prefix: str | None = Query(None, description="Filter by name prefix"),
     show_password: bool = Query(False, description="Show actual passwords instead of masking"),
 ) -> CredentialListResponse:
     """
-    List credentials (latest version of each) that this key may read.
+    List credentials (latest version of each) that this principal may ``list``.
 
     - **prefix**: Optional prefix filter
     - **show_password**: Whether to show actual passwords (default: masked)
+
+    Username, URL, notes and the value are filled in only for entries the principal may also ``read``; the others
+    are returned with just name and version (password always masked).
 
     Entries whose titles contain characters outside ``[A-Za-z0-9_.-]`` are not addressable through this
     API and are not listed.
@@ -142,48 +197,93 @@ def list_credentials(
     response.headers["Cache-Control"] = "no-store"
     if prefix:
         require_valid_prefix(prefix)
-    audit(request, "list", reveal=show_password, prefix=prefix)
     with translate_errors("list"):
         all_creds = mattstash.list(show_password=True, latest_only=True)
 
-    visible = [
+    now = utcnow()
+    candidates = [
         c
         for c in all_creds
-        if is_valid_name(c.credential_name)
-        and principal.allows_name(c.credential_name)
-        and (not prefix or c.credential_name.startswith(prefix))
+        if is_valid_name(c.credential_name) and (not prefix or c.credential_name.startswith(prefix))
     ]
-    credentials = [_normalize_credential(c.credential_name, c, show_password) for c in visible]
+    pairs = [(c.credential_name, c.tags) for c in candidates]
+    listed = set(visible(caller.policy, caller.principal, "list", pairs, now))
+    shown = [c for c in candidates if c.credential_name in listed]
+    readable = set(visible(caller.policy, caller.principal, "read", [(c.credential_name, c.tags) for c in shown], now))
+    credentials = [
+        _normalize_credential(c.credential_name, c, show_password)
+        if c.credential_name in readable
+        else CredentialResponse(name=c.credential_name, password=_MASK, version=c.version)
+        for c in shown
+    ]
+    note(
+        request,
+        action="list",
+        route="list",
+        key=prefix or None,
+        decision="allowed",
+        count=len(credentials),
+        reveal=True if show_password else None,
+    )
     return CredentialListResponse(credentials=credentials, count=len(credentials))
 
 
-@router.get("/credentials/{name}/versions", response_model=VersionListResponse)
+@router.get("/search", response_model=SearchResponse)
 @limiter.limit(read_limit)
-def list_versions(
+def search_credentials(
+    request: Request,
+    response: Response,
+    mattstash: MattStashDep,
+    caller: ReadAccess,
+    q: str | None = Query(None, max_length=MAX_NAME_LENGTH, description="Case-insensitive part of the name"),
+    tag: str | None = Query(None, max_length=100, description="Exact tag of the latest version"),
+) -> SearchResponse:
+    """
+    Find credentials by part of the name and/or by tag. Only names and tags are searched and returned (never notes
+    or values), and only entries the principal may ``list`` appear. At least one of ``q`` and ``tag`` is required.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    q, tag = q or None, tag or None
+    if q is None and tag is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provide q, tag or both")
+    with translate_errors("search"):
+        all_creds = mattstash.list(show_password=False, latest_only=True)
+
+    wanted = q.casefold() if q is not None else None
+    matches = [
+        c
+        for c in all_creds
+        if is_valid_name(c.credential_name)
+        and (wanted is None or wanted in c.credential_name.casefold())
+        and (tag is None or tag in c.tags)
+    ]
+    allowed = set(
+        visible(caller.policy, caller.principal, "list", [(c.credential_name, c.tags) for c in matches], utcnow())
+    )
+    results = [SearchResult(name=c.credential_name, tags=list(c.tags)) for c in matches if c.credential_name in allowed]
+    note(request, action="list", route="search", key=q, tag=tag, decision="allowed", count=len(results))
+    return SearchResponse(results=results, count=len(results))
+
+
+@router.get(
+    "/versions/{name:namepath}",
+    response_model=VersionListResponse,
+    dependencies=[Depends(require_slash_names_enabled)],
+)
+@limiter.limit(read_limit)
+def list_versions_by_path(
     request: Request,
     name: str,
     mattstash: MattStashDep,
-    principal: ReadAccess,
+    caller: ReadAccess,
 ) -> VersionListResponse:
     """
-    List all versions of a credential.
+    List all versions of a credential; the name may contain ``/`` (when the server allows it). Unlike
+    ``/credentials/{name}/versions`` this cannot confuse the name ``a/versions`` with the versions of ``a``.
 
     - **name**: Credential name
     """
-    require_valid_name(name)
-    ensure_name_in_scope(principal, name, hide=True, request=request, op="read")
-    audit(request, "versions", name)
-    with translate_errors("versions"):
-        versions = mattstash.list_versions(name)
-
-    if not versions:
-        raise _not_found(name)
-
-    return VersionListResponse(
-        name=name,
-        versions=versions,
-        latest=versions[-1],  # Last version is the latest
-    )
+    return _versions(request, name, mattstash, caller)
 
 
 # ---------------------------------------------------------------------------
@@ -192,9 +292,10 @@ def list_versions(
 
 
 @router.post(
-    "/credentials/{name}",
+    "/credentials/{name:namepath}",
     response_model=CreateCredentialResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_slash_names_enabled)],
 )
 @limiter.limit("30/minute")
 def create_credential(
@@ -203,7 +304,7 @@ def create_credential(
     name: str,
     body: CreateCredentialRequest,
     mattstash: MattStashDep,
-    principal: WriteAccess,
+    caller: WriteAccess,
     _writes: WritesEnabled,
     _slot: WriteSlot,
 ) -> CreateCredentialResponse:
@@ -213,7 +314,7 @@ def create_credential(
     - **name**: Credential name
     """
     require_valid_name(name)
-    ensure_name_in_scope(principal, name, hide=False, request=request, op="write")
+    authorize_name(request, caller, "write", "put", name)
     response.headers["Cache-Control"] = "no-store"
     with translate_errors("put"):
         result = mattstash.put(
@@ -224,13 +325,13 @@ def create_credential(
             url=body.url,
             notes=body.notes,
             tags=body.tags,
+            allow_slash=config.ALLOW_SLASH_NAMES,
         )
 
     if result is None:  # pragma: no cover - put() raises on failure
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to store credential")
 
     version = result.get("version") if isinstance(result, dict) else result.version
-    audit(request, "put", name, version=version)
     return CreateCredentialResponse(
         name=name,
         version=version or "0000000001",
@@ -238,14 +339,16 @@ def create_credential(
     )
 
 
-@router.delete("/credentials/{name}", status_code=status.HTTP_200_OK)
+@router.delete(
+    "/credentials/{name:namepath}", status_code=status.HTTP_200_OK, dependencies=[Depends(require_slash_names_enabled)]
+)
 @limiter.limit("30/minute")
 def delete_credential(
     request: Request,
     response: Response,
     name: str,
     mattstash: MattStashDep,
-    principal: DeleteAccess,
+    caller: DeleteAccess,
     _writes: WritesEnabled,
     _slot: WriteSlot,
     version: int | None = Query(None, ge=0, description="Delete only this version (default: all versions)"),
@@ -256,11 +359,11 @@ def delete_credential(
     - **name**: Credential name
     """
     require_valid_name(name)
-    ensure_name_in_scope(principal, name, hide=False, request=request, op="delete")
+    note(request, version=version)
+    authorize_name(request, caller, "delete", "delete", name)
     response.headers["Cache-Control"] = "no-store"
     with translate_errors("delete"):
         deleted = mattstash.delete(name, version)
-    audit(request, "delete", name, version=version, deleted=deleted)
 
     if not deleted:
         raise _not_found(name)

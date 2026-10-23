@@ -145,13 +145,19 @@ The API server is distributed as a Docker image — it is **not** a CLI subcomma
 docker run -d \
   -e MATTSTASH_DB_PATH=/data/mattstash.kdbx \
   -e KDBX_PASSWORD=<password> \
-  -e MATTSTASH_API_KEY=<api-key> \
+  -e MATTSTASH_POLICY_FILE=/policy/policy.json \
   -v /path/to/data:/data:ro \
+  -v /path/to/policy:/policy:ro \
   -p 8000:8000 \
   ghcr.io/cornyhorse/mattstash:latest
 ```
 
-The server exposes a health check at `/api/health` and credential endpoints under `/api/v1/`.
+The server needs a **policy file** (`MATTSTASH_POLICY_FILE`) that holds at least one principal with a usable token; it
+refuses to start without one. Create it as shown under [Access control](#access-control). The server exposes a health
+check at `/api/health`, a readiness check at `/api/ready` and credential endpoints under `/api/v1/`.
+
+> The server's `MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE` and `MATTSTASH_REQUIRE_SCOPED_KEYS` were removed in 0.3
+> and make startup fail. See [upgrading to 0.3](docs/upgrading-to-0.3.md).
 
 > **Tip:** Run `mattstash server` for a quick-reference of these instructions.
 
@@ -177,6 +183,35 @@ export MATTSTASH_API_KEY_FILE=/run/secrets/mattstash_api_key
 The client verifies TLS certificates. Using a plain `http://` URL for a host other than `localhost` logs a warning
 (the API key then travels in clear text); set `MATTSTASH_ALLOW_INSECURE_HTTP=1` to silence it for a trusted network such as
 a compose or cluster network. See the [CLI reference](docs/cli-reference.md#mode-selection) for what works in server mode.
+
+### Access control
+
+Each client is a **principal** (a Mac, an AI agent or a runner) that presents one or more **tokens**. Access is
+default-deny: a principal may do only what a **grant** allows, on a name pattern (`firefly.*`, or `firefly` for one
+name), or a KeePass entry tag, with the actions `list`, `read`, `write` and `delete`. Only a `human-device` principal
+may hold the `*` grant (every name); agents and runners may not. Principals and grants live in the policy
+file (`MATTSTASH_POLICY_FILE`), separate from the vaults, and are managed with `mattstash admin`. Every request, including
+every denial, is written to an **access log** (one JSON line per request, never a secret or a token).
+
+Upgrading from 0.2 (where `MATTSTASH_API_KEY` and key files were the server's credentials)? Those server settings are
+removed, and the zero-downtime steps for moving each client to a token are in [upgrading to 0.3](docs/upgrading-to-0.3.md).
+
+Quickstart (local mode, on the server's policy file):
+
+```bash
+mattstash admin principal add matt-mac --kind human-device --admin --policy-file /srv/mattstash/config/policy.json
+mattstash admin token issue matt-mac --policy-file /srv/mattstash/config/policy.json --output-file ~/.config/mattstash/admin.key
+mattstash admin principal add firefly-agent --kind agent --policy-file /srv/mattstash/config/policy.json
+mattstash admin grant add firefly-agent --key 'firefly.*' --actions list,read --policy-file /srv/mattstash/config/policy.json
+mattstash admin token issue firefly-agent --output-file ./firefly-agent.key --policy-file /srv/mattstash/config/policy.json
+```
+
+The first admin is created on the file because the admin API needs an admin token. After that, run `mattstash admin`
+with `--server-url` and `--api-key-file` (the admin token). The agent uses its token as an ordinary API key.
+
+Details: [design](docs/design/principals-and-grants.md), [server configuration](docs/configuration.md#server-access-control),
+[admin commands](docs/cli-reference.md#admin---principals-tokens-grants-and-the-access-log), and the
+[server's authorization and admin API](server/docs/configuration.md#principals-tokens-and-grants).
 
 For full server setup, deployment, and Docker Compose examples, see [Server Documentation](server/README.md) and [Server Quick Start](server/QUICKSTART.md).
 
@@ -370,7 +405,8 @@ See the [Server README](server/README.md) for setup and deployment instructions.
 - **Encrypted storage**: All data stored in KeePass database with strong encryption
 - **Private files**: databases, sidecar files and backups are created `0600`
 - **No secrets on argv**: values and passwords can come from stdin, files or the environment (see above)
-- **Version history**: older values are kept as versions (there is no who/when audit log)
+- **Version history**: older values are kept as versions. The library and CLI keep no who/when log; the server's
+  [access log](docs/configuration.md#the-access-log) records the principal and decision for each request
 - **Careful output**: values are masked unless you ask (`--show-password`, `--raw`, `env`); secret values are never
   logged and never appear in error messages
 

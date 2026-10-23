@@ -4,11 +4,14 @@
 
 # Secrets and data - NEVER commit these
 # (data/ holds the KeePass database, its <db>.lock file and any setup backups; secrets/ holds
-#  the master password file and the API key file)
+#  the master password file; policy/ the policy file, tokens/ the tokens handed to clients)
 data/*
 !data/.gitkeep
 secrets/*
 !secrets/.gitkeep
+# The policy file (principals, token hashes, grants) and the tokens issued for it
+policy/
+tokens/
 *.kdbx
 *.kdbx.lock
 *.bak-*

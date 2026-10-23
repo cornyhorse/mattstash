@@ -4,6 +4,7 @@ mattstash.utils.validation
 Input validation utilities for MattStash.
 """
 
+import os
 import re
 from typing import Optional
 
@@ -16,9 +17,37 @@ MAX_URL_LENGTH = 2048
 MAX_NOTES_LENGTH = 65535
 
 
-def validate_credential_title(title: str) -> None:
+ALLOW_SLASH_NAMES_ENV = "MATTSTASH_ALLOW_SLASH_NAMES"
+_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+RESERVED_LAST_SEGMENT = "versions"
+
+
+def slash_names_allowed() -> bool:
+    """Is writing names that contain ``/`` enabled (``MATTSTASH_ALLOW_SLASH_NAMES=true``)? Read on every call."""
+    return os.environ.get(ALLOW_SLASH_NAMES_ENV, "").strip().lower() in _TRUE
+
+
+def slash_name_problem(name: str) -> Optional[str]:
+    """Why ``name`` (which contains ``/``) is not a valid slash name, or ``None``.
+
+    ``/`` separates segments: a name must not start or end with ``/``, contain ``//``, or have a ``.``/``..`` segment.
+    """
+    if name.startswith("/") or name.endswith("/"):
+        return "must not start or end with '/'"
+    if "//" in name:
+        return "must not contain '//'"
+    if any(part in (".", "..") for part in name.split("/")):
+        return "must not have a '.' or '..' segment"
+    return None
+
+
+def validate_credential_title(title: str, *, allow_slash: Optional[bool] = None) -> None:
     """
     Validate a credential title for security and compatibility.
+
+    ``allow_slash`` defaults to the ``MATTSTASH_ALLOW_SLASH_NAMES`` environment variable.
 
     Titles must:
     - Not be empty
@@ -26,8 +55,12 @@ def validate_credential_title(title: str) -> None:
     - Not contain backslashes, null bytes, or control characters
     - Not start with a dot (hidden file)
 
-    Forward slashes (/) are allowed — they serve as namespace separators
-    that map to KeePass group hierarchy (e.g. ``cloud/hetzner/s3-key``).
+    Forward slashes (/) are refused unless slash names are enabled (``MATTSTASH_ALLOW_SLASH_NAMES=true`` or
+    ``allow_slash=True``); use ``.`` as the separator (``myapp.db-password``). When enabled, ``/`` separates segments
+    (e.g. ``cloud/hetzner/s3-key``) and the name must not start or end with ``/``, contain ``//`` or have a ``.`` or
+    ``..`` segment, and its last segment must not be exactly ``versions`` (case-sensitive; the server's
+    ``/credentials/{name}/versions`` route would read it as the versions of the shorter name).
+    Only *writing* is restricted: existing entries with ``/`` can always be read, listed and deleted.
 
     Args:
         title: Credential title to validate
@@ -42,8 +75,6 @@ def validate_credential_title(title: str) -> None:
         raise InvalidCredentialError(f"Credential title too long (max {MAX_TITLE_LENGTH} characters)")
 
     # Disallow backslashes, null bytes, and control characters.
-    # Forward slashes (/) are intentionally allowed as namespace separators
-    # that map to KeePass group hierarchy.
     dangerous_chars = ["\\", "\0", "\n", "\r", "\t"]
     for char in dangerous_chars:
         if char in title:
@@ -52,6 +83,21 @@ def validate_credential_title(title: str) -> None:
     # Don't allow titles starting with '.' to avoid hidden file issues
     if title.startswith("."):
         raise InvalidCredentialError("Credential title cannot start with '.'")
+
+    if "/" in title:
+        if not (slash_names_allowed() if allow_slash is None else allow_slash):
+            raise InvalidCredentialError(
+                "Credential title contains '/': use '.' as the separator (for example myapp.db-password), "
+                f"or set {ALLOW_SLASH_NAMES_ENV}=true to allow '/' in new names"
+            )
+        problem = slash_name_problem(title)
+        if problem:
+            raise InvalidCredentialError(f"Credential title {problem}")
+        if title.rsplit("/", 1)[-1] == RESERVED_LAST_SEGMENT:
+            raise InvalidCredentialError(
+                f"Credential title must not end in '/{RESERVED_LAST_SEGMENT}': that URL path is the server's "
+                "versions route. Choose another last segment (existing entries with that name stay readable)"
+            )
 
 
 def validate_username(username: Optional[str]) -> None:

@@ -20,6 +20,8 @@ Security notes
 * Only the server's own "Credential not found" 404 means "no such secret". Any other 404 (wrong URL, a proxy's
   error page, a name the server cannot route) is an error -- ``delete`` must never report "already gone" for it.
 * A rate-limited GET (HTTP 429) is retried a few times, honouring ``Retry-After``.
+* Admin calls (``/api/v1/admin/...``) additionally show the server's ``detail`` text for 400/403/404/409/503: those
+  are policy-validation messages and fixed texts that never contain tokens or hashes (key still redacted).
 """
 
 import contextlib
@@ -53,6 +55,11 @@ MAX_RETRIES = 3
 _MAX_RETRY_WAIT = 60.0
 #: Server answers whose text is fixed and value-free, so they may be shown to the user.
 _SAFE_DETAIL_PREFIXES = ("Entry cannot be used for a database URL:", "Invalid dialect name", "Invalid driver name")
+
+
+#: Statuses of admin calls whose ``detail`` is a policy message or fixed text, safe to show.
+_ADMIN_DETAIL_STATUSES = frozenset({400, 403, 404, 409, 503})
+_MAX_ADMIN_DETAIL = 300
 
 
 def is_loopback_host(host: Optional[str]) -> bool:
@@ -123,11 +130,20 @@ def segment(value: str) -> str:
     return quote(value, safe="")
 
 
+def name_path(title: str) -> str:
+    """A credential name as the tail of a URL path: each ``/``-separated segment encoded, the separators literal.
+
+    Servers started with ``MATTSTASH_ALLOW_SLASH_NAMES=true`` route such names; reverse proxies tend to mangle ``%2F``.
+    """
+    return "/".join(segment(part) for part in title.split("/"))
+
+
 _STATUS_HINTS = {
     400: "the server rejected the request (invalid name or parameter)",
     401: "authentication failed; check the API key",
     403: "this API key is not allowed to do that",
-    404: "not found: a wrong --server-url, or a name the server cannot route (letters, digits, '_', '.', '-')",
+    404: "not found: a wrong --server-url, or a name the server cannot route (letters, digits, '_', '.', '-'; "
+    "'/' only if the server runs with MATTSTASH_ALLOW_SLASH_NAMES=true)",
     405: "the server does not allow this operation (it may be read-only)",
     413: "the request is too large for the server",
     429: "too many requests; slow down and retry",
@@ -232,7 +248,21 @@ class MattStashServerClient:
         detail = payload.get("detail") if isinstance(payload, dict) else None
         return isinstance(detail, str) and detail.startswith("Credential not found")
 
-    def _status_error(self, method: str, endpoint: str, response: "httpx.Response", body: bytes) -> ServerError:
+    @classmethod
+    def _admin_detail(cls, body: bytes) -> Optional[str]:
+        """The ``detail`` string of an admin error answer (printable, bounded), else ``None``."""
+        try:
+            payload = cls._loads(body)
+        except ValueError:
+            return None
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+        if isinstance(detail, str) and detail and detail.isprintable():
+            return detail[:_MAX_ADMIN_DETAIL]
+        return None
+
+    def _status_error(
+        self, method: str, endpoint: str, response: "httpx.Response", body: bytes, show_detail: bool = False
+    ) -> ServerError:
         code = response.status_code
         message = f"server returned HTTP {code} for {method} {endpoint}"
         hint = _STATUS_HINTS.get(code)
@@ -242,6 +272,11 @@ class MattStashServerClient:
             hint = "unexpected redirect (redirects are not followed; check the server URL, e.g. http vs https)"
         if hint:
             message += f" ({hint})"
+        if show_detail and code in _ADMIN_DETAIL_STATUSES:
+            admin_detail = self._admin_detail(body)
+            if admin_detail:
+                message += f": {self._redact(admin_detail)}"
+            return ServerError(message, status_code=code)
         if code == 400:
             detail = self._safe_detail(body)
             if detail:
@@ -312,6 +347,7 @@ class MattStashServerClient:
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
         json_data: Optional[Dict[str, Any]] = None,
+        show_detail: bool = False,
     ) -> Dict[str, Any]:
         """
         Make HTTP request to server.
@@ -321,6 +357,7 @@ class MattStashServerClient:
             endpoint: API endpoint path (path segments already percent-encoded)
             params: Query parameters
             json_data: JSON request body
+            show_detail: include the server's ``detail`` in 400/403/404/409/503 errors (admin endpoints only)
 
         Returns:
             Response data as dictionary
@@ -353,7 +390,7 @@ class MattStashServerClient:
             break
 
         if not response.is_success:
-            raise self._status_error(method, endpoint, response, body)
+            raise self._status_error(method, endpoint, response, body, show_detail)
         try:
             result = self._loads(body)
         except ValueError:
@@ -389,7 +426,7 @@ class MattStashServerClient:
             if version is not None:
                 params["version"] = version
 
-            result = self._make_request("GET", f"/api/v1/credentials/{segment(title)}", params=params)
+            result = self._make_request("GET", f"/api/v1/credentials/{name_path(title)}", params=params)
         except ServerError as e:
             if e.secret_missing:
                 return None
@@ -447,7 +484,7 @@ class MattStashServerClient:
         if tags:
             data["tags"] = tags
 
-        result = self._make_request("POST", f"/api/v1/credentials/{segment(title)}", json_data=data)
+        result = self._make_request("POST", f"/api/v1/credentials/{name_path(title)}", json_data=data)
         self._require(result, "name", str)
         return result
 
@@ -464,7 +501,7 @@ class MattStashServerClient:
         """
         params: Optional[Dict[str, Any]] = {"version": version} if version is not None else None
         try:
-            result = self._make_request("DELETE", f"/api/v1/credentials/{segment(title)}", params=params)
+            result = self._make_request("DELETE", f"/api/v1/credentials/{name_path(title)}", params=params)
         except ServerError as e:
             if e.secret_missing:
                 return False
@@ -504,7 +541,10 @@ class MattStashServerClient:
             List of version strings
         """
         try:
-            result = self._make_request("GET", f"/api/v1/credentials/{segment(title)}/versions")
+            if "/" in title:  # /credentials/{name}/versions cannot tell "a/versions" from the versions of "a"
+                result = self._make_request("GET", f"/api/v1/versions/{name_path(title)}")
+            else:
+                result = self._make_request("GET", f"/api/v1/credentials/{segment(title)}/versions")
         except ServerError as e:
             if e.secret_missing:
                 return []
@@ -550,8 +590,173 @@ class MattStashServerClient:
         if database:
             params["database"] = database
 
-        result = self._make_request("GET", f"/api/v1/db-url/{segment(title)}", params=params)
+        result = self._make_request("GET", f"/api/v1/db-url/{name_path(title)}", params=params)
         url: str = self._require(result, "url", str)
         if not url:
             raise ServerError("server returned an unexpected response (empty 'url')")
         return url
+
+    # ---- admin operations (docs/design/principals-and-grants.md section 8) -------------------------------------------
+
+    def _admin(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return self._make_request(method, f"/api/v1/admin/{path}", params=params, json_data=body, show_detail=True)
+
+    def _admin_list(self, result: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = self._require(result, key, list)
+        if not all(isinstance(item, dict) for item in items):
+            raise ServerError(f"server returned an unexpected response (invalid '{key}')")
+        return items
+
+    def admin_principals(self) -> List[Dict[str, Any]]:
+        """``GET /admin/principals``."""
+        return self._admin_list(self._admin("GET", "principals"), "principals")
+
+    def admin_principal_add(self, name: str, kind: str, description: str = "", admin: bool = False) -> Dict[str, Any]:
+        """``POST /admin/principals``."""
+        body = {"name": name, "kind": kind, "description": description, "admin": admin}
+        result = self._admin("POST", "principals", body=body)
+        self._require(result, "name", str)
+        return result
+
+    def admin_principal(self, name: str) -> Dict[str, Any]:
+        """``GET /admin/principals/{name}`` (with its grants)."""
+        result = self._admin("GET", f"principals/{segment(name)}")
+        self._require(result, "name", str)
+        return result
+
+    def admin_principal_update(self, name: str, changes: Dict[str, Any]) -> Dict[str, Any]:
+        """``PATCH /admin/principals/{name}`` with ``disabled`` / ``admin`` / ``description``."""
+        result = self._admin("PATCH", f"principals/{segment(name)}", body=changes)
+        self._require(result, "name", str)
+        return result
+
+    def admin_principal_remove(self, name: str) -> Dict[str, Any]:
+        """``DELETE /admin/principals/{name}``."""
+        result = self._admin("DELETE", f"principals/{segment(name)}")
+        self._require(result, "detail", str)
+        return result
+
+    def admin_tokens(self, principal: str) -> List[Dict[str, Any]]:
+        """``GET /admin/principals/{name}/tokens``."""
+        result = self._admin("GET", f"principals/{segment(principal)}/tokens")
+        return self._admin_list(result, "tokens")
+
+    def admin_token_issue(self, principal: str, expires: Optional[str] = None, description: str = "") -> Dict[str, Any]:
+        """``POST /admin/principals/{name}/tokens``; the answer holds the plaintext token (shown once)."""
+        body: Dict[str, Any] = {"description": description}
+        if expires is not None:
+            body["expires"] = expires
+        result = self._admin("POST", f"principals/{segment(principal)}/tokens", body=body)
+        # The id is required (it is what lets a caller revoke a token it could not use). The plaintext is checked by
+        # the caller, which can then name the id instead of failing here with a token nobody knows about.
+        self._require(result, "id", str)
+        return result
+
+    def admin_token_import(
+        self,
+        principal: str,
+        key: str,
+        expires: Optional[str] = None,
+        description: str = "",
+        min_length: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """``POST /admin/principals/{name}/tokens/import``; the answer holds the token id, never the key."""
+        body: Dict[str, Any] = {"key": key, "description": description}
+        if expires is not None:
+            body["expires"] = expires
+        if min_length is not None:
+            body["min_length"] = min_length
+        result = self._admin("POST", f"principals/{segment(principal)}/tokens/import", body=body)
+        self._require(result, "id", str)
+        return result
+
+    def admin_token_revoke(self, principal: str, token_id: str) -> Dict[str, Any]:
+        """``DELETE /admin/principals/{name}/tokens/{token_id}``."""
+        result = self._admin("DELETE", f"principals/{segment(principal)}/tokens/{segment(token_id)}")
+        self._require(result, "detail", str)
+        return result
+
+    def admin_token_rotate(
+        self,
+        principal: str,
+        token_id: str,
+        grace: Optional[str] = None,
+        expires: Optional[str] = None,
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """``POST /admin/principals/{name}/tokens/{token_id}/rotate``."""
+        body: Dict[str, Any] = {"description": description}
+        if grace is not None:
+            body["grace"] = grace
+        if expires is not None:
+            body["expires"] = expires
+        path = f"principals/{segment(principal)}/tokens/{segment(token_id)}/rotate"
+        result = self._admin("POST", path, body=body)
+        self._require(result, "id", str)  # the plaintext is checked by the caller, see admin_token_issue
+        return result
+
+    def admin_grants(self, principal: Optional[str] = None) -> List[Dict[str, Any]]:
+        """``GET /admin/grants[?principal=]``."""
+        params = None if principal is None else {"principal": principal}
+        return self._admin_list(self._admin("GET", "grants", params=params), "grants")
+
+    def admin_grant_add(
+        self,
+        principal: str,
+        key: Optional[str],
+        tag: Optional[str],
+        actions: List[str],
+        expires: Optional[str] = None,
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """``POST /admin/grants``."""
+        body: Dict[str, Any] = {"principal": principal, "actions": actions, "description": description}
+        if key is not None:
+            body["key"] = key
+        if tag is not None:
+            body["tag"] = tag
+        if expires is not None:
+            body["expires"] = expires
+        result = self._admin("POST", "grants", body=body)
+        self._require(result, "id", str)
+        return result
+
+    def admin_grant_remove(self, grant_id: str) -> Dict[str, Any]:
+        """``DELETE /admin/grants/{grant_id}``."""
+        result = self._admin("DELETE", f"grants/{segment(grant_id)}")
+        self._require(result, "detail", str)
+        return result
+
+    def admin_check(self, principal: str, action: str, name: str, tags: Optional[List[str]] = None) -> Dict[str, Any]:
+        """``POST /admin/check``."""
+        body: Dict[str, Any] = {"principal": principal, "action": action, "name": name}
+        if tags:
+            body["tags"] = tags
+        result = self._admin("POST", "check", body=body)
+        if not isinstance(result.get("allowed"), bool):
+            raise ServerError("server returned an unexpected response (missing or invalid 'allowed')")
+        return result
+
+    def admin_access_log(
+        self,
+        principal: Optional[str] = None,
+        decision: Optional[str] = None,
+        since: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """``GET /admin/access-log``."""
+        params: Dict[str, Any] = {"limit": limit}
+        if principal is not None:
+            params["principal"] = principal
+        if decision is not None:
+            params["decision"] = decision
+        if since is not None:
+            params["since"] = since
+        return self._admin_list(self._admin("GET", "access-log", params=params), "records")

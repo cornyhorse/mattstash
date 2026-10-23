@@ -59,6 +59,24 @@ class CredentialListResponse(BaseModel):
     )
 
 
+class SearchResult(BaseModel):
+    """One search hit: the name and the tags of its latest version."""
+
+    name: str = Field(..., description="Credential name")
+    tags: list[str] = Field(..., description="Tags of the latest version")
+
+
+class SearchResponse(BaseModel):
+    """Response model for the search endpoint."""
+
+    results: list[SearchResult] = Field(..., description="Matching entries the principal may list")
+    count: int = Field(..., description="Number of results")
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"results": [{"name": "firefly.token", "tags": ["finance"]}], "count": 1}}
+    )
+
+
 class VersionListResponse(BaseModel):
     """Response model for listing credential versions."""
 

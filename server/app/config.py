@@ -8,6 +8,9 @@ from mattstash.core.password_resolver import read_password_file
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
+#: Settings of 0.2 and earlier that the server no longer accepts; startup fails while one is set (never ignored).
+REMOVED_SETTINGS = ("MATTSTASH_API_KEY", "MATTSTASH_API_KEYS_FILE", "MATTSTASH_REQUIRE_SCOPED_KEYS")
+
 
 def _get_int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
     """Read and validate a bounded integer environment variable."""
@@ -54,11 +57,27 @@ class Config:
     REFUSE_SIDECAR: bool = _get_bool_env("MATTSTASH_REFUSE_SIDECAR")
 
     # API Security
-    # Stripped like the key files: a Kubernetes Secret or `echo` adds a newline that no client can ever send.
-    API_KEY: Optional[str] = (os.getenv("MATTSTASH_API_KEY") or "").strip() or None
-    API_KEYS_FILE: Optional[str] = os.getenv("MATTSTASH_API_KEYS_FILE")
-    MIN_KEY_LENGTH: int = _get_int_env("MATTSTASH_MIN_KEY_LENGTH", 32, minimum=8, maximum=256)
-    REQUIRE_SCOPED_KEYS: bool = _get_bool_env("MATTSTASH_REQUIRE_SCOPED_KEYS")
+    # Shortest key `token import` accepts through the admin API (never below 16).
+    MIN_KEY_LENGTH: int = _get_int_env("MATTSTASH_MIN_KEY_LENGTH", 32, minimum=16, maximum=256)
+    # Principals, tokens and grants (docs/design/principals-and-grants.md). REQUIRED: the server does not start
+    # without it (MATTSTASH_API_KEY, MATTSTASH_API_KEYS_FILE and MATTSTASH_REQUIRE_SCOPED_KEYS were removed in 0.3).
+    POLICY_FILE: Optional[str] = (os.getenv("MATTSTASH_POLICY_FILE") or "").strip() or None
+
+    # Names containing "/" (cloud/hetzner/s3-key): refused by default. The same variable enables them in the library and
+    # CLI. When on, the server addresses them with path-style routes (server/docs/configuration.md, "Names with a
+    # slash").
+    ALLOW_SLASH_NAMES: bool = _get_bool_env("MATTSTASH_ALLOW_SLASH_NAMES")
+
+    # Structured access log: always on stdout (logger ``mattstash.access``); also this file when set. A request whose
+    # line cannot be written to the file is refused (fail closed) unless MATTSTASH_ACCESS_LOG_FAIL_OPEN is set, so put
+    # it on a volume that has room. Either way /ready answers 503 while the file cannot be written.
+    ACCESS_LOG_FILE: Optional[str] = (os.getenv("MATTSTASH_ACCESS_LOG_FILE") or "").strip() or None
+    # Opt-out of fail-closed: a failed file write is logged as an error and the request proceeds (/ready says 503).
+    ACCESS_LOG_FAIL_OPEN: bool = _get_bool_env("MATTSTASH_ACCESS_LOG_FAIL_OPEN")
+    ACCESS_LOG_MAX_BYTES: int = _get_int_env(
+        "MATTSTASH_ACCESS_LOG_MAX_BYTES", 10 * 1024 * 1024, minimum=1024, maximum=1024 * 1024 * 1024
+    )
+    ACCESS_LOG_BACKUPS: int = _get_int_env("MATTSTASH_ACCESS_LOG_BACKUPS", 10, minimum=1, maximum=100)
 
     # Throttling of FAILED authentication attempts, per client IP (applied before auth runs)
     AUTH_FAIL_LIMIT: int = _get_int_env("MATTSTASH_AUTH_FAIL_LIMIT", 10, minimum=1, maximum=10_000)
@@ -109,6 +128,12 @@ class Config:
             raise FileNotFoundError(f"Password file not found: {cls.KDBX_PASSWORD_FILE}")
 
         raise ValueError("KDBX password must be provided via KDBX_PASSWORD or KDBX_PASSWORD_FILE")
+
+    @classmethod
+    def removed_settings_in_use(cls) -> list[str]:
+        """Names of the removed settings that are set (non-empty) in the environment, read now rather than at import
+        so a test or a supervisor that changes the environment is seen. Values are never returned."""
+        return [name for name in REMOVED_SETTINGS if (os.environ.get(name) or "").strip()]
 
     @classmethod
     def validate_tls(cls) -> bool:

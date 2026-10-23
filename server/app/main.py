@@ -13,13 +13,14 @@ from limits import parse_many
 from mattstash.models.config import config as lib_config
 from slowapi.errors import RateLimitExceeded
 
+from . import accesslog
 from .config import config
 from .dependencies import initialize_mattstash, reload_mattstash_if_changed
 from .logging_setup import configure_logging
 from .middleware.security import SecurityMiddleware
 from .rate_limit import limiter, rate_limit_exceeded_handler
 from .routers import admin, credentials, db_url, health
-from .security.api_keys import get_key_policy
+from .security.api_keys import check_removed_settings, get_auth_state, warn_sha256_tokens
 
 logger = logging.getLogger("mattstash.api")
 
@@ -67,57 +68,68 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting %s", config.API_TITLE)
 
-    # Validate configuration (do not log paths, keys or raw errors)
+    # Validate configuration (log only messages written to be shown: no keys, no hashes)
+    reported = False
     try:
-        config.get_kdbx_password()
-        policy = get_key_policy(force=True)
+        try:
+            check_removed_settings()  # the removed key settings are an error, never silently ignored
+            config.get_kdbx_password()
+            state = get_auth_state(force=True)
+        except (ValueError, FileNotFoundError) as exc:
+            # Settings and policy problems carry messages written to be shown (a policy problem names the principal
+            # and grant id, never a hash or a key); "check environment variables" would send the operator to the
+            # wrong place. The password-file errors name the variable or the file the operator configured.
+            reported = True
+            logger.error("Configuration validation failed: %s", exc)
+            raise
         config.validate_tls()
         try:
             parse_many(config.RATE_LIMIT)
         except Exception:
             raise ValueError(f"MATTSTASH_RATE_LIMIT is not a valid rate limit: {config.RATE_LIMIT!r}") from None
-        logger.info("Configuration validated successfully (%d API key(s))", len(policy))
+        accesslog.open_file_sink()  # a path that cannot be written stops the server now, not on the first request
+        logger.info("Configuration validated successfully (%d credential(s))", state.credential_count)
     except Exception:
-        logger.error("Configuration validation failed - check environment variables")
+        if not reported:
+            logger.error("Configuration validation failed - check environment variables")
         raise
 
-    if policy.legacy_count:
-        logger.warning(
-            "%d legacy API key(s) with FULL access are configured; migrate to a scoped key policy "
-            "(see server/docs/configuration.md) and set MATTSTASH_REQUIRE_SCOPED_KEYS=true",
-            policy.legacy_count,
-        )
-    _check_sidecar()
-
-    # Open the database now so a wrong password / missing file fails the deployment visibly,
-    # instead of surfacing as errors on the first request.
     try:
-        await asyncio.to_thread(initialize_mattstash)
-    except Exception as exc:
-        logger.error("Cannot open the database: %s - %s", type(exc).__name__, exc)
-        raise
+        warn_sha256_tokens(state)
+        _check_sidecar()
 
-    if config.ALLOW_WRITES:
-        logger.warning(
-            "Writes are ENABLED. Run a single replica; the data directory must be writable (a lock file is created)."
-        )
-        if not os.access(os.path.dirname(config.DB_PATH) or ".", os.W_OK):
-            logger.warning("MATTSTASH_ALLOW_WRITES is set but the data directory is not writable")
-    else:
-        logger.info("Read-only mode (set MATTSTASH_ALLOW_WRITES=true to enable writes)")
+        # Open the database now so a wrong password / missing file fails the deployment visibly,
+        # instead of surfacing as errors on the first request.
+        try:
+            await asyncio.to_thread(initialize_mattstash)
+        except Exception as exc:
+            logger.error("Cannot open the database: %s - %s", type(exc).__name__, exc)
+            raise
 
-    # Start background poller for external DB modifications
-    poller_task = asyncio.create_task(_poll_database_changes())
+        if config.ALLOW_WRITES:
+            logger.warning(
+                "Writes are ENABLED. Run a single replica; "
+                "the data directory must be writable (a lock file is created)."
+            )
+            if not os.access(os.path.dirname(config.DB_PATH) or ".", os.W_OK):
+                logger.warning("MATTSTASH_ALLOW_WRITES is set but the data directory is not writable")
+        else:
+            logger.info("Read-only mode (set MATTSTASH_ALLOW_WRITES=true to enable writes)")
 
-    yield
+        # Start background poller for external DB modifications
+        poller_task = asyncio.create_task(_poll_database_changes())
 
-    # Shutdown
-    poller_task.cancel()
-    try:
-        await poller_task
-    except asyncio.CancelledError:
-        pass
-    logger.info("Shutting down MattStash API")
+        yield
+
+        poller_task.cancel()
+        try:
+            await poller_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Shutting down MattStash API")
+    finally:
+        # Also when startup failed after the log file was opened (wrong database password, refused sidecar).
+        accesslog.close_file_sink()
 
 
 async def _validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:

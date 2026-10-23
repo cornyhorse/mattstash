@@ -21,8 +21,8 @@ class TestConfig:
         assert config.HOST == "0.0.0.0"
         assert config.PORT == 8000
         assert config.LOG_LEVEL == "info"
-        assert config.API_KEY is None
-        assert config.API_KEYS_FILE is None
+        assert config.POLICY_FILE is None
+        assert not hasattr(config, "API_KEY") and not hasattr(config, "API_KEYS_FILE")  # removed in 0.3
         assert config.RATE_LIMIT == "100/minute"
         assert config.API_VERSION == "v1"
         assert config.API_TITLE == "MattStash API"
@@ -121,7 +121,7 @@ class TestNewSettings:
         config = fresh_config_module().Config()
         assert config.ALLOW_WRITES is False  # read-only unless explicitly enabled
         assert config.MIN_KEY_LENGTH == 32
-        assert config.REQUIRE_SCOPED_KEYS is False  # legacy keys keep working on upgrade
+        assert not hasattr(config, "REQUIRE_SCOPED_KEYS")  # removed in 0.3
         assert config.DISABLE_DOCS is False
         assert config.REFUSE_SIDECAR is False
         assert (config.AUTH_FAIL_LIMIT, config.AUTH_FAIL_WINDOW) == (10, 60)
@@ -149,6 +149,8 @@ class TestNewSettings:
         "var, value",
         [
             ("MATTSTASH_MIN_KEY_LENGTH", "4"),
+            ("MATTSTASH_MIN_KEY_LENGTH", "15"),
+            ("MATTSTASH_MIN_KEY_LENGTH", "257"),
             ("MATTSTASH_AUTH_FAIL_LIMIT", "0"),
             ("MATTSTASH_AUTH_FAIL_WINDOW_SECONDS", "x"),
             ("MATTSTASH_TRUSTED_PROXY_HOPS", "11"),

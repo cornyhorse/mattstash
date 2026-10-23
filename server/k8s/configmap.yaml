@@ -12,9 +12,11 @@ metadata:
   namespace: mattstash
 data:
   MATTSTASH_DB_PATH: "/data/mattstash.kdbx"
-  # Master password and API keys are files from the separate /secrets mount (never env values).
+  # The master password and the policy file (principals, token hashes, grants) are files from the separate
+  # /secrets mount (never env values). The policy file is REQUIRED: the server does not start without one
+  # (MATTSTASH_API_KEY / MATTSTASH_API_KEYS_FILE were removed in 0.3; see docs/upgrading-to-0.3.md).
   KDBX_PASSWORD_FILE: "/secrets/kdbx-password"
-  MATTSTASH_API_KEYS_FILE: "/secrets/api-keys"
+  MATTSTASH_POLICY_FILE: "/secrets/policy.json"
   MATTSTASH_LOG_LEVEL: "info"
   MATTSTASH_RATE_LIMIT: "100/minute"
   # Do not serve the OpenAPI / Swagger pages.

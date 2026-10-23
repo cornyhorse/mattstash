@@ -10,7 +10,20 @@ from pathlib import Path
 
 import pytest
 
-from mattstash import MattStash
+#: Every variable with one of these prefixes configures mattstash (library, CLI or the server it talks to). They are
+#: removed below, before ``mattstash`` is imported, and again around every test, so a developer's exported
+#: ``MATTSTASH_ALLOW_SLASH_NAMES``, ``MATTSTASH_LOG_LEVEL`` or ``MATTSTASH_CACHE_TTL`` cannot change a result.
+_SCRUBBED_PREFIXES = ("MATTSTASH_", "KDBX_")
+
+
+def _ambient_config_variables() -> list[str]:
+    return [name for name in os.environ if name.startswith(_SCRUBBED_PREFIXES)]
+
+
+for _name in _ambient_config_variables():
+    os.environ.pop(_name, None)
+
+from mattstash import MattStash  # noqa: E402  (after the scrub: some settings are read when modules are imported)
 
 _SCRUBBED_ENV = (
     "KDBX_PASSWORD",
@@ -18,11 +31,15 @@ _SCRUBBED_ENV = (
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
+    "AWS_CA_BUNDLE",
     "MATTSTASH_DB_PATH",
     "MATTSTASH_SERVER_URL",
     "MATTSTASH_API_KEY",
     "MATTSTASH_API_KEY_FILE",
     "MATTSTASH_ALLOW_INSECURE_HTTP",
+    "MATTSTASH_POLICY_FILE",
+    "MATTSTASH_ACCESS_LOG_FILE",
+    "MATTSTASH_ALLOW_SLASH_NAMES",
     # a developer's or CI machine's proxy settings change what the HTTP client does (and warns about)
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -38,7 +55,7 @@ _SCRUBBED_ENV = (
 @pytest.fixture(autouse=True)
 def _hermetic_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep ambient credentials/config of the developer or CI machine out of the tests."""
-    for name in _SCRUBBED_ENV:
+    for name in (*_SCRUBBED_ENV, *_ambient_config_variables()):
         monkeypatch.delenv(name, raising=False)
 
 

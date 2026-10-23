@@ -20,7 +20,7 @@ from mattstash import MattStash
 from mattstash.credential_store import CredentialStore
 from mattstash.utils.exceptions import (
     DatabaseAccessError,
-    DatabaseLockError,
+    DatabaseLockTimeoutError,
     InvalidCredentialError,
 )
 from mattstash.utils.filelock import FileLock
@@ -265,7 +265,7 @@ def test_h5_one_instance_is_thread_safe(temp_db: Path):
 def test_h5_lock_timeout_is_a_typed_error(temp_db: Path):
     ms = MattStash(path=str(temp_db), lock_timeout=0.2)
     with FileLock(str(temp_db) + ".lock"):
-        with pytest.raises(DatabaseLockError, match="Timed out"):
+        with pytest.raises(DatabaseLockTimeoutError, match=r"Timed out"):
             ms.put("x", value="v")
     ms.put("x", value="v")  # works again once released
 

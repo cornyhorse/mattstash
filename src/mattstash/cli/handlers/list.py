@@ -12,6 +12,11 @@ from ...module_functions import list_creds
 from .base import BaseHandler
 
 
+def _shown(value: object) -> str:
+    """A field of a server entry: ``-`` when the server withheld it (null: the principal may only list the entry)."""
+    return "-" if value is None else repr(value)
+
+
 class ListHandler(BaseHandler):
     """Handler for the list command."""
 
@@ -60,8 +65,8 @@ class ListHandler(BaseHandler):
                         if lines:
                             notes_snippet = f" notes={lines[0]!r}"
                     print(
-                        f"- {c.get('name', 'unknown')} user={c.get('username', '')!r}"
-                        f" url={c.get('url', '')!r} pwd={pwd_disp!r}{notes_snippet}"
+                        f"- {c.get('name', 'unknown')} user={_shown(c.get('username', ''))}"
+                        f" url={_shown(c.get('url', ''))} pwd={_shown(pwd_disp)}{notes_snippet}"
                     )
             return 0
         except Exception as e:

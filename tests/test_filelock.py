@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from mattstash.utils.exceptions import DatabaseLockError
+from mattstash.utils.exceptions import DatabaseLockError, DatabaseLockTimeoutError
 from mattstash.utils.filelock import FileLock
 
 
@@ -21,7 +21,7 @@ def test_lock_file_is_private(tmp_path: Path):
 def test_two_locks_on_the_same_file_exclude_each_other(tmp_path: Path):
     path = str(tmp_path / "x.lock")
     with FileLock(path):
-        with pytest.raises(DatabaseLockError, match="Timed out"):
+        with pytest.raises(DatabaseLockTimeoutError, match="Timed out"):
             FileLock(path, timeout=0.2).acquire()
     FileLock(path, timeout=0.2).acquire()  # free again after release
 
@@ -43,8 +43,9 @@ def test_release_without_acquire_is_harmless(tmp_path: Path):
 
 
 def test_unwritable_location_is_a_lock_error(tmp_path: Path):
-    with pytest.raises(DatabaseLockError, match="Cannot create lock file"):
+    with pytest.raises(DatabaseLockError, match="Cannot create lock file") as caught:
         FileLock(str(tmp_path / "missing-dir" / "x.lock")).acquire()
+    assert not isinstance(caught.value, DatabaseLockTimeoutError)  # waiting would not help: not a timeout
 
 
 def test_lock_is_released_when_the_holder_process_dies(tmp_path: Path):

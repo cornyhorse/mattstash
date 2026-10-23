@@ -41,12 +41,13 @@ Set these to change default behavior:
 
 ```bash
 export MATTSTASH_DB_PATH=/srv/data/mattstash.kdbx          # default database path
+export MATTSTASH_ALLOW_SLASH_NAMES=true                    # opt in to "/" in new names (refused by default; prefer ".")
 export KDBX_PASSWORD_FILE=/run/secrets/kdbx_password       # database password from a file (preferred)
 export KDBX_PASSWORD="your-db-password"                    # database password (visible to child processes)
 
 # Server mode
 export MATTSTASH_SERVER_URL=https://mattstash.example.com
-export MATTSTASH_API_KEY_FILE=/run/secrets/mattstash_api_key   # or MATTSTASH_API_KEY
+export MATTSTASH_API_KEY_FILE=/run/secrets/mattstash_api_key   # this client's token, or MATTSTASH_API_KEY
 export MATTSTASH_ALLOW_INSECURE_HTTP=1    # silence the plain-http warning on a trusted network
 ```
 
@@ -132,9 +133,9 @@ MattStash CLI can connect to a MattStash API server instead of local databases f
 ### Enabling Server Mode
 
 ```bash
-# Via environment variables (recommended)
+# Via environment variables (recommended). The key is this client's token (see Server Access Control).
 export MATTSTASH_SERVER_URL="http://mattstash:8000"
-export MATTSTASH_API_KEY="your-api-key-here"
+export MATTSTASH_API_KEY="your-token-here"
 
 # The key from a file instead (not visible in the environment or shell history)
 export MATTSTASH_API_KEY_FILE=/run/secrets/mattstash_api_key
@@ -163,7 +164,7 @@ Server mode is enabled when `--server-url` is provided or `MATTSTASH_SERVER_URL`
 ```bash
 # Set up environment
 export MATTSTASH_SERVER_URL="http://localhost:8000"
-export MATTSTASH_API_KEY="my-secure-api-key"
+export MATTSTASH_API_KEY="your-token-here"
 
 # All commands now use the server
 mattstash get "api-token"
@@ -179,17 +180,17 @@ mattstash --server-url http://staging-server:8000 get "staging-token"
 ```bash
 # Use local database (unset server variables)
 unset MATTSTASH_SERVER_URL
-unset MATTSTASH_API_KEY
+unset MATTSTASH_API_KEY MATTSTASH_API_KEY_FILE
 mattstash list  # Uses local database
 
 # Use server (set server variables)
 export MATTSTASH_SERVER_URL="http://server:8000"
-export MATTSTASH_API_KEY="key"
+export MATTSTASH_API_KEY="your-token-here"
 mattstash list  # Uses server
 
 # Inline mode selection
 mattstash --db ~/.config/mattstash/mattstash.kdbx list  # Local
-mattstash --server-url http://server:8000 --api-key key list  # Server
+mattstash --server-url http://server:8000 --api-key-file ./api-key list  # Server
 ```
 
 ### Server Setup
@@ -197,6 +198,112 @@ mattstash --server-url http://server:8000 --api-key key list  # Server
 For information about deploying and configuring the MattStash server, see:
 - [Server README](../server/README.md) - Deployment and API documentation
 - [Server Quick Start](../server/QUICKSTART.md) - Getting started guide
+
+## Server Access Control
+
+The server decides who may read or change what. Each client is a **principal** with one or more **tokens**; a
+principal may do only what a **grant** allows. Principals, tokens and grants are kept in a policy file, and every
+request is written to an access log. The design is in [design/principals-and-grants.md](design/principals-and-grants.md);
+the migration steps for an existing deployment are in [upgrading to 0.3](upgrading-to-0.3.md) and section 12 of the design.
+The full route table and the admin API are in
+[server/docs/configuration.md](../server/docs/configuration.md#principals-tokens-and-grants).
+
+### Environment variables
+
+`MATTSTASH_POLICY_FILE` is **required**: the server refuses to start without it, or when the file holds no usable
+credential (an enabled principal with an unexpired token). The rest are optional. The server's
+`MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE` and `MATTSTASH_REQUIRE_SCOPED_KEYS` were removed in 0.3; if one is set,
+startup fails and names it (see [upgrading to 0.3](upgrading-to-0.3.md)).
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `MATTSTASH_POLICY_FILE` | - (required) | The policy file (JSON). Keep it off the data volume. |
+| `MATTSTASH_ACCESS_LOG_FILE` | - | Also write the access log to this file, created with mode `0600`. Unset: the log goes to stdout only. |
+| `MATTSTASH_ACCESS_LOG_FAIL_OPEN` | `false` | `true`: a failed write to that file is logged as an error and the request proceeds instead of being refused with `503`. |
+| `MATTSTASH_ACCESS_LOG_MAX_BYTES` | `10485760` (10 MiB) | Rotate the access log file at this size. |
+| `MATTSTASH_ACCESS_LOG_BACKUPS` | `10` | Rotated access log files to keep. |
+
+```bash
+MATTSTASH_POLICY_FILE=/config/policy.json
+MATTSTASH_ACCESS_LOG_FILE=/logs/access.jsonl        # a volume that persists and is not the data volume
+MATTSTASH_ACCESS_LOG_MAX_BYTES=10485760
+MATTSTASH_ACCESS_LOG_BACKUPS=10
+```
+
+### The policy file
+
+```json
+{"version": 2, "revision": 17, "principals": [ ... ], "grants": [ ... ]}
+```
+
+- **`revision`** goes up by one on every change. **Unknown fields are a load error**, and so is any `version` other than
+  `2`, so a policy written for a newer release never loads silently with a restriction ignored.
+- **Principals** have a `name` (`[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`, unique ignoring case), a `kind` (`human-device`, `agent`
+  or `runner`), a `description`, `admin`, `disabled`, `created`, and `tokens`. Each token has an `id`, a salted hash
+  (`hmac-sha256:<salt>:<digest>`), `expires` and a `description`. The plaintext token is never stored.
+- **Grants** have an `id` (`g_` plus 8 hex digits), a `principal`, exactly one of `key` (a name pattern) or `tag` (a
+  KeePass entry tag), `actions` (from `list`, `read`, `write`, `delete`; tag grants allow only `list` and `read`),
+  optional `expires`, `description` and `created`.
+- Only a `human-device` principal may be an admin. Admin is a property of the principal, not a grant action.
+- The `*` grant (every name) is only for `human-device` principals. An `agent` or `runner` with `*` is refused, in the
+  policy file and in the CLI and admin API. A prefix such as `firefly.*` is the usual form for a client.
+- Tokens issued by `admin token issue` are `mst_` tokens, salted. `admin token import` stores an existing plain key as an
+  unsalted `sha256:` token, for a zero-downtime move from the old keys (see [upgrading to 0.3](upgrading-to-0.3.md)).
+- The file is separate from every vault. The server reads it at startup and picks up changes on the next request.
+  Files mattstash writes are mode `0600`; keep the file readable by the server user only.
+- **Writing:** admin API changes and the CLI's local mode take a lock, re-read the file, validate the whole new document
+  and replace it atomically. The server reloads at once after each successful change. If the file is not writable (a
+  read-only ConfigMap or Secret), every change answers `409`: edit the source, then call
+  `POST /api/v1/admin/invalidate-api-key-cache`.
+- **Lockout protection:** a change that would leave no enabled admin with a valid token is refused. The server also
+  builds the complete state from the edited policy before it saves, so a change the server could not load is answered
+  `409` and nothing is written.
+- **Early warning:** when every usable admin token expires within 14 days, the server logs a warning at startup and after
+  each policy load, and the CLI prints it after admin commands.
+
+### The access log
+
+One JSON object per line, for every authenticated request, every failed authentication and every admin request:
+
+```json
+{"ts":"2026-10-18T12:03:44.120Z","principal":"hermes-finance","kind":"agent","token":"k7m2q7xw4h3a",
+ "action":"read","route":"get","key":"firefly.token","decision":"allowed","grant":"g_3fd9a1c2",
+ "client":"100.101.7.3","status":200}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `ts` | Time, RFC 3339 UTC |
+| `principal`, `kind` | Who, and the principal's kind (`human-device`, `agent` or `runner`) |
+| `token` | The token id (the public part, never the secret) |
+| `action`, `route` | What was asked, and the route |
+| `key` | The credential name, or the filter (`prefix`, `q`, `tag`) for list and search |
+| `decision` | `allowed` or `denied` |
+| `grant` | The grant that allowed the request |
+| `reason` | On denials: `no-grant`, `not-admin`, `unknown-token`, `bad-token`, `expired-token`, `disabled` or `no-token` |
+| `count` | For list and search, the number of entries returned |
+| `client`, `status` | The client address and the HTTP status |
+
+It never contains a token or any part of its secret, a secret value, a username, a URL, a note, a request body or a query
+string beyond the filter fields. Every string is escaped to printable ASCII and capped at 256 characters, so a client cannot
+forge lines. Health probes are not logged.
+
+- **Where it goes:** stdout by default (`docker logs`, Kubernetes log collection). With `MATTSTASH_ACCESS_LOG_FILE`
+  it is also written to that file.
+- **Rotation:** at `MATTSTASH_ACCESS_LOG_MAX_BYTES`, keeping `MATTSTASH_ACCESS_LOG_BACKUPS` files. No logrotate is needed.
+- **Fail closed:** if a line cannot be written to the file (full disk, permissions), the request is answered `503` and
+  an error is logged. An unlogged read is treated as worse than an outage. Stdout-only logging cannot fail this way.
+  `MATTSTASH_ACCESS_LOG_FAIL_OPEN=true` opts out: a failed write is logged as an error (the stdout line is still written)
+  and the request goes on. In both modes `/ready` (and `/api/ready`) answers `503` while the file sink is failing, so
+  monitoring sees it.
+- **Reading it:** `mattstash admin log`, in server or local mode (see the [CLI reference](cli-reference.md#admin---principals-tokens-grants-and-the-access-log)).
+
+### Removed: legacy keys
+
+`MATTSTASH_API_KEY`, `MATTSTASH_API_KEYS_FILE` and `MATTSTASH_REQUIRE_SCOPED_KEYS` are removed in 0.3. The server does
+not accept a key from them, and it refuses to start while one is set. To move a deployment, see
+[upgrading to 0.3](upgrading-to-0.3.md): `mattstash admin token import` keeps each existing key working as a token,
+and `mattstash admin migrate-keys` converts a v1 JSON key policy into principals.
 
 ## Versioning Configuration
 

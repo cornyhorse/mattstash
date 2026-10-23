@@ -48,3 +48,69 @@ class CreateCredentialRequest(BaseModel):
         if not has_value and not has_full_field:
             raise ValueError("provide value or at least one credential field")
         return self
+
+
+class _AdminRequest(BaseModel):
+    """Admin request bodies refuse unknown fields: a typo such as ``"admn": true`` must not be silently ignored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CreatePrincipalRequest(_AdminRequest):
+    name: str = Field(..., max_length=64)
+    kind: str = Field(..., max_length=32)
+    description: str = Field("", max_length=500)
+    admin: bool = False
+
+
+class UpdatePrincipalRequest(_AdminRequest):
+    disabled: bool | None = None
+    admin: bool | None = None
+    description: str | None = Field(None, max_length=500)
+
+
+class IssueTokenRequest(_AdminRequest):
+    expires: str | None = Field(
+        None, min_length=1, max_length=64, description="Duration (90d, 24h) or date (2027-01-01)"
+    )
+    description: str = Field("", max_length=500)
+
+
+class ImportTokenRequest(_AdminRequest):
+    """An existing plain key to store as a token (``docs/upgrading-to-0.3.md``). The key is never echoed or logged."""
+
+    key: str = Field(..., min_length=1, max_length=256, repr=False, description="The existing key (never returned)")
+    expires: str | None = Field(
+        None, min_length=1, max_length=64, description="Duration (90d, 24h) or date (2027-01-01)"
+    )
+    description: str = Field("", max_length=500)
+    min_length: int | None = Field(
+        None,
+        ge=16,
+        le=256,
+        description="Shortest key to accept; the server's MATTSTASH_MIN_KEY_LENGTH (at least 16) is a floor",
+    )
+
+
+class RotateTokenRequest(_AdminRequest):
+    grace: str | None = Field(
+        None, min_length=1, max_length=64, description="How long the old token keeps working (24h)"
+    )
+    expires: str | None = Field(None, min_length=1, max_length=64)
+    description: str = Field("", max_length=500)
+
+
+class CreateGrantRequest(_AdminRequest):
+    principal: str = Field(..., max_length=64)
+    key: str | None = Field(None, max_length=300)
+    tag: str | None = Field(None, max_length=100)
+    actions: list[Annotated[str, Field(max_length=16)]] | None = Field(None, max_length=8)
+    expires: str | None = Field(None, min_length=1, max_length=64)
+    description: str = Field("", max_length=500)
+
+
+class CheckRequest(_AdminRequest):
+    principal: str = Field(..., max_length=64)
+    action: str = Field(..., max_length=16)
+    name: str = Field(..., max_length=300)
+    tags: list[Annotated[str, Field(max_length=100)]] = Field(default_factory=list, max_length=50)

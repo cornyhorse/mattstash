@@ -7,15 +7,27 @@
 #     (single instance only - see that file).
 #
 # First-time setup (./start.sh does the secrets part for you):
-#   mkdir -p data secrets
-#   openssl rand -base64 32 > secrets/api_keys.txt        # API key, >= 32 chars (server refuses weaker ones)
+#   mkdir -p data secrets policy tokens
 #   openssl rand -base64 32 > secrets/kdbx_password.txt   # KeePass master password
 #   mattstash --db data/mattstash.kdbx setup --password-file secrets/kdbx_password.txt
+#   # Who may use the server (the server does not start without a policy file; it holds token HASHES only):
+#   mattstash admin --policy-file policy/policy.json principal add admin --kind human-device --admin
+#   mattstash admin --policy-file policy/policy.json token issue admin --output-file tokens/admin.token
+#   mattstash admin --policy-file policy/policy.json principal add myapp --kind agent
+#   mattstash admin --policy-file policy/policy.json grant add myapp --key 'myapp.*'
+#   mattstash admin --policy-file policy/policy.json token issue myapp --output-file tokens/myapp.token
 #   docker compose up -d --build
 #
 # The server never creates a database; only `mattstash setup` does. Keep the master password in
 # secrets/ (a separate mount from data/) and do not use `mattstash setup --sidecar` for a service:
 # a .mattstash.txt next to the database lets anyone who can read data/ open it.
+#
+# The policy is mounted as a DIRECTORY, read-only: you manage it with the CLI on the host and the server
+# notices the change at once (it checks the file on every request). Mount ./policy writable instead
+# (drop `:ro`) if the admin API (`mattstash admin --server-url ...`) should be able to change it; the
+# container user then needs to write that directory (the lock file and a temporary file live next to it).
+# The tokens/ directory is NOT mounted: hand each token to its client and keep it out of the server.
+# Upgrading from 0.2? See docs/upgrading-to-0.3.md.
 #
 # Files in data/ and secrets/ must be readable by the container user. The container runs as
 # ${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}; set those (e.g. in .env, see .env.example) to the
@@ -33,15 +45,17 @@ services:
     user: "${MATTSTASH_UID:-1000}:${MATTSTASH_GID:-1000}"
     environment:
       MATTSTASH_DB_PATH: /data/mattstash.kdbx
-      # Master password and API keys come from files in the separate /secrets mount.
+      # The master password comes from a file in the separate /secrets mount; who may use the server comes from
+      # the policy file (principals, token hashes, grants).
       KDBX_PASSWORD_FILE: /secrets/kdbx_password.txt
-      MATTSTASH_API_KEYS_FILE: /secrets/api_keys.txt
+      MATTSTASH_POLICY_FILE: /policy/policy.json
       # Read-only mode (the default). Anything but "true" keeps writes off.
       MATTSTASH_ALLOW_WRITES: "false"
       MATTSTASH_LOG_LEVEL: "${MATTSTASH_LOG_LEVEL:-info}"
     volumes:
       - ./data:/data:ro
       - ./secrets:/secrets:ro
+      - ./policy:/policy:ro
     networks:
       - backend
     ports:
@@ -74,7 +88,9 @@ services:
   #     # documented pattern; the CLI warns about http:// to non-loopback hosts unless
   #     # MATTSTASH_ALLOW_INSECURE_HTTP=1 is set.
   #     MATTSTASH_SERVER_URL: http://mattstash-api:8000
-  #     MATTSTASH_API_KEY: ${MY_APP_API_KEY:?set MY_APP_API_KEY (a key of at least 32 characters)}
+  #     # The client's variable keeps its name; the value is the token issued for this client
+  #     # (`mattstash admin token issue myapp`).
+  #     MATTSTASH_API_KEY: ${MY_APP_TOKEN:?set MY_APP_TOKEN (the token issued for this client)}
   #     MATTSTASH_ALLOW_INSECURE_HTTP: "1"
   #   networks:
   #     - backend
