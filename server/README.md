@@ -326,6 +326,9 @@ whenever traffic crosses hosts.
 
 - The image is built from this repository (`docker build -f server/Dockerfile .` from the repository root), so it
   always contains the library code of its own commit.
+- The published `ghcr.io/cornyhorse/mattstash` image is **private** (since 2026-10-24): it serves the maintainer's own
+  deployments, which pull it with a registry login. Everyone else builds the image from a release tag of this repository
+  and pushes it to their own registry; the `ghcr.io/...` references in these docs and manifests show where that image goes.
 - Third-party dependencies come from `requirements.lock`, installed with `pip install --require-hashes`.
 - Released images carry SLSA build provenance and an SBOM
   (`docker buildx imagetools inspect ghcr.io/cornyhorse/mattstash:vX.Y.Z --format '{{ json .Provenance }}'`).

@@ -143,7 +143,9 @@ db_url = client.get_db_url("db-prod", database="myapp")
 ## Docker Compose Integration
 
 Your application joins the same network as the API. The production file keeps that network `internal: true`
-(no outside access, no published ports); see `docker-compose.prod.yml`.
+(no outside access, no published ports); see `docker-compose.prod.yml`. The `ghcr.io/cornyhorse/mattstash` image is
+private: without access to it, build the image (`docker build -f server/Dockerfile -t mattstash-api:local .` from the
+repository root) and use that tag below.
 
 ```yaml
 services:

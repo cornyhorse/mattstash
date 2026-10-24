@@ -44,7 +44,9 @@ Commands below are run from the `server/` directory (paths are written as `k8s/.
 ## 1. Pick the image
 
 Use a **published, pinned** image. The manifests reference `ghcr.io/cornyhorse/mattstash:v0.2.0`, the first
-release with the read-only mode and the `/ready` endpoint; use the newest release tag.
+release with the read-only mode and the `/ready` endpoint; use the newest release tag. That registry is **private**
+(the maintainer's deployments pull it with a login), so unless you have access, build the image from a release tag of
+this repository (below), push it to your own registry and put that reference in the manifests.
 
 - Never deploy `:latest`: a restart or a new node can silently pull different code.
 - Prefer a digest: `image: ghcr.io/cornyhorse/mattstash@sha256:<digest>` (`docker buildx imagetools inspect
