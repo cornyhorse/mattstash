@@ -139,16 +139,18 @@ MattStash can run as a network service for containerized environments. The CLI c
 
 ### Running the Server
 
-The API server is distributed as a Docker image — it is **not** a CLI subcommand.
+The API server runs as a Docker container — it is **not** a CLI subcommand. Build the image from this repository (the
+published `ghcr.io/cornyhorse/mattstash` image is private):
 
 ```bash
+docker build -f server/Dockerfile -t mattstash-api:local .
 docker run -d \
   -e MATTSTASH_DB_PATH=/data/mattstash.kdbx \
   -e KDBX_PASSWORD=<password> \
   -e MATTSTASH_API_KEY=<api-key> \
   -v /path/to/data:/data:ro \
   -p 8000:8000 \
-  ghcr.io/cornyhorse/mattstash:latest
+  mattstash-api:local
 ```
 
 The server exposes a health check at `/api/health` and credential endpoints under `/api/v1/`.
@@ -348,7 +350,8 @@ See [Python API Documentation](docs/python-api.md) for complete reference.
 
 MattStash includes an optional FastAPI-based HTTP service for accessing credentials over the network. This is useful for containerized environments where multiple services need secure access to credentials.
 
-**Docker image:** `ghcr.io/cornyhorse/mattstash:latest`
+**Docker image:** build it from this repository (`docker build -f server/Dockerfile -t mattstash-api:local .`). The
+published `ghcr.io/cornyhorse/mattstash` image is private; the library itself is on PyPI (`pip install mattstash`).
 
 **Features:**
 - 🔒 API key authentication
