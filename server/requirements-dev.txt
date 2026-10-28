@@ -9,4 +9,4 @@ pytest-asyncio>=1.4.0
 httpx>=0.28.1
 
 # Test utilities
-pytest-mock>=3.16.0
+pytest-mock>=3.17.0
