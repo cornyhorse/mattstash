@@ -86,7 +86,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.14"
 
@@ -99,7 +99,7 @@ jobs:
       # --- Publish to PyPI ------------------------------------------------------------------
       # ACTIVE: token-based publishing with the long-lived PYPI_API_TOKEN secret.
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           print-hash: true
@@ -114,7 +114,7 @@ jobs:
       #      token-based "Publish to PyPI" step above, uncomment the step below, and finally delete
       #      the PYPI_API_TOKEN secret.
       # - name: Publish to PyPI (trusted publishing)
-      #   uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+      #   uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
       #   with:
       #     print-hash: true
 
@@ -150,7 +150,7 @@ jobs:
           persist-credentials: false
 
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
