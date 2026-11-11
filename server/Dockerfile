@@ -14,7 +14,7 @@
 # digest, e.g.  FROM python:3.14-slim@sha256:<digest>  (`docker buildx imagetools inspect
 # python:3.14-slim` prints it). Dependabot's "docker" ecosystem (.github/dependabot.yml)
 # proposes updates for the tag and the digest.
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 # Unbuffered stdout/stderr so logs reach `docker logs` / `kubectl logs` immediately;
 # no .pyc files (the root filesystem is meant to be mounted read-only at runtime).

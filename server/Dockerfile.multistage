@@ -20,7 +20,7 @@
 # ---------------------------------------------------------------------------------------
 # Builder: virtualenv with hash-verified dependencies + the library from this checkout
 # ---------------------------------------------------------------------------------------
-FROM python:3.14-slim AS builder
+FROM python:3.15-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1
 
@@ -51,7 +51,7 @@ RUN pip install --no-cache-dir --disable-pip-version-check --no-deps . \
 # ---------------------------------------------------------------------------------------
 # Runtime: slim base + the finished virtualenv + the server code
 # ---------------------------------------------------------------------------------------
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 # Unbuffered stdout/stderr so logs reach `docker logs` / `kubectl logs` immediately;
 # no .pyc files (the root filesystem is meant to be mounted read-only at runtime).
